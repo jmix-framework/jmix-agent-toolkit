@@ -369,8 +369,22 @@ install_skills_to_store() {
     done
 }
 
+relpath() {
+    local base="$1" target="$2" up=""
+    while [ "$target" != "$base" ] && [ "${target#"$base"/}" = "$target" ]; do
+        base="$(dirname "$base")"
+        up="../$up"
+    done
+    if [ "$target" = "$base" ]; then
+        printf '%s' "${up:-.}"
+    else
+        printf '%s%s' "$up" "${target#"$base"/}"
+    fi
+}
+
 # Per-skill symlinks: link each store skill folder into the agent skills dir,
-# so Jmix skills coexist with other skills already present there.
+# so Jmix skills coexist with other skills already present there. The link target
+# is relative to the agent dir (see relpath) so links stay valid after a clone.
 # $1 - agent skills dir (kept as a real dir)
 # $2 - store dir holding the skill folders
 link_skills_into_dir() {
@@ -380,11 +394,12 @@ link_skills_into_dir() {
     clear_dangling_symlink "$(dirname "$agent_dir")"
     clear_dangling_symlink "$agent_dir"
     mkdir -p "$agent_dir" || die "cannot create ${agent_dir}"
-    local skill name
+    local rel_store skill name
+    rel_store="$(relpath "$agent_dir" "$store_dir")"
     for skill in "$store_dir"/*/; do
         [ -d "$skill" ] || continue
         name="$(basename "$skill")"
-        create_symlink "${agent_dir}/${name}" "${store_dir}/${name}"
+        create_symlink "${agent_dir}/${name}" "${rel_store}/${name}"
     done
 }
 
