@@ -52,6 +52,14 @@ for rel in ".claude/skills" ".agents/skills" ".junie/skills"; do
 done
 pass "skills(local) builds store and resolving symlinks for all agents"
 
+for rel in ".claude/skills" ".agents/skills" ".junie/skills"; do
+    tgt="$(readlink "${PROJECT}/${rel}/${SKILL}")"
+    case "$tgt" in
+        /*) fail "skills(local): ${rel}/${SKILL} target is absolute (${tgt}); must be relative" ;;
+    esac
+done
+pass "skills(local) symlink targets are relative (portable across clones)"
+
 # ---------------------------------------------------------------------------
 # 3. skills, global scope (under $HOME) -- store keyed by the branch (CONTENT_REF)
 # ---------------------------------------------------------------------------
