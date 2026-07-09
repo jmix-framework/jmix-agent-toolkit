@@ -94,6 +94,19 @@ $claude = Get-Content -Raw (Join-Path $proj 'CLAUDE.md')
 $agents = Get-Content -Raw (Join-Path $Source 'content/AGENTS.md')
 Check ($claude -eq $agents) 'agents-md: CLAUDE.md content matches v3/AGENTS.md'
 
+# Guidelines are always backed up on overwrite (no -BackupExistingFiles), and
+# repeated runs dedup the backup name: .bak, then .bak1 (issue #17).
+Set-Content -LiteralPath (Join-Path $proj 'CLAUDE.md') -Value 'sentinel-1' -NoNewline
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check (Test-Path (Join-Path $proj 'CLAUDE.md.bak')) 'agents-md: existing CLAUDE.md backed up without flag'
+Check ((Get-Content -Raw (Join-Path $proj 'CLAUDE.md.bak')) -eq 'sentinel-1') 'agents-md: .bak keeps original content'
+
+Set-Content -LiteralPath (Join-Path $proj 'CLAUDE.md') -Value 'sentinel-2' -NoNewline
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check (Test-Path (Join-Path $proj 'CLAUDE.md.bak1')) 'agents-md: second backup deduped to .bak1'
+Check ((Get-Content -Raw (Join-Path $proj 'CLAUDE.md.bak')) -eq 'sentinel-1') 'agents-md: dedup did not overwrite earlier .bak'
+Check ((Get-Content -Raw (Join-Path $proj 'CLAUDE.md.bak1')) -eq 'sentinel-2') 'agents-md: .bak1 has correct content'
+
 # ---------------------------------------------------------------------------
 # 2. skills, local scope -- must succeed without symlink privilege
 #    (junction on Windows / symlink on Unix), so the assertions run unconditionally.

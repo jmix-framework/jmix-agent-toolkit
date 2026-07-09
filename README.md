@@ -70,14 +70,14 @@ PowerShell mirrors the same shape: `install.ps1 skills -Agents claude,codex`, `i
 
 ### Flags
 
-| Flag (bash)               | Flag (PowerShell)      | Default | Meaning                                                                                                                                                                       |
-|:--------------------------|:-----------------------|:--------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `--source DIR`            | `-Source DIR`          | -       | Install from a local checkout of this repository instead of downloading. Skips the network. Mainly for CI and offline use.                                                    |
-| `--agents CSV`            | `-Agents CSV`          | -       | Comma-separated agents. Required by every subcommand.                                                                                                                         |
-| `--scope global\|local`   | `-Scope global\|local` | global  | `skills` only. `global` installs the store under `~/.agents/.jmix/skills/v<major>`; `local` installs the store at `<project>/.skills`. Agent dirs are symlinked to the store. |
-| `--context7-key K`        | `-Context7Key K`       | prompt  | Context7 API key. Prompted interactively when omitted.                                                                                                                        |
-| `--backup-existing-files` | `-BackupExistingFiles` | off     | Rename overwritten files/dirs to `<name>.bak-<timestamp>` instead of deleting them. Off by default.                                                                           |
-| `--verbose`, `--debug`    | `-Verbose`             | off     | Print extra diagnostic output (OS, PATH, resolved paths, tool versions) for troubleshooting.                                                                                  |
+| Flag (bash)               | Flag (PowerShell)      | Default | Meaning                                                                                                                                                                                                        |
+|:--------------------------|:-----------------------|:--------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `--source DIR`            | `-Source DIR`          | -       | Install from a local checkout of this repository instead of downloading. Skips the network. Mainly for CI and offline use.                                                                                     |
+| `--agents CSV`            | `-Agents CSV`          | -       | Comma-separated agents. Required by every subcommand.                                                                                                                                                          |
+| `--scope global\|local`   | `-Scope global\|local` | global  | `skills` only. `global` installs the store under `~/.agents/.jmix/skills/v<major>`; `local` installs the store at `<project>/.skills`. Agent dirs are symlinked to the store.                                  |
+| `--context7-key K`        | `-Context7Key K`       | prompt  | Context7 API key. Prompted interactively when omitted.                                                                                                                                                         |
+| `--backup-existing-files` | `-BackupExistingFiles` | off     | Rename overwritten files/dirs to a deduped `<name>.bak` instead of deleting them. Off by default. Guidelines files (`CLAUDE.md` / `AGENTS.md` / `guidelines.md`) are always backed up regardless of this flag. |
+| `--verbose`, `--debug`    | `-Verbose`             | off     | Print extra diagnostic output (OS, PATH, resolved paths, tool versions) for troubleshooting.                                                                                                                   |
 
 **Skills storages:**
 - **Global:** store at `~/.agents/.jmix/skills/v<major>/` (e.g. `v3`); each `jmix-*` folder symlinked into `~/.claude/skills` (Claude CLI), `~/.agents/skills` (Codex, OpenCode), `~/.junie/skills` (Junie).
