@@ -21,7 +21,9 @@
       install.ps1 playwright    -Agents CSV   # requires npx (Node.js) on PATH
 
     Add -BackupExistingFiles to any subcommand to rename overwritten files/dirs
-    to <name>.bak-<timestamp> instead of deleting them.
+    to <name>.bak (deduped: .bak, .bak1, .bak2, ...) instead of deleting them.
+    Guidelines files (CLAUDE.md / AGENTS.md / guidelines.md) are always backed
+    up regardless of this switch.
 
 .PARAMETER Subcommand
     Optional subcommand. When omitted, the interactive wizard is started.
@@ -44,9 +46,10 @@
     Context7 API key (mcp-context7). Prompted interactively when missing.
 
 .PARAMETER BackupExistingFiles
-    When set, an existing destination file or folder is renamed to
-    <name>.bak-<timestamp> instead of being deleted before the new content is
-    copied. Off by default.
+    When set, an existing destination file or folder is renamed to a deduped
+    <name>.bak (then .bak1, .bak2, ... if that name is taken) instead of being
+    deleted before the new content is copied. Off by default. Guidelines files
+    are always backed up regardless of this switch.
 
 .EXAMPLE
     Invoke-RestMethod https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/HEAD/install.ps1 | Invoke-Expression
@@ -85,7 +88,6 @@ $script:ExtractedDir     = $null
 $script:SourceSkillsDir  = $null
 $script:SourceAgentsMd   = $null
 $script:ResolvedVersionDir = $null
-$script:Timestamp        = (Get-Date).ToString('yyyyMMdd-HHmmss')
 $script:IsWindowsHost    = ($env:OS -eq 'Windows_NT')
 
 # =================================================================
@@ -181,17 +183,36 @@ function Get-AgentLabel {
     }
 }
 
+# Returns a not-yet-existing backup file NAME (bare, no directory) for the item
+# at $Path: first "<name>.bak", then on collision "<name>.bak1", ".bak2", ... so
+# an earlier backup is never overwritten.
+function Get-DedupBackupName {
+    param([string]$Path)
+    $dir  = Split-Path -Parent $Path
+    $name = [System.IO.Path]::GetFileName($Path)
+    $candidate = "$name.bak"
+    $n = 1
+    while (Test-Path -LiteralPath (Join-Path $dir $candidate)) {
+        $candidate = "$name.bak$n"
+        $n++
+    }
+    return $candidate
+}
+
 function Write-Dest {
     param(
         [string]$Src,
         [string]$Dest,
-        [string]$Label
+        [string]$Label,
+        # Always back up an existing $Dest regardless of -BackupExistingFiles
+        # (used for guidelines files).
+        [switch]$ForceBackup
     )
     $existed = Test-Path $Dest
     $backupInfo = ''
     if ($existed) {
-        if ($BackupExistingFiles) {
-            $backupName = "$([System.IO.Path]::GetFileName($Dest)).bak-$($script:Timestamp)"
+        if ($ForceBackup -or $BackupExistingFiles) {
+            $backupName = Get-DedupBackupName -Path $Dest
             Rename-Item -Path $Dest -NewName $backupName -ErrorAction Stop
             $backupInfo = " (backup: $backupName)"
         } else {
@@ -361,7 +382,7 @@ function New-DirSymlink {
             # neither -- it unlinks the junction/symlink without prompting.
             [System.IO.Directory]::Delete($Link, $false)
         } elseif ($BackupExistingFiles) {
-            Rename-Item -Path $Link -NewName "$([System.IO.Path]::GetFileName($Link)).bak-$($script:Timestamp)"
+            Rename-Item -Path $Link -NewName (Get-DedupBackupName -Path $Link)
         } else {
             Remove-Item $Link -Recurse -Force
         }
@@ -404,7 +425,7 @@ function Clear-DanglingSymlink {
     $target = @($item.Target) | Select-Object -First 1
     if ($target -and (Test-Path -LiteralPath $target)) { return }
     if ($BackupExistingFiles) {
-        Rename-Item -LiteralPath $Path -NewName "$([System.IO.Path]::GetFileName($Path)).bak-$($script:Timestamp)" -ErrorAction SilentlyContinue
+        Rename-Item -LiteralPath $Path -NewName (Get-DedupBackupName -Path $Path) -ErrorAction SilentlyContinue
     }
     if (Test-Path -LiteralPath $Path) {
         Remove-Item -LiteralPath $Path -Force -Recurse -ErrorAction SilentlyContinue
@@ -492,7 +513,9 @@ function Install-AgentsMdFor {
     }
 
     $destExisted = Test-Path $dest
-    Write-Dest -Src $script:SourceAgentsMd -Dest $dest -Label $dest
+    # Guidelines are always backed up on overwrite, regardless of
+    # -BackupExistingFiles (issue #17).
+    Write-Dest -Src $script:SourceAgentsMd -Dest $dest -Label $dest -ForceBackup
     Write-ChangeMarker -Action $(if ($destExisted) { 'updated' } else { 'created' }) -Type 'file' -Path $dest
     Write-Info "  Project guidelines installed for $label"
 }

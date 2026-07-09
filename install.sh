@@ -33,8 +33,6 @@ SOURCE_DIR=""
 BACKUP_EXISTING=0
 VERBOSE=0
 
-TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-
 ALL_AGENTS="claude codex opencode junie"
 JETBRAINS_AGENTS="claude codex opencode junie"
 CONTEXT7_AGENTS="claude codex opencode junie"
@@ -95,22 +93,41 @@ require_npx() {
     exit 1
 }
 
-# Replaces or installs $dest with a copy of $src. When BACKUP_EXISTING=1, an
-# existing $dest is moved aside to <dest>.bak-<timestamp>; otherwise it is
-# deleted. Prints a per-item log line.
+# Returns a not-yet-existing backup path for $1: first "<path>.bak", then on
+# collision "<path>.bak1", "<path>.bak2", ... so an earlier backup is never
+# overwritten. ponytail: linear probe, fine for the handful of backups a
+# project accrues.
+dedup_backup_path() {
+    local base="$1"
+    local candidate="${base}.bak"
+    local n=1
+    while [ -e "$candidate" ]; do
+        candidate="${base}.bak${n}"
+        n=$((n + 1))
+    done
+    printf '%s' "$candidate"
+}
+
+# Replaces or installs $dest with a copy of $src. An existing $dest is backed up
+# (moved aside to a deduped <dest>.bak[N]) when $force_backup=1 or
+# BACKUP_EXISTING=1; otherwise it is deleted. Prints a per-item log line.
 # $1 - src path (file or dir)
 # $2 - dest path
 # $3 - short label shown in the log line
+# $4 - force_backup: 1 to always back up regardless of --backup-existing-files
+#      (used for guidelines files); defaults to 0
 write_dest() {
     local src="$1"
     local dest="$2"
     local label="$3"
+    local force_backup="${4:-0}"
     local existed=0
     [ -e "$dest" ] && existed=1
     local backup_info=""
     if [ "$existed" -eq 1 ]; then
-        if [ "$BACKUP_EXISTING" -eq 1 ]; then
-            local backup="${dest}.bak-${TIMESTAMP}"
+        if [ "$force_backup" -eq 1 ] || [ "$BACKUP_EXISTING" -eq 1 ]; then
+            local backup
+            backup="$(dedup_backup_path "$dest")"
             mv "$dest" "$backup" || die "cannot rename ${dest}"
             backup_info=" (backup: $(basename "$backup"))"
         else
@@ -216,9 +233,11 @@ Common options:
                              too (e.g. "claude" or "claude,codex"). Required by
                              every subcommand. Valid values:
                              claude, codex, opencode, junie.
-  --backup-existing-files    Rename overwritten files/dirs to
-                             <name>.bak-<timestamp> instead of deleting them.
-                             Off by default.
+  --backup-existing-files    Rename overwritten files/dirs to <name>.bak
+                             (deduped: .bak, .bak1, .bak2, ...) instead of
+                             deleting them. Off by default. Guidelines files
+                             (CLAUDE.md / AGENTS.md / guidelines.md) are always
+                             backed up regardless of this flag.
   --verbose, --debug         Print extra diagnostic output (OS, PATH, resolved
                              paths, tool versions) to help troubleshoot problems.
   -h, --help                 Show this help.
@@ -327,7 +346,7 @@ clear_dangling_symlink() {
     local p="$1"
     [ -L "$p" ] && [ ! -e "$p" ] || return 0
     if [ "$BACKUP_EXISTING" -eq 1 ]; then
-        mv "$p" "${p}.bak-${TIMESTAMP}" 2>/dev/null || rm -f "$p"
+        mv "$p" "$(dedup_backup_path "$p")" 2>/dev/null || rm -f "$p"
     else
         rm -f "$p"
     fi
@@ -343,7 +362,7 @@ create_symlink() {
         rm -f "$link" || die "cannot replace symlink ${link}"
     elif [ -e "$link" ]; then
         if [ "$BACKUP_EXISTING" -eq 1 ]; then
-            mv "$link" "${link}.bak-${TIMESTAMP}" || die "cannot back up ${link}"
+            mv "$link" "$(dedup_backup_path "$link")" || die "cannot back up ${link}"
         else
             rm -rf "$link" || die "cannot remove ${link}"
         fi
@@ -513,7 +532,9 @@ install_agents_md_for() {
 
     local dest_existed=0
     [ -e "$dest" ] && dest_existed=1
-    write_dest "$SOURCE_AGENTS_MD" "$dest" "$dest"
+    # Guidelines are always backed up on overwrite, regardless of
+    # --backup-existing-files (issue #17).
+    write_dest "$SOURCE_AGENTS_MD" "$dest" "$dest" 1
     emit_change "$([ "$dest_existed" -eq 1 ] && printf updated || printf created)" file "$dest"
     log "  Project guidelines installed for ${label}"
 }

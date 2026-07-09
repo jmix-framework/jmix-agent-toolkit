@@ -39,6 +39,21 @@ bash "$INSTALL" agents-md --agents claude,codex,opencode,junie --source "$SOURCE
 cmp -s "${PROJECT}/CLAUDE.md" "${SOURCE}/content/AGENTS.md" || fail "agents-md: CLAUDE.md content mismatch"
 pass "agents-md installs guidelines for all agents"
 
+# Guidelines are always backed up on overwrite (no --backup-existing-files),
+# and repeated runs dedup the backup name: .bak, then .bak1 (issue #17).
+printf 'sentinel-1' > "${PROJECT}/CLAUDE.md"
+bash "$INSTALL" agents-md --agents claude --source "$SOURCE" >/dev/null
+[ -f "${PROJECT}/CLAUDE.md.bak" ] || fail "agents-md: existing CLAUDE.md not backed up without flag"
+[ "$(cat "${PROJECT}/CLAUDE.md.bak")" = "sentinel-1" ] || fail "agents-md: backup .bak lost original content"
+cmp -s "${PROJECT}/CLAUDE.md" "${SOURCE}/content/AGENTS.md" || fail "agents-md: reinstalled CLAUDE.md content mismatch"
+
+printf 'sentinel-2' > "${PROJECT}/CLAUDE.md"
+bash "$INSTALL" agents-md --agents claude --source "$SOURCE" >/dev/null
+[ -f "${PROJECT}/CLAUDE.md.bak1" ] || fail "agents-md: second backup not deduped to .bak1"
+[ "$(cat "${PROJECT}/CLAUDE.md.bak")" = "sentinel-1" ] || fail "agents-md: dedup overwrote earlier .bak backup"
+[ "$(cat "${PROJECT}/CLAUDE.md.bak1")" = "sentinel-2" ] || fail "agents-md: .bak1 has wrong content"
+pass "agents-md always backs up guidelines with deduped .bak/.bak1 names"
+
 # ---------------------------------------------------------------------------
 # 2. skills, local scope (per-skill symlinks into agent dirs)
 # ---------------------------------------------------------------------------
