@@ -92,7 +92,9 @@ READ the most specific skill for each artifact:
 - Detail dialog from a button/action, OR master-row selection → filtered child grid: `jmix-add-dialog-detail-flow`
 - Entity lifecycle/event business logic: `jmix-add-entity-event-listener`
 - Database schema: `jmix-create-liquibase-changelog`
-- Resource roles: `jmix-create-resource-role`
+- Role-based access — model, security scope, `ui.loginToUi` login invariant (READ FIRST before any role): `jmix-role-based-access`
+- Resource role — WHAT a user can do (entity/attribute/view/menu policies): `jmix-create-resource-role`
+- Row-level role — WHICH rows a user sees (JPQL/predicate policies): `jmix-create-row-level-role`
 - User-visible text / entity-enum captions: `jmix-add-i18n-keys`
 - Tests: `jmix-create-test`
 - Fetch plans / unfetched-reference / N+1 tuning: `jmix-configure-fetch-plan`
@@ -106,7 +108,9 @@ For each new persistent entity, run through: `jmix-create-entity` +
 `jmix-add-i18n-keys`. For a user-facing entity, also add a list and/or detail
 view (`jmix-create-list-view`, `jmix-create-detail-view`) and a view policy in
 every role that can open them — **including dialog-only detail views opened
-from a composition table**.
+from a composition table**. Any user who logs into the UI also needs
+`ui-minimal` / `ui.loginToUi` (the most commonly missed defect) — see
+`jmix-role-based-access`.
 
 Service- or listener-level defaulting does NOT relieve the entity from
 defaulting required fields on initial persist — defaults must work through

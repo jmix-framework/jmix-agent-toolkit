@@ -1,16 +1,19 @@
 ---
 name: jmix-create-resource-role
-description: Create or update Jmix resource roles with entity, attribute, view, and menu policies, including the CREATE-implies-MODIFY rule.
+description: Create or update a Jmix @ResourceRole with entity, attribute, view, and menu policies (CREATE-implies-MODIFY, minimum-policy mapping). See jmix-role-based-access for the model, security scope, and the ui.loginToUi login invariant.
 ---
 
 # Create Resource Role
 
-Use this skill when adding or changing Jmix security access.
+Use this skill to create/update a `@ResourceRole` — WHAT a user can do (entity,
+attribute, view, and menu policies). First read `jmix-role-based-access` for the
+model, security scope, and the mandatory `ui.loginToUi` login invariant. For
+row-level (WHICH rows) roles, see `jmix-create-row-level-role`.
 
-The model is ADDITIVE / no-deny: if any assigned role grants access the user has
-it, and there is no deny-policy. A role interface may `extend` several role
-interfaces of the SAME kind to compose their policies (a role cannot mix
-`@ResourceRole` and `@RowLevelRole`).
+**Do not forget the login invariant:** a user with only this domain role CANNOT
+log into the UI without `ui.loginToUi` — assign the built-in `ui-minimal` role too
+(or add `@SpecificPolicy(resources = "ui.loginToUi")` + a `MainView` `@ViewPolicy`).
+See `jmix-role-based-access`.
 
 ## TOP RULE — CREATE implies MODIFY
 
@@ -42,13 +45,16 @@ read-only even at creation (e.g. auto-generated audit fields), exclude them from
 ## Requirement wording → policy actions
 
 Map the EXACT wording of the requirement to entity-policy actions. Re-read the
-requirement for the entity BEFORE writing the policy block.
+requirement for the entity BEFORE writing the policy block. Grant the MINIMUM the
+workflow needs — a role that only reviews/confirms a record needs `READ`+`UPDATE`,
+NOT `ALL`.
 
 | Requirement wording (about an entity)           | EntityPolicyAction         |
 |-------------------------------------------------|----------------------------|
 | "view only", "read only"                        | `READ`                     |
 | "view and create", "create only"                | `READ`, `CREATE`           |
 | "view, edit"                                    | `READ`, `UPDATE`           |
+| "confirm/approve/reject", "change status only"  | `READ`, `UPDATE` (not `ALL`) |
 | "view, create, delete" (no update)              | `READ`, `CREATE`, `DELETE` |
 | "full CRUD", "manage", "all operations"         | `ALL`                      |
 | "cannot be updated", "immutable"                | do NOT include `UPDATE`    |
@@ -82,33 +88,11 @@ A `@ViewPolicy` that lists parent list+detail but omits the child detail will pa
 compilation and fail at runtime when the user clicks "+" inside the parent's
 composition table.
 
-## Row-Level roles
+## Row-level roles
 
-Row-level roles are a separate first-class concept from resource roles: a resource
-role grants *what* you can do, a row-level role restricts *which rows* you see. They
-live in their own interface annotated with `@RowLevelRole` and never mix with
-`@ResourceRole`.
-
-- `@JpqlRowLevelPolicy(entityClass = ..., where = "...")` filters at the database
-  level. Use `{E}` as the entity alias and `:current_user_*` params (e.g.
-  `:current_user_username`).
-- `@PredicateRowLevelPolicy(entityClass = ..., actions = {...})` filters in-memory;
-  the method returns a `RowLevelPredicate` / `RowLevelBiPredicate`. Use for logic
-  that JPQL cannot express and for non-read operations.
-
-Gotcha: a JPQL policy only affects the root entity of a loaded graph. If the same
-entity is also loaded as a *collection* inside another entity's graph, define BOTH
-a `@JpqlRowLevelPolicy` and a `@PredicateRowLevelPolicy` for it to keep access
-consistent.
-
-```java
-@RowLevelRole(name = "Own Orders Only", code = "app_OwnOrdersOnly")
-public interface OwnOrdersOnlyRole {
-    @JpqlRowLevelPolicy(entityClass = Order.class,
-            where = "{E}.createdBy = :current_user_username")
-    void orderPolicy();
-}
-```
+Row-level roles (WHICH rows a user can access) are a SEPARATE concept — see
+`jmix-create-row-level-role`. A single interface cannot mix `@ResourceRole` and
+`@RowLevelRole`.
 
 ## Mechanical self-check before finishing
 
@@ -125,10 +109,23 @@ your own code:
    `<menu id="...">` GROUP id does NOT grant its items.
 3. **Every reachable view has a `@ViewPolicy` entry.** Include composition-dialog
    detail views opened from a parent grid even though they have no menu item.
+4. **UI login works for every non-admin role.** A user with only domain roles
+   cannot log into the UI without `ui.loginToUi` (via a `ui-minimal` assignment or
+   a `@SpecificPolicy` on the role). Verify a seeded NON-admin user actually reaches
+   `MainView`, not "Login failed" — testing/verifying as `admin` (full access) masks
+   this class of defect entirely. See `jmix-role-based-access`.
 
 To assert a permission in Java at runtime, inject `AccessManager` and call
-`applyRegisteredConstraints(...)` on a context (e.g. `EntityOperationContext`), then
-check `isPermitted()`.
+`applyRegisteredConstraints(...)` on a context (e.g. `CrudEntityContext` for entity
+CRUD, `EntityAttributeContext` for an attribute), then check `isPermitted()`.
+
+To show/hide a UI action or button by the current user's role or permission, use
+that `AccessManager` check (or a view-level `@ViewPolicy`). Do NOT hand-roll a role
+check by reading `SecurityContextHolder`/`GrantedAuthority` strings and comparing to
+a raw role code: the granted authority is not the bare code (Jmix prefixes/maps it),
+so such a check silently fails — the action stays hidden even for authorized users
+and no error is raised. This defect compiles and passes green tests; it surfaces
+only when a real non-admin user opens the view.
 
 ## Steps
 
@@ -172,6 +169,11 @@ public interface EmployeeRole {
 }
 ```
 
+This role grants domain access only. A user assigned just `EmployeeRole` still
+CANNOT log into the UI — assign the built-in `ui-minimal` role too (or add
+`@SpecificPolicy(resources = "ui.loginToUi")` + a `MainView` `@ViewPolicy` here).
+See `jmix-role-based-access`.
+
 ## Role Matrix
 
 | Surface | Required? | Policy |
@@ -209,3 +211,5 @@ group itself and the project's security checks use that group id.
 - View policies only for list views while create/edit dialogs use detail views.
 - Menu policy for a parent group when the user needs access to concrete menu items.
 - Menu policy for views that are not menu entries.
+- A domain role for a UI user without a `ui-minimal` assignment or `ui.loginToUi` (cannot log in — see `jmix-role-based-access`).
+- Hand-rolled role checks via `SecurityContextHolder`/`GrantedAuthority` (use `AccessManager`).
