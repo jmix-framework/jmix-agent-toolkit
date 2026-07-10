@@ -62,10 +62,25 @@ Customer customer = dataManager.load(Customer.class)
 List<Customer> activeCustomers = dataManager.load(Customer.class)
         .query("select e from Customer e where e.active = true")
         .list();
+
+// Finder that may not match: .one() throws when there is no match (or more than one).
+// Use .optional() (returns Optional<E>) when "maybe absent" is a valid outcome.
+Optional<Customer> byEmail = dataManager.load(Customer.class)
+        .query("select e from Customer e where e.email = :email")
+        .parameter("email", email)
+        .optional();
 ```
 
 ## Gotchas
 
+- **Re-saving one instance in the same method → `OptimisticLockException`.** Every
+  `dataManager.save(x)` returns a NEW managed copy with a bumped `@Version`; the
+  argument you passed keeps the OLD version. A SECOND `save(x)` on that same stale
+  reference merges an out-of-date version and throws `OptimisticLockException` at
+  runtime (it compiles and passes a green context-load test). This bites multi-step
+  status flows (e.g. save "SCORING", then save the final status). Fix: either
+  reassign after each save — `x = dataManager.save(x);` — before the next mutation,
+  OR set all fields first and `save(x)` exactly ONCE. Prefer saving once.
 - New vs detached: a null id does not mean "new" (ids can be generated early). Use `io.jmix.core.EntityStates#isNew(entity)`.
 - `DataManager` does more than `load`/`save`: `loadValues()` for scalar/aggregate data, the Condition API (`PropertyCondition` / `LogicalCondition`) as a JPQL alternative, pessimistic `lockMode()`, and hard delete by setting the `PersistenceHints.SOFT_DELETION` hint to `false` (e.g. `saveContext.setHint(PersistenceHints.SOFT_DELETION, false)`).
 
@@ -76,6 +91,7 @@ List<Customer> activeCustomers = dataManager.load(Customer.class)
 - Constructor calls for Jmix entities.
 - `EntityManager` for regular CRUD.
 - Missing transaction boundary for multi-step updates that must be atomic.
+- Calling `dataManager.save(entity)` more than once on the same reference without reassigning the returned instance (stale `@Version` → `OptimisticLockException`).
 
 ## Verify
 

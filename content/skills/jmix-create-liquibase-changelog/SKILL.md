@@ -53,6 +53,28 @@ Use this skill for every persistent entity or schema change.
 </changeSet>
 ```
 
+## Unique constraints and indexes
+
+`@Column(unique = true)` in the entity does NOT create the constraint — Liquibase
+builds the schema (not Hibernate DDL), so declare it in the changelog. Either add
+it inline in `<createTable>`:
+
+```xml
+<column name="EMAIL" type="varchar(255)">
+    <constraints nullable="false" unique="true" uniqueConstraintName="UQ_CUSTOMER__EMAIL"/>
+</column>
+```
+
+or as a separate change:
+
+```xml
+<addUniqueConstraint tableName="CUSTOMER" columnNames="EMAIL"
+                     constraintName="UQ_CUSTOMER__EMAIL"/>
+```
+
+For a non-unique lookup index use `<createIndex>`. A "field X must be unique"
+requirement is not satisfied by the Java annotation alone.
+
 ## Audit and soft-delete columns
 
 If the entity carries audit (`@CreatedBy` / `@CreatedDate` / `@LastModifiedBy` /
@@ -107,11 +129,20 @@ Order the parent first, the child (with its FK) second:
 </changeSet>
 ```
 
-For a **composition** child, the delete cascade is enforced by Jmix at the
-application layer (`@Composition` + `@OnDelete(DeletePolicy.CASCADE)` on the
-entity), NOT by the database — Jmix uses soft delete by default, so a DB-level
-`onDelete="CASCADE"` would never fire. Leave the FK without `onDelete` unless
-you specifically need hard-delete DB-level enforcement.
+For a **composition** child, how the delete cascade is enforced depends on the
+entities' delete mode. Soft deletion is NOT global — it applies only to entities
+that declare the Soft-Delete trait (`@DeletedDate` / `@DeletedBy`); entities
+without it are hard-deleted (physical `DELETE`).
+
+- **Soft-deleted entities:** deletes are logical, so cascade is handled by Jmix at
+  the application layer (`@Composition` + `@OnDelete(DeletePolicy.CASCADE)` on the
+  entity); a DB-level `onDelete="CASCADE"` never fires — omit it.
+- **Hard-deleted entities** (no Soft-Delete trait): deleting the parent physically
+  removes the row, so the child FK MUST declare `onDelete="CASCADE"` — otherwise the
+  delete FK-violates at runtime. (Jmix Studio generates this cascade for hard-delete
+  compositions.)
+
+Match the FK to the entities' actual delete mode; do not assume soft delete.
 
 ## Root Changelog Reachability
 
