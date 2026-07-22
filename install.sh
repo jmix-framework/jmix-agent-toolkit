@@ -13,7 +13,7 @@
 set -euo pipefail
 
 REPO_OWNER="jmix-framework"
-REPO_NAME="jmix-agent-guidelines"
+REPO_NAME="jmix-agent-toolkit"
 
 # Global state populated by ensure_tarball()
 STAGING=""

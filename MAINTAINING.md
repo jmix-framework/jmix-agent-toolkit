@@ -1,4 +1,4 @@
-# Maintaining the Jmix AI Agent Guidelines
+# Maintaining the Jmix AI Agent Toolkit
 
 ## Structure
 
@@ -17,7 +17,7 @@ branch holds exactly one `content/` folder.
 
 ## How install works
 
-- **CLI**: `curl -fsSL .../jmix-agent-guidelines/<branch>/install.sh | bash`.
+- **CLI**: `curl -fsSL .../jmix-agent-toolkit/<branch>/install.sh | bash`.
   The script downloads its own branch tarball (`CONTENT_REF`), installs `content/skills`
   into the canonical store `~/.agents/.jmix/skills/<branch>/`, symlinks each `jmix-*`
   skill into every selected agent's skills dir, and copies `content/AGENTS.md` as the
@@ -40,4 +40,4 @@ branch holds exactly one `content/` folder.
    - `pwsh tests/test_install_ps1.ps1`
 6. Push the branch. When the new major becomes the current stable one, make it the
    repository default branch:
-   `gh repo edit jmix-framework/jmix-agent-guidelines --default-branch v4`.
+   `gh repo edit jmix-framework/jmix-agent-toolkit --default-branch v4`.
