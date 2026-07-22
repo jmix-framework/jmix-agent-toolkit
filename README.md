@@ -1,4 +1,4 @@
-# Jmix AI Agent Guidelines
+# Jmix AI Agent Toolkit
 
 This repository provides a collection of guidelines and "agent skills" designed to help AI coding agents develop applications using the [Jmix framework](https://www.jmix.io/) effectively.
 
@@ -16,7 +16,7 @@ Each Jmix major version lives on its own branch: `v2` for Jmix 2, `v3` for Jmix 
 
 ## Studio Installation
 
-The simplest way to install agent guidelines to your project is to use Jmix Studio 3.0+. 
+The simplest way to install agent toolkit to your project is to use Jmix Studio 3.0+. 
 
 Execute the **AI Agents Toolkit** action in the **Settings** menu of the **Jmix** tool window and follow the steps of the GUI interactive wizard.
 
@@ -28,25 +28,25 @@ installing skills, adding guidelines, registering the recommended MCP servers, a
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/v3/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/v3/install.sh | bash
 ```
 
 **Windows (PowerShell 5+):**
 
 ```powershell
-Invoke-RestMethod https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/v3/install.ps1 | Invoke-Expression
+Invoke-RestMethod https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/v3/install.ps1 | Invoke-Expression
 ```
 
 If PowerShell blocks the script because of its execution policy, run it explicitly with the policy bypassed:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-RestMethod 'https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/v3/install.ps1' | Invoke-Expression"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-RestMethod 'https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/v3/install.ps1' | Invoke-Expression"
 ```
 
 If `powershell.exe` itself is blocked by a corporate policy (`CreateProcess error=5, Access is denied`), use PowerShell 7 (`pwsh`):
 
 ```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -Command "Invoke-RestMethod 'https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/v3/install.ps1' | Invoke-Expression"
+pwsh -NoProfile -ExecutionPolicy Bypass -Command "Invoke-RestMethod 'https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/v3/install.ps1' | Invoke-Expression"
 ```
 
 > In Jmix Studio plugin, the same wizard is available from the **Jmix AI Agents Toolkit** action.
@@ -119,7 +119,7 @@ Symlink each skill individually. This is idempotent — re-run it after pulling 
 ```bash
 mkdir -p ~/.claude/skills
 # run from a checkout of your major's branch (v2, v3, ...)
-for skill in /path/to/jmix-agent-guidelines/content/skills/*/; do
+for skill in /path/to/jmix-agent-toolkit/content/skills/*/; do
     ln -sfn "$skill" ~/.claude/skills/"$(basename "$skill")"
 done
 ```

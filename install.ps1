@@ -52,10 +52,10 @@
     are always backed up regardless of this switch.
 
 .EXAMPLE
-    Invoke-RestMethod https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/HEAD/install.ps1 | Invoke-Expression
+    Invoke-RestMethod https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/HEAD/install.ps1 | Invoke-Expression
 
 .EXAMPLE
-    & ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/HEAD/install.ps1).Content)) skills -Agent claude
+    & ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/HEAD/install.ps1).Content)) skills -Agent claude
 #>
 [CmdletBinding()]
 param(
@@ -76,7 +76,7 @@ Set-StrictMode -Version Latest
 $ContentRef = 'v3'
 
 $script:RepoOwner = 'jmix-framework'
-$script:RepoName  = 'jmix-agent-guidelines'
+$script:RepoName  = 'jmix-agent-toolkit'
 
 $script:AllAgents       = @('claude', 'codex', 'opencode', 'junie')
 $script:JetbrainsAgents = @('claude', 'codex', 'opencode', 'junie')

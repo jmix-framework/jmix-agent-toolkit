@@ -53,9 +53,9 @@
           }
         ],
         "command": {
-          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/${guidelinesBranch}/install.ps1).Content)) skills -Agents \"${skillsAgents}\" -Scope \"${skillsScope}\"",
-          "macos": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/${guidelinesBranch}/install.sh | bash -s -- skills --agents \"${skillsAgents}\" --scope \"${skillsScope}\"",
-          "linux": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/${guidelinesBranch}/install.sh | bash -s -- skills --agents \"${skillsAgents}\" --scope \"${skillsScope}\""
+          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) skills -Agents \"${skillsAgents}\" -Scope \"${skillsScope}\"",
+          "macos": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- skills --agents \"${skillsAgents}\" --scope \"${skillsScope}\"",
+          "linux": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- skills --agents \"${skillsAgents}\" --scope \"${skillsScope}\""
         }
       },
       {
@@ -93,9 +93,9 @@
           }
         ],
         "command": {
-          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/${guidelinesBranch}/install.ps1).Content)) agents-md -Agents \"${guidelinesAgents}\"",
-          "macos": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/${guidelinesBranch}/install.sh | bash -s -- agents-md --agents \"${guidelinesAgents}\"",
-          "linux": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/${guidelinesBranch}/install.sh | bash -s -- agents-md --agents \"${guidelinesAgents}\""
+          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) agents-md -Agents \"${guidelinesAgents}\"",
+          "macos": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- agents-md --agents \"${guidelinesAgents}\"",
+          "linux": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- agents-md --agents \"${guidelinesAgents}\""
         }
       },
       {
@@ -133,9 +133,9 @@
           }
         ],
         "command": {
-          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/${guidelinesBranch}/install.ps1).Content)) mcp-jetbrains -Agents \"${jetbrainsMcpAgents}\"",
-          "macos": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/${guidelinesBranch}/install.sh | bash -s -- mcp-jetbrains --agents \"${jetbrainsMcpAgents}\"",
-          "linux": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/${guidelinesBranch}/install.sh | bash -s -- mcp-jetbrains --agents \"${jetbrainsMcpAgents}\""
+          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) mcp-jetbrains -Agents \"${jetbrainsMcpAgents}\"",
+          "macos": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- mcp-jetbrains --agents \"${jetbrainsMcpAgents}\"",
+          "linux": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- mcp-jetbrains --agents \"${jetbrainsMcpAgents}\""
         }
       },
       {
@@ -181,9 +181,9 @@
           }
         ],
         "command": {
-          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/${guidelinesBranch}/install.ps1).Content)) mcp-context7 -Agents \"${context7Agents}\" -Context7Key \"${context7Key}\"",
-          "macos": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/${guidelinesBranch}/install.sh | bash -s -- mcp-context7 --agents \"${context7Agents}\" --context7-key \"${context7Key}\"",
-          "linux": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/${guidelinesBranch}/install.sh | bash -s -- mcp-context7 --agents \"${context7Agents}\" --context7-key \"${context7Key}\""
+          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) mcp-context7 -Agents \"${context7Agents}\" -Context7Key \"${context7Key}\"",
+          "macos": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- mcp-context7 --agents \"${context7Agents}\" --context7-key \"${context7Key}\"",
+          "linux": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- mcp-context7 --agents \"${context7Agents}\" --context7-key \"${context7Key}\""
         }
       },
       {
@@ -221,9 +221,9 @@
           }
         ],
         "command": {
-          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/${guidelinesBranch}/install.ps1).Content)) playwright -Agents \"${playwrightAgents}\"",
-          "macos": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/${guidelinesBranch}/install.sh | bash -s -- playwright --agents \"${playwrightAgents}\"",
-          "linux": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/${guidelinesBranch}/install.sh | bash -s -- playwright --agents \"${playwrightAgents}\""
+          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) playwright -Agents \"${playwrightAgents}\"",
+          "macos": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- playwright --agents \"${playwrightAgents}\"",
+          "linux": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- playwright --agents \"${playwrightAgents}\""
         }
       }
     ]
