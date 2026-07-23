@@ -1,6 +1,6 @@
-# Jmix AI Agent Toolkit
+# Jmix Agent Toolkit
 
-This repository provides a collection of guidelines and "agent skills" designed to help AI coding agents develop applications using the [Jmix framework](https://www.jmix.io/) effectively.
+This repository provides a collection of agent skills, guidelines and tools designed to help AI coding agents develop applications using the [Jmix framework](https://www.jmix.io/) effectively.
 
 The AI agent will use these resources to understand Jmix-specific patterns, mandatory rules, and best practices.
 
