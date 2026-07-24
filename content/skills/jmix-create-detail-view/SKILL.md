@@ -17,9 +17,9 @@ CONSTRUCTION from the WRONG/RIGHT examples below:
 
 1. **An enum attribute is NEVER `entityComboBox`.** `entityComboBox`
    is for ENTITY references; binding it to an enum (with or without a
-   made-up `enumClass` attribute) throws `IllegalStateException: Range
-   is enumeration` at render. There is no `enumClass` attribute on
-   `entityComboBox`. For a Jmix enum property use a plain `<comboBox>`
+   made-up `enumClass` attribute) fails at render — `entityComboBox`
+   requires an entity Range, not an enumeration. There is no `enumClass`
+   attribute on `entityComboBox`. For a Jmix enum property use a plain `<comboBox>`
    or `<select>` — Jmix auto-populates it from the enum:
 
    ```xml

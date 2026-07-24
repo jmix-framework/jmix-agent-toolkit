@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sha256": "41f41a9daf9573ed28eae2c87c23f2624489a52a3809b9792ac1701921390bca",
+  "sha256": "ade673a75c943a29456a7588b40329d260c496c6dc0c14a0d57f767b1d7fa661",
   "skills": [
     "jmix-add-dialog-detail-flow",
     "jmix-add-entity-event-listener",
@@ -15,9 +15,11 @@
     "jmix-create-liquibase-changelog",
     "jmix-create-list-view",
     "jmix-create-resource-role",
+    "jmix-create-row-level-role",
     "jmix-create-service",
     "jmix-create-test",
     "jmix-ide-static-analysis",
+    "jmix-role-based-access",
     "jmix-verify-api-symbol",
     "jmix-verify-bootrun"
   ],

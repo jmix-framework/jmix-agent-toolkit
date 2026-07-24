@@ -158,6 +158,23 @@ private List<ChildLine> lines;  // leave uninitialized — Jmix returns a NotIns
 private Parent parent;
 ```
 
+## Plain association (`@ManyToOne`, not a composition)
+
+The most common relationship in a CRUD model — e.g. `Order.customer` — is a plain
+reference, NOT a composition. JPA defaults `@ManyToOne` to EAGER, which violates
+the LAZY rule silently; declare `fetch = FetchType.LAZY` explicitly:
+
+```java
+@JoinColumn(name = "CUSTOMER_ID")
+@ManyToOne(fetch = FetchType.LAZY)
+private Customer customer;
+```
+
+No `@Composition`, no `cascade`; add `optional = false` only when the reference is
+mandatory. The foreign key is created in the Liquibase changelog, not by this
+annotation (see `jmix-create-liquibase-changelog`). To show this reference in a
+list column, the view's fetch plan must fetch it (see `jmix-create-list-view`).
+
 ## Auditing and Soft Delete
 
 Add audit fields with the Spring Data annotations from `org.springframework.data.annotation`: `@CreatedBy`, `@CreatedDate`, `@LastModifiedBy`, `@LastModifiedDate`. For soft delete add `@DeletedBy` and `@DeletedDate` from `io.jmix.core.annotation` — soft-deleted rows are then auto-filtered out of `DataManager`/JPQL queries.
@@ -201,6 +218,7 @@ Apply common Java validation and persistence mappings when the field semantics a
 - Lombok annotations (`@Data`, `@Getter`, `@Setter`, etc.) on Jmix entities — they interfere with the entity enhancer and break JPA/Jmix metadata.
 - `FetchType.EAGER`.
 - Missing Liquibase changelog for persistent changes.
+- Relying on `@Column(unique = true)` alone for a unique constraint — Liquibase builds the schema, not Hibernate DDL, so the constraint never reaches the database. Add `<addUniqueConstraint>` to the changelog (see `jmix-create-liquibase-changelog`).
 - Nullable child back references in composition aggregates.
 - Relying only on UI initialization for required persistence fields.
 - Instantiating or replacing a collection field that Jmix populated — it may be a `NotInstantiatedList`/`NotInstantiatedSet`. Leave collection fields uninitialized; do not assign `new ArrayList`/`new HashSet`.

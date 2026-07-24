@@ -72,6 +72,30 @@ public class CustomerListView extends StandardListView<Customer> {
 </view>
 ```
 
+## Columns on reference attributes → extend the fetch plan
+
+`<fetchPlan extends="_base"/>` includes local attributes plus the instance name
+(`_local` + `_instance_name` + embedded references), but NOT arbitrary references
+or collections you display in columns. For a column on a reference (or nested
+`a.b`) attribute, add that reference to the fetch plan:
+
+```xml
+<fetchPlan extends="_base">
+    <property name="customer" fetchPlan="_instance_name"/>
+</fetchPlan>
+...
+<columns>
+    <column property="name"/>
+    <column property="customer"/>          <!-- shows Customer instance name -->
+    <column property="customer.email"/>    <!-- nested: fetch plan must include it -->
+</columns>
+```
+
+This is a data-loading concern, not a compile one — it surfaces only when the grid
+opens. `jmix-configure-fetch-plan` owns the exact rules (loading references, N+1
+and fetch modes, and the unfetched-attribute pitfalls of *partial* plans on local
+attributes).
+
 ## Choosing list-action types
 
 The grid action that opens a row is one of:
@@ -82,6 +106,11 @@ The grid action that opens a row is one of:
   records are viewed but not modified). It is a mode, not a `readOnly`
   descriptor attribute.
 - `list_remove` — deletes the selected entity.
+
+`list_create` and `list_edit` open `<Entity>.detail` — that detail view MUST
+already exist (see `jmix-create-detail-view`). Wiring the action without the detail
+view compiles but throws `NoSuchViewException: View '<Entity>.detail' is not
+defined` the moment the user clicks Create or Edit.
 
 `list_read` REPLACES `list_edit`, not the whole CRUD bar. "The list
 opens records in read mode" or "use `read` instead of `edit`" still
@@ -193,9 +222,24 @@ XML. You do NOT need an `@Install(target = Target.DATA_LOADER)` load delegate;
 if you DO write one, it must return `List<E>` — returning the `LoadContext`
 itself means the query never runs and the grid is empty at open.
 
+## Menu item (menu.xml)
+
+To show the list view in navigation, add an `<item>` to `menu.xml`
+(under `src/main/resources/.../menu.xml`) referencing the view's `@ViewController`
+id via the `view` attribute:
+
+```xml
+<item view="Customer.list"/>
+```
+
+Granting a role access to this menu item is a separate security concern — see the
+Menu Policy Audit in `jmix-create-resource-role`.
+
 ## Forbidden
 
 - Declaring actions without visible buttons or another reachable UI trigger.
+- A column on a reference or nested (`a.b`) attribute not added to the fetch plan (extra per-row loads / N+1 — see `jmix-configure-fetch-plan`).
+- `list_create`/`list_edit` wired without an existing `<Entity>.detail` view (`NoSuchViewException` at first click).
 - Using `@Table` names in JPQL.
 - `urlQueryParameters` references to component ids that are not declared in the XML.
 - Java controller without matching XML descriptor.
