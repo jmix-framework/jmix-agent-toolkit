@@ -1,12 +1,13 @@
 {
   "schemaVersion": 1,
-  "sha256": "41f41a9daf9573ed28eae2c87c23f2624489a52a3809b9792ac1701921390bca",
+  "sha256": "477e962ff37f745254966e31b85c80b9199910a345a00873f53602055fae04a5",
   "skills": [
     "jmix-add-dialog-detail-flow",
     "jmix-add-entity-event-listener",
     "jmix-add-i18n-keys",
     "jmix-configure-fetch-plan",
     "jmix-create-composition-detail-view",
+    "jmix-create-custom-ui-component",
     "jmix-create-detail-view",
     "jmix-create-dto-entity",
     "jmix-create-entity",
