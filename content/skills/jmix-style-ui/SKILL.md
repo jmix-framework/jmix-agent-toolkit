@@ -1,6 +1,6 @@
 ---
 name: jmix-style-ui
-description: Style Jmix Flow UI components — CSS classes in the project theme, built-in component theme variants, or inline styles in a controller. Read this before writing any getStyle().set(...), classNames, addThemeVariants, or CSS custom property (--aura-* / --lumo-*). A custom property the active theme does not define fails SILENTLY: no error, every gate green, wrong rendering.
+description: Style Jmix Flow UI components — views, fragments, grid renderers, or components built in a controller. Read this before writing any getStyle().set(...), classNames, addThemeVariants, or CSS custom property (--aura-* / --lumo-* / --vaadin-*). A custom property the active theme does not define fails SILENTLY: no error, every gate green, wrong rendering.
 ---
 
 # Style Flow UI components
@@ -53,13 +53,22 @@ inspectable, and it keeps values out of Java:
 card.addClassName("order-card");   // when the component is built in the controller
 ```
 
+A new CSS file is not loaded by existing — wire it in: add
+`@import url('<view>.css');` to the theme's `styles.css` (the stylesheet the
+application declares). A file nothing imports fails exactly like an undefined
+token: no error anywhere, the rules just never apply.
+
 **2. A built-in component theme variant — for looks the component already has.**
 Do not re-implement a badge or a size variant with hand-written CSS:
 
 ```java
 avatar.addThemeVariants(AvatarVariant.LARGE);
-badge.getElement().getThemeList().add("badge pill");   // Vaadin badge theme
+badge.getElement().getThemeList().addAll(List.of("badge", "pill"));   // Vaadin badge theme
 ```
+
+`ThemeList` holds single tokens — `add("badge pill")` happens to render (the
+attribute joins entries with spaces) but stores one bogus entry, so a later
+`remove("pill")` or `contains("badge")` silently does nothing.
 
 **3. Inline `getStyle().set(...)` — last resort.** Correct for a one-off dynamic
 value (a color computed from data, a width from a measurement), not for a look
@@ -83,6 +92,9 @@ grep -rhoE '\-\-lumo-[a-z0-9-]+' node_modules/@vaadin/vaadin-lumo-styles/ | sort
 # no node_modules? read it from the resolved jar
 JAR=$(find ~/.gradle/caches -name 'vaadin-aura-theme-*.jar' | grep -v sources | tail -1)
 unzip -p "$JAR" 'META-INF/resources/aura/aura.css' | grep -ohE '\-\-aura-[a-z0-9-]+' | sort -u
+
+# the same stylesheet also defines the shared --vaadin-* layer — enumerate it too
+unzip -p "$JAR" 'META-INF/resources/aura/aura.css' | grep -ohE '\-\-vaadin-[a-z0-9-]+' | sort -u
 ```
 
 Aura's set is small — under a hundred names, so the enumeration above is quick to
@@ -101,24 +113,48 @@ read in full. The ones you reach for most:
 | font weight | `--aura-font-weight-regular` / `-medium` / `-semibold` |
 | line height | `--aura-line-height-xs` … `-xl` |
 | shadow | `--aura-shadow-xs` / `-s` / `-m` |
-| status colors | `--aura-red`, `--aura-green`, `--aura-yellow`, `--aura-orange`, `--aura-blue`, `--aura-purple`, `--aura-neutral` (each with a `-text` variant, e.g. `--aura-red-text`) |
+| status colors | `--aura-red`, `--aura-green`, `--aura-yellow`, `--aura-orange`, `--aura-blue`, `--aura-purple` (each with a `-text` variant, e.g. `--aura-red-text`), `--aura-neutral` (no `-text` variant) |
+
+**The same stylesheet defines a second, bigger family: `--vaadin-*`.** These are
+the semantic tokens of Vaadin's base styles (~230 names in Aura 25.2, ~280 in
+Lumo 25.2), and for common needs they are the first place to look — Aura in
+particular has no secondary-text token of its own, but it does define
+`--vaadin-text-color-secondary`. The namespace is shared — a `--vaadin-*` name
+means the same thing under any theme — but each theme sets values only for the
+subset it restyles (just 82 names are common to Aura and Lumo in 25.2), so a
+name being theme-agnostic does not make it universally defined. Verify a
+`--vaadin-*` name in the active theme's stylesheet exactly like an
+`--aura-*`/`--lumo-*` one (e.g. `--vaadin-gap-*` / `--vaadin-radius-*` exist in
+Aura but not in Lumo). This core is defined by BOTH themes in 25.2:
+
+| Purpose | `--vaadin-*` token (in both Aura and Lumo) |
+|---|---|
+| body text | `--vaadin-text-color` |
+| muted / secondary text | `--vaadin-text-color-secondary` |
+| disabled text | `--vaadin-text-color-disabled` |
+| plain border | `--vaadin-border-color`, `--vaadin-border-color-secondary` |
+| background | `--vaadin-background-color`, `--vaadin-background-container`, `--vaadin-background-container-strong` |
+| focus ring | `--vaadin-focus-ring-color`, `--vaadin-focus-ring-width` |
+| per-component knobs | `--vaadin-button-padding`, `--vaadin-card-padding`, … (set ON the component to retune it) |
 
 **The two themes are not name-for-name equivalents.** Do not translate a Lumo
 token into an `--aura-` prefix and assume it exists. Concretely: Lumo has
 `--lumo-body-text-color`, `--lumo-secondary-text-color`, and a contrast scale
 (`--lumo-contrast-20pct` …); **Aura has none of those.** In Aura, body text is
-simply the inherited color, muted text comes from the component's own theme or
-`--aura-contrast-level`, and a plain border uses `--aura-accent-border-color` or a
-literal value. Going the other way, Lumo has no `--lumo-accent-surface` or
-`--lumo-surface-level`.
+`--vaadin-text-color`, muted text is `--vaadin-text-color-secondary`, and a
+plain border is `--vaadin-border-color` — the theme-neutral layer above, not
+the `--aura-*` family. Going the other way, Lumo has no `--lumo-accent-surface`
+or `--lumo-surface-level`.
 
 ## When the active theme has no suitable token
 
-Two acceptable options, in this order:
+Three acceptable options, in this order:
 
-1. **Define your own custom property or class in the project theme stylesheet**
+1. **A `--vaadin-*` token from the base-styles layer** — it usually has
+   what the theme's own family lacks; enumerate and verify it the same way.
+2. **Define your own custom property or class in the project theme stylesheet**
    and use it — the value lives in one place and survives a theme change.
-2. **Use a literal, theme-neutral value** for a genuinely neutral decoration:
+3. **Use a literal, theme-neutral value** for a genuinely neutral decoration:
 
 ```java
 card.getStyle()
