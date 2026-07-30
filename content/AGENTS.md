@@ -19,7 +19,7 @@ Before writing a single file:
 
 1. List every artifact the task implies — entities, enums, list views, detail
    views, composition children, services, event listeners, resource roles,
-   changelogs, menu entries, message bundles.
+   changelogs, menu entries, message bundles, scheduled/background entry points.
 2. For EACH artifact, READ the matching skill in **Skill routing** before you
    write it.
 3. Only then start writing.
@@ -58,8 +58,10 @@ cleanly.
 reference/enum field bound wrong, a broken `itemsQuery`, an action opening a
 view id that does not exist (`NoSuchViewException`) — compiles perfectly clean.
 A green `clean test` is necessary but NEVER sufficient: the context-load tests
-boot the Spring/Jmix context but do NOT open your new views or exercise your
-new roles.
+boot the Spring/Jmix context but do NOT open your new views, exercise your new
+roles, or fire your schedulers, `@Async` methods, and message listeners. 
+A defect survives every gate when nothing enters its
+code path: add the caller — a test or a render walk — or report it as unverified.
 
 Emit the evidence in your completion report. Per file you touched: its
 static-check verdict. Per view/button/field you created: how you verified it
@@ -89,6 +91,7 @@ READ the most specific skill for each artifact:
 - Detail view: `jmix-create-detail-view`
 - Parent-child composition editing (property-bound container, NO query loader): `jmix-create-composition-detail-view`
 - Service-layer business logic: `jmix-create-service`
+- Code running outside a user request (Quartz/`@Scheduled` job, `@Async` method, startup runner, message listener): `jmix-run-background-code`
 - Detail dialog from a button/action, OR master-row selection → filtered child grid: `jmix-add-dialog-detail-flow`
 - Entity lifecycle/event business logic: `jmix-add-entity-event-listener`
 - Database schema: `jmix-create-liquibase-changelog`
@@ -98,6 +101,29 @@ READ the most specific skill for each artifact:
 - Fetch plans / unfetched-reference / N+1 tuning: `jmix-configure-fetch-plan`
 - DTO / non-persistent UI-bound model: `jmix-create-dto-entity`
 - Reusable Flow UI fragment: `jmix-create-fragment`
+- Component styling / theme tokens (`--aura-*`, `--lumo-*`) / CSS classes: `jmix-style-ui`
+
+## A skill's framework rule beats sample code in a plan or brief
+
+When a plan, brief, issue, or hand-off note carries verbatim code, that code is a
+SUGGESTION. The skill's rule is the authority. Sample code in a plan is written
+without the skill open, so it drops framework details that look optional and are
+not — and because it arrives as "the code to write", implementers paste it over
+the correct pattern without noticing.
+
+So: when you are handed code to write, READ the skill for that artifact and
+reconcile the two BEFORE writing. Where they disagree, the skill wins — and say in
+your report that you diverged from the sample and why. Check especially entity
+annotations, view descriptors, fetch plans, and lifecycle-method overrides.
+
+## Under-checked files leave debt — carry it forward
+
+When Gate 1 falls back to `compileJava` because no Jmix inspection is connected,
+NAME those files in your completion report as inspected-by-compile-only. The Jmix
+semantic findings (unresolved `msg://`, invalid property paths, discarded
+`DataManager.save()` results) are invisible to the compiler, so those files are
+not actually checked yet — re-inspect them in the next session that has the
+inspection available. See `jmix-ide-static-analysis`.
 
 ## Cross-cutting checklist for a new entity / view
 
