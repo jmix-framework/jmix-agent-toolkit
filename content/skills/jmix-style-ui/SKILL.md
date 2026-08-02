@@ -70,6 +70,24 @@ badge.getElement().getThemeList().addAll(List.of("badge", "pill"));   // Vaadin 
 attribute joins entries with spaces) but stores one bogus entry, so a later
 `remove("pill")` or `contains("badge")` silently does nothing.
 
+**A variant name is theme-specific, exactly like a token.** A `*Variant` constant
+is only a string the theme has to style: `ButtonVariant.LUMO_TERTIARY_INLINE`
+sets `theme="tertiary-inline"`, Aura has no rule for that name, and the call
+therefore does nothing — the button keeps its default background, border, and
+shadow. One enum holds all the families — `LUMO_*`, `AURA_*`, and theme-neutral
+constants (`PRIMARY`, `TERTIARY`, `SUCCESS`, `WARNING`, `ERROR`, `SMALL`,
+`LARGE`) — and they all compile the same. Prefer the theme-neutral constant, and
+confirm the active theme styles the name it maps to:
+
+```bash
+JAR=$(find ~/.gradle/caches -name 'vaadin-aura-theme-*.jar' | grep -v sources | tail -1)
+unzip -p "$JAR" 'META-INF/resources/aura/aura.css' | grep -oE 'theme~=[a-z-]+' | sort -u
+```
+
+In Aura 25.1 and 25.2 that list has `primary` and `tertiary` but NOT
+`tertiary-inline`, `icon`, or `contrast` — three names a Lumo-era call site is
+likely to carry. (`icon-button` is a different name, not a match for `icon`.)
+
 **3. Inline `getStyle().set(...)` — last resort.** Correct for a one-off dynamic
 value (a color computed from data, a width from a measurement), not for a look
 that repeats across components:
@@ -200,9 +218,22 @@ inherited value — that difference is the check. Do the same for
 `borderRadius`/`borderColor` when you set them. If no browser tool is available,
 say `styling not browser-verified` rather than calling it done.
 
+The same check catches a dead theme variant, because a variant the theme does not
+style computes exactly like the component with no variant at all:
+
+```js
+getComputedStyle(document.querySelector('#orderButton')).backgroundColor
+```
+
+Under Aura a working `tertiary` gives `rgba(0, 0, 0, 0)`; a name the theme never
+styles gives the default button fill. Compare against a plain component of the
+same type — if the two match, the variant did nothing.
+
 ## Forbidden
 
 - `--lumo-*` tokens in an Aura app, or `--aura-*` in a Lumo app.
+- A `LUMO_*` theme variant in an Aura app (or `AURA_*` in a Lumo app) whose
+  variant string the active theme does not style — it compiles and does nothing.
 - A guessed token name — confirm it in the active theme's stylesheet first.
 - Inline `getStyle().set(...)` for a look that a component theme variant or a
   reusable CSS class already provides.
