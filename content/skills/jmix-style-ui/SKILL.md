@@ -185,41 +185,13 @@ So the defect survives `compileJava`, the Jmix inspection, and a green
 `clean test`. The rendering is merely wrong — no exception, no warning, nothing in
 the log.
 
-## When the component paints to a canvas — no token can reach it
-
-Everything above assumes the value ends up as a CSS declaration on a DOM
-element. Some components do not work that way: chart and diagram add-ons draw
-into an HTML `<canvas>` and hand their colour options to a JavaScript drawing API
-as plain strings. The browser never parses those strings as CSS, so
-`var(--aura-accent-color)` is not resolved — it arrives at the drawing API as an
-unrecognised colour and the mark is painted in an unspecified or transparent
-colour. The token existing changes nothing, and no gate says a word.
-
-So decide which kind of target you have BEFORE reaching for a token:
-
-| Target | Token works? |
-|---|---|
-| a CSS rule, `classNames`, `getStyle().set(...)` | yes |
-| a component option passed to a canvas drawing API (chart series colour, diagram node fill) | **no** |
-
-Read the add-on's frontend module before assuming it resolves CSS — if it never
-calls `getComputedStyle` or `getPropertyValue`, it cannot:
-
-```bash
-JAR=$(find ~/.gradle/caches -name 'jmix-charts-flowui-kit-*.jar' | grep -v sources | tail -1)
-unzip -p "$JAR" 'META-INF/frontend/src/chart/jmix-chart.js' | grep -c 'getComputedStyle\|getPropertyValue\|var('
-```
-
-For the canvas case, pick one:
-
-1. **The component's own palette API** — most chart add-ons accept a colour
-   palette, which keeps one place to change.
-2. **A literal colour**, chosen to be legible on both the light and the dark
-   surface, since the component will not follow a theme switch either.
-3. **Resolve the token in JavaScript and pass the resulting string in** — read it
-   once with
-   `getComputedStyle(document.documentElement).getPropertyValue('--aura-accent-color')`
-   and hand the returned colour to the component.
+**A token cannot reach a component that paints to a canvas.** Uncommon, but it
+fails the same silent way: chart and diagram add-ons pass their colour options to
+a JavaScript drawing API as plain strings, which the browser never parses as CSS,
+so `var(...)` is left unresolved. When the target is a component option rather
+than CSS, use a literal colour, the component's own palette API, or a value you
+resolved yourself with
+`getComputedStyle(document.documentElement).getPropertyValue('--aura-accent-color')`.
 
 ## Verify — the COMPUTED style, in a browser
 
@@ -234,19 +206,14 @@ getComputedStyle(document.querySelector('#statusLabel')).color
 A resolved token gives a real color (`rgb(...)`); an undefined one gives the
 inherited value — that difference is the check. Do the same for
 `borderRadius`/`borderColor` when you set them. If no browser tool is available,
-say `styling not browser-verified` rather than calling it done.
-
-This check exists only for a value that became a CSS declaration. A component
-that paints to a canvas has no element carrying the value, so there is nothing to
-read — check the painted colour in the rendered page instead, and see the canvas
-section above.
+say `styling not browser-verified` rather than calling it done. A canvas-painting
+component has no element to read — judge its colour from the rendered page.
 
 ## Forbidden
 
 - `--lumo-*` tokens in an Aura app, or `--aura-*` in a Lumo app.
 - A guessed token name — confirm it in the active theme's stylesheet first.
-- A `var(...)` token in a component option that a canvas drawing API consumes —
-  it is never resolved; see the canvas section.
+- A `var(...)` token in a component option that a canvas drawing API consumes.
 - Inline `getStyle().set(...)` for a look that a component theme variant or a
   reusable CSS class already provides.
 - A repeated inline style across several components instead of one CSS class in
