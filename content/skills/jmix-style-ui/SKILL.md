@@ -97,16 +97,22 @@ JMIX=...    # jmix-flowui-themes-<jmix version>.jar
 unzip -p "$JAR" 'META-INF/resources/aura/aura.css' \
   | grep -ohE "theme~=['\"]?[a-z0-9-]+" | sed -E "s/theme~=['\"]?//" | sort -u
 
-# 2. the Jmix layer (JmixAura.STYLESHEET) — ~120 files, values quoted
-unzip -p "$JMIX" 'META-INF/resources/themes/jmix-aura/*.css' \
-  | grep -ohE "theme~=['\"]?[a-z0-9-]+" | sed -E "s/theme~=['\"]?//" | sort -u
+# 2. the Jmix layer (JmixAura.STYLESHEET) — ~120 files, values quoted.
+# Extract, then grep: a member glob is not portable, because on Windows unzip a
+# '*' does not cross '/', so 'META-INF/resources/themes/jmix-aura/*.css' matches
+# only the top-level file and prints nothing. Same reason the whole jar comes
+# out, not just the theme folder — it is under 1 MB.
+DIR=$(mktemp -d)
+unzip -oq "$JMIX" -d "$DIR"
+grep -rhoE "theme~=['\"]?[a-z0-9-]+" "$DIR/META-INF/resources/themes/jmix-aura" \
+  | sed -E "s/theme~=['\"]?//" | sort -u
 ```
 
-Under Lumo the same two greps read `META-INF/resources/lumo/lumo.css` in
-`vaadin-lumo-theme-*.jar` and `themes/jmix-lumo/*.css` in the same Jmix jar. If
-`unzip` answers `filename not matched`, that jar has no such folder — Jmix 2.x
-ships `jmix-lumo` only, so check the version you picked. A third place a name can
-be styled is the project's own theme CSS — grep that folder too.
+Under Lumo the same two commands read `META-INF/resources/lumo/lumo.css` in
+`vaadin-lumo-theme-*.jar` and the extracted `themes/jmix-lumo` folder from the
+same Jmix jar. If grep reports the folder does not exist, check the version you
+picked — Jmix 2.x ships `jmix-lumo` only. A third place a name can be styled is
+the project's own theme CSS — grep that folder too.
 
 Across both layers (Aura 25.1/25.2 with Jmix 3.0/3.1) `primary` and `tertiary`
 are styled, but `tertiary-inline` appears in neither — a name a Lumo-era call site
