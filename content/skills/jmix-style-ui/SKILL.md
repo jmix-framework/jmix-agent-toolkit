@@ -63,7 +63,7 @@ Do not re-implement a badge or a size variant with hand-written CSS:
 
 ```java
 avatar.addThemeVariants(AvatarVariant.LARGE);
-badge.getElement().getThemeList().addAll(List.of("badge", "pill"));   // Vaadin badge theme
+badge.getElement().getThemeList().addAll(List.of("badge", "pill"));   // badge theme: Vaadin's under Lumo, Jmix's under Aura
 ```
 
 `ThemeList` holds single tokens — `add("badge pill")` happens to render (the
@@ -79,14 +79,44 @@ constants (`PRIMARY`, `TERTIARY`, `SUCCESS`, `WARNING`, `ERROR`, `SMALL`,
 `LARGE`) — and they all compile the same. Prefer the theme-neutral constant, and
 confirm the active theme styles the name it maps to:
 
+**Grep every stylesheet the app declares, not just the Vaadin one.** A Jmix app
+loads `Aura.STYLESHEET` *and* `JmixAura.STYLESHEET`, and each layer brings its own
+`[theme~=...]` rules, so a name missing from one may be styled by the other. The
+`badge` and `pill` above are exactly that case: they come from the Jmix layer, and
+a grep of the Vaadin jar alone reports them as unstyled.
+
 ```bash
-JAR=$(find ~/.gradle/caches -name 'vaadin-aura-theme-*.jar' | grep -v sources | tail -1)
-unzip -p "$JAR" 'META-INF/resources/aura/aura.css' | grep -oE 'theme~=[a-z-]+' | sort -u
+# the cache usually holds several versions — list them and set the two variables
+# to the ones matching the project's Vaadin and Jmix versions
+find ~/.gradle/caches \( -name 'vaadin-aura-theme-*.jar' \
+  -o -name 'jmix-flowui-themes-*.jar' \) ! -name '*-sources.jar'
+JAR=...     # vaadin-aura-theme-<vaadin version>.jar
+JMIX=...    # jmix-flowui-themes-<jmix version>.jar
+
+# 1. the Vaadin layer (Aura.STYLESHEET) — one file, values unquoted
+unzip -p "$JAR" 'META-INF/resources/aura/aura.css' \
+  | grep -ohE "theme~=['\"]?[a-z0-9-]+" | sed -E "s/theme~=['\"]?//" | sort -u
+
+# 2. the Jmix layer (JmixAura.STYLESHEET) — ~120 files, values quoted
+unzip -p "$JMIX" 'META-INF/resources/themes/jmix-aura/*.css' \
+  | grep -ohE "theme~=['\"]?[a-z0-9-]+" | sed -E "s/theme~=['\"]?//" | sort -u
 ```
 
-In Aura 25.1 and 25.2 that list has `primary` and `tertiary` but NOT
-`tertiary-inline`, `icon`, or `contrast` — three names a Lumo-era call site is
-likely to carry. (`icon-button` is a different name, not a match for `icon`.)
+Under Lumo the same two greps read `META-INF/resources/lumo/lumo.css` in
+`vaadin-lumo-theme-*.jar` and `themes/jmix-lumo/*.css` in the same Jmix jar. If
+`unzip` answers `filename not matched`, that jar has no such folder — Jmix 2.x
+ships `jmix-lumo` only, so check the version you picked. A third place a name can
+be styled is the project's own theme CSS — grep that folder too.
+
+Across both layers (Aura 25.1/25.2 with Jmix 3.0/3.1) `primary` and `tertiary`
+are styled, but `tertiary-inline` appears in neither — a name a Lumo-era call site
+is likely to carry.
+
+**Read the selector, not just the name.** A hit does not mean the variant works on
+your component. In the Jmix layer `contrast` exists only as
+`[theme~='badge'][theme~='contrast']` and `icon` only on one specific menu bar, so
+on a plain button both still do nothing. (`icon-button` is a different name, not a
+match for `icon`.)
 
 **3. Inline `getStyle().set(...)` — last resort.** Correct for a one-off dynamic
 value (a color computed from data, a width from a measurement), not for a look
