@@ -117,11 +117,36 @@ If you do have one, run the mechanical checks first, then:
    never becomes ready, tail the log, skip Gate 3, and shut the process down.
 3. With your browser/UI-automation tool, navigate to each view you created, click
    each button/action, fill each field, and confirm no error overlay or server
-   exception.
+   exception. A Jmix UI is a Vaadin web-component UI, so it does not respond to a
+   browser tool the way a plain HTML page does — see the next section.
 4. **Shut the background app down** when finished (`kill` the bootRun PID; if the
    port stays held, kill whatever holds it). Always leave the port free, and state
    in your report which database the walk ran against and what data it created
    there.
+
+### Driving a Jmix/Vaadin UI
+
+The page is built from `vaadin-*` custom elements, rendered by a client that keeps
+running after the HTTP response is done. Four consequences, each of which otherwise
+costs several failed tool calls:
+
+- **Wait for the client to render before you look.** The first screenshot or
+  snapshot right after navigation is routinely blank or half-built, because the
+  Vaadin client is still rendering. Retry until the content you expect is present;
+  never read "blank page" as a render failure on the first attempt.
+- **Refs go stale after every action.** Element handles from an accessibility
+  snapshot are invalidated by the next click, dialog, or grid reload. Retake the
+  snapshot immediately before each interaction instead of reusing refs captured
+  earlier in the walk.
+- **Role/name locators often miss `vaadin-*` components.** A locator such as
+  `getByRole('button', {name: 'OK'})` may not resolve against a `vaadin-button`.
+  Prefer a ref from the current snapshot; when a component exposes no usable role,
+  fall back to a DOM query on its tag name and visible text.
+- **A disabled action is usually a precondition, not a defect.** Jmix and add-on
+  actions enable on selection or on entity state — a grid action needs its row
+  selected, and an add-on action may need another step first (in the Quartz jobs
+  view, for example, Remove stays disabled until the selected job is paused).
+  Check the precondition before reporting the action as broken.
 
 ## Honest scope — Gate 3 is a render gate
 
