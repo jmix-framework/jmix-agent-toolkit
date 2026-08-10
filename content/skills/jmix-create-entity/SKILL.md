@@ -224,6 +224,20 @@ pattern see `jmix-add-entity-event-listener`.
 | Default set in an `EntityChangedEvent` listener    | The listener fires AFTER persist — too late for `@NotNull`. It reacts to saves; it does not default them. |
 | Default set only in the calling UI controller      | Programmatic paths (services, REST, tests) bypass it. |
 
+## Accessors
+
+Match what the project's entities already do. A codebase where every entity carries
+`@Getter @Setter` is a working configuration — the enhancer runs over those classes
+and the suite passes — so writing the one new entity with hand-written accessors
+makes it the odd one out for a breakage that does not occur. In a project with
+hand-written accessors, write them by hand.
+
+What is genuinely unsafe is the value-semantics group, not accessors: see the first
+"Forbidden" bullet.
+
+Nothing catches the inconsistency. Compilation, the IDE inspection and a green
+`clean test` all pass either way.
+
 ## Composition Checklist
 
 For parent-child aggregates:
@@ -305,7 +319,7 @@ Apply common Java validation and persistence mappings when the field semantics a
 
 - Missing `@JmixEntity`.
 - Constructor-based entity creation.
-- Lombok annotations (`@Data`, `@Getter`, `@Setter`, etc.) on Jmix entities — they interfere with the entity enhancer and break JPA/Jmix metadata.
+- `@Data`, `@EqualsAndHashCode` or `@ToString` on a Jmix entity: they generate `equals`/`hashCode`/`toString` over mutable persistent fields, replacing the identity semantics the framework relies on and touching lazy references while doing it. (Plain `@Getter`/`@Setter` only generate accessors — see "Accessors" below.)
 - `FetchType.EAGER`.
 - Missing Liquibase changelog for persistent changes.
 - A required `@ManyToOne` with `optional = false` but no `@JoinColumn(nullable = false)` — the metamodel then treats it as optional and the UI does not require it.
