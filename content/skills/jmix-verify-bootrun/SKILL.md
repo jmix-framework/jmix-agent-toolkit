@@ -117,7 +117,14 @@ If you do have one, run the mechanical checks first, then:
    never becomes ready, tail the log, skip Gate 3, and shut the process down.
 3. With your browser/UI-automation tool, navigate to each view you created, click
    each button/action, fill each field, and confirm no error overlay or server
-   exception.
+   exception. Drive the walk **only through real input events** — a genuine click,
+   real typing, `Enter`. Never assign a component's `.value` or set a component
+   property from the page or console: in a server-driven UI the server holds the
+   component state, so a scripted mutation never reaches it and can desync the
+   session, silently invalidating the gate (the app bounces to the login view
+   mid-walk with nothing in the browser console, so it reads as an environment
+   problem rather than a self-inflicted one). Reading the DOM to assert what
+   rendered is fine; mutating it is not.
 4. **Shut the background app down** when finished (`kill` the bootRun PID; if the
    port stays held, kill whatever holds it). Always leave the port free, and state
    in your report which database the walk ran against and what data it created
