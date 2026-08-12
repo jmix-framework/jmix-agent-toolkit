@@ -104,6 +104,13 @@ landed.
 
 If you do have one, run the mechanical checks first, then:
 
+**If the application is already running** — the owner started it, possibly on a
+non-default port — take that base URL and port as given, do the walk against it,
+and do NOT run steps 1, 2 or 4: never start a second instance, and never shut down
+a process you do not own (the "leave the port free" in step 4 is only for the case
+where you started it yourself). Note in the report that the app was not started by
+the gate. The numbered steps below are for when you start and own the process.
+
 1. Start the app in the BACKGROUND so it does not block your turn, capturing its
    log — e.g. `nohup ./gradlew --no-daemon bootRun > /tmp/jmix_app.log 2>&1 &`,
    adding the datasource override above unless the walk is read-only.
