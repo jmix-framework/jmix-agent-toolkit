@@ -154,6 +154,7 @@ Before finishing, check:
 - The test command can run one class or method without running the full suite.
 - No `@Transactional` on the test class or methods — it rolls back the writes that `@AfterEach` cleanup and the twice-back-to-back run depend on.
 - Run the single class twice back-to-back — a second green run proves no leaked rows or cross-test data dependence that one pass hides.
+- `@AfterEach` deletions run in FK-safe order: child rows (holding a `@ManyToOne`/`@JoinColumn` to another cleaned-up entity) before the parents they reference. Re-check this whenever a new FK is added to an entity already covered by an existing cleanup block — a previously-safe order can silently become unsafe and throw a constraint violation in teardown, which JUnit reports against the test that triggered it rather than the cleanup, so it first reads as a test bug rather than an ordering one.
 - An in-memory datasource with a FIXED name (`jdbc:hsqldb:mem:<fixed>`) is shared for the whole JVM/test run across every `@SpringBootTest` context that resolves to it — it is NOT reset per class or per method (HSQLDB's `mem:` catalog is registered by name for the JVM's lifetime). So `@AfterEach` cleanup is mandatory even for a test that only reads, or a later test in the same run sees its leftover rows; and a test that calls the same method twice to prove idempotency must not assume a fresh precondition between the two calls — set up explicitly the precondition the code under test actually checks.
 
 ## Forbidden
