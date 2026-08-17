@@ -117,7 +117,9 @@ If you do have one, run the mechanical checks first, then:
    never becomes ready, tail the log, skip Gate 3, and shut the process down.
 3. With your browser/UI-automation tool, navigate to each view you created, click
    each button/action, fill each field, and confirm no error overlay or server
-   exception. Drive the walk **only through real input events** — a genuine click,
+   exception. A Jmix UI is a Vaadin web-component UI, so it does not respond to a
+   browser tool the way a plain HTML page does — see the next section.
+   Drive the walk **only through real input events** — a genuine click,
    real typing, `Enter`. Never assign a component's `.value` or set a component
    property from the page or console: in a server-driven UI the server holds the
    component state, so a scripted mutation never reaches it and can desync the
@@ -125,10 +127,26 @@ If you do have one, run the mechanical checks first, then:
    mid-walk with nothing in the browser console, so it reads as an environment
    problem rather than a self-inflicted one). Reading the DOM to assert what
    rendered is fine; mutating it is not.
+   exception. 
 4. **Shut the background app down** when finished (`kill` the bootRun PID; if the
    port stays held, kill whatever holds it). Always leave the port free, and state
    in your report which database the walk ran against and what data it created
    there.
+
+### Driving a Jmix/Vaadin UI
+
+The page is built from `vaadin-*` custom elements, rendered by a client that keeps
+working after the HTTP response is done:
+
+- **Wait for the client to render before you look.** The first snapshot or
+  screenshot after navigation is routinely blank; retry until the expected content
+  is there instead of reporting a render failure.
+- **Refs go stale after every action.** Retake the snapshot immediately before each
+  interaction rather than reusing refs captured earlier in the walk.
+- **Role/name locators often miss `vaadin-*` components.** Prefer a ref from the
+  current snapshot, falling back to a DOM query on tag name and visible text.
+- **A disabled action is usually a precondition, not a defect.** Jmix actions enable
+  on state — find and satisfy what this one waits for before reporting it broken.
 
 ## Honest scope — Gate 3 is a render gate
 
