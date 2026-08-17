@@ -36,6 +36,7 @@ Use this skill for every persistent entity or schema change.
 | OffsetDateTime / ZonedDateTime | `timestamp with time zone` |
 | `@Lob` String (unlimited text) | `clob` |
 | `@Lob` byte[] | `blob` |
+| FileRef | `varchar(1024)` |
 | Enum id string | `varchar(50)` |
 
 An entity with an **assigned natural key** takes the id column type of its Java
