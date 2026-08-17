@@ -185,13 +185,15 @@ So the defect survives `compileJava`, the Jmix inspection, and a green
 `clean test`. The rendering is merely wrong — no exception, no warning, nothing in
 the log.
 
-**A token cannot reach a component that paints to a canvas.** Uncommon, but it
-fails the same silent way: chart and diagram add-ons pass their colour options to
-a JavaScript drawing API as plain strings, which the browser never parses as CSS,
-so `var(...)` is left unresolved. When the target is a component option rather
-than CSS, use a literal colour, the component's own palette API, or a value you
-resolved yourself with
-`getComputedStyle(document.documentElement).getPropertyValue('--aura-accent-color')`.
+**CSS tokens do not resolve automatically in drawing APIs.** Some chart,
+diagram, or other components paint to a `<canvas>` and pass colour options
+directly to a JavaScript drawing API. Such APIs do not interpret `var(...)` as
+CSS. Before passing a theme token to a component option, check whether the
+component resolves CSS custom properties itself. If it does not, use the
+component's palette/theme API, a literal colour, or resolve the custom
+property first (for example with
+`getComputedStyle(...).getPropertyValue(...)`) and pass the resulting colour
+value.
 
 ## Verify — the COMPUTED style, in a browser
 
@@ -206,14 +208,20 @@ getComputedStyle(document.querySelector('#statusLabel')).color
 A resolved token gives a real color (`rgb(...)`); an undefined one gives the
 inherited value — that difference is the check. Do the same for
 `borderRadius`/`borderColor` when you set them. If no browser tool is available,
-say `styling not browser-verified` rather than calling it done. A canvas-painting
-component has no element to read — judge its colour from the rendered page.
+say `styling not browser-verified` rather than calling it done.
+
+This check applies only when the value becomes a CSS declaration. If a
+component passes the value directly to a drawing API, there may be no
+corresponding computed style to inspect; verify the rendered result and, when
+necessary, inspect the component's frontend implementation to confirm whether it
+resolves CSS custom properties.
 
 ## Forbidden
 
 - `--lumo-*` tokens in an Aura app, or `--aura-*` in a Lumo app.
 - A guessed token name — confirm it in the active theme's stylesheet first.
-- A `var(...)` token in a component option that a canvas drawing API consumes.
+- Passing `var(...)` to a component option consumed directly by a drawing API
+  unless the component explicitly resolves CSS custom properties before drawing.
 - Inline `getStyle().set(...)` for a look that a component theme variant or a
   reusable CSS class already provides.
 - A repeated inline style across several components instead of one CSS class in
