@@ -298,6 +298,19 @@ Add audit fields with the Spring Data annotations from `org.springframework.data
 
 Non-persistent derived attributes use `@JmixProperty` + `@Transient` + `@DependsOnProperties({"a", "b"})` (`@JmixProperty` from `io.jmix.core.metamodel.annotation`). The same applies to an `@InstanceName` method: it must carry `@DependsOnProperties` listing every attribute it reads so they are fetched.
 
+## File attributes
+
+Use `FileRef` for an uploaded file reference. The JPA converter is applied automatically:
+
+```java
+import io.jmix.core.FileRef;
+
+@Column(name = "SCAN_FILE", length = 1024)
+private FileRef scanFile;
+```
+
+Map the matching Liquibase column as `varchar(1024)`.
+
 ## Embeddable, Inheritance, and Data Stores
 
 - `@Embeddable` value objects (still annotated `@JmixEntity`) are supported, as are JPA inheritance strategies (`@Inheritance` with `JOINED`, `SINGLE_TABLE`, or `TABLE_PER_CLASS`).
