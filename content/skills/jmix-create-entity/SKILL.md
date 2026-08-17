@@ -232,12 +232,6 @@ and the suite passes — so writing the one new entity with hand-written accesso
 makes it the odd one out for a breakage that does not occur. In a project with
 hand-written accessors, write them by hand.
 
-What is genuinely unsafe is the value-semantics group, not accessors: see the first
-"Forbidden" bullet.
-
-Nothing catches the inconsistency. Compilation, the IDE inspection and a green
-`clean test` all pass either way.
-
 ## Composition Checklist
 
 For parent-child aggregates:
@@ -319,7 +313,7 @@ Apply common Java validation and persistence mappings when the field semantics a
 
 - Missing `@JmixEntity`.
 - Constructor-based entity creation.
-- `@Data`, `@EqualsAndHashCode` or `@ToString` on a Jmix entity: they generate `equals`/`hashCode`/`toString` over mutable persistent fields, replacing the identity semantics the framework relies on and touching lazy references while doing it. (Plain `@Getter`/`@Setter` only generate accessors — see "Accessors" below.)
+- `@Data`, `@EqualsAndHashCode` or `@ToString` on a Jmix entity: they generate `equals`/`hashCode`/`toString` over mutable persistent fields, replacing the identity semantics the framework relies on and touching lazy references while doing it.
 - `FetchType.EAGER`.
 - Missing Liquibase changelog for persistent changes.
 - A required `@ManyToOne` with `optional = false` but no `@JoinColumn(nullable = false)` — the metamodel then treats it as optional and the UI does not require it.
