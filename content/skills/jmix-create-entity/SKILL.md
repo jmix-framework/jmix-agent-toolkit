@@ -153,6 +153,33 @@ It breaks Studio round-tripping and the code-as-source-of-truth convention, and 
 is found by nothing but this check. Do it as you write the column, not as a later
 audit.
 
+### Make it unique when the column is a natural key
+
+For a single-column natural key that must be unique, add `unique = true` to the
+`@Index` and mirror it with `unique="true"` on the `<createIndex>`:
+
+```java
+@Table(name = "DEPARTMENT", indexes = @Index(
+        name = "IDX_DEPARTMENT_ON_NAME", columnList = "NAME", unique = true))
+```
+
+```xml
+<createIndex indexName="IDX_DEPARTMENT_ON_NAME" tableName="DEPARTMENT" unique="true">
+    <column name="NAME"/>
+</createIndex>
+```
+
+For a rule that spans several columns, use a unique **constraint** rather than a
+unique index — `@Table(uniqueConstraints = @UniqueConstraint(name = "UK_ORDER_LINE",
+columnNames = {"ORDER_ID", "PRODUCT_ID"}))` paired with `<addUniqueConstraint
+tableName="ORDER_LINE" columnNames="ORDER_ID, PRODUCT_ID"
+constraintName="UK_ORDER_LINE"/>`. Same name on both sides, as above.
+
+One rule neither can express: a **case-insensitive** uniqueness constraint cannot be
+declared with `@Index`/`@UniqueConstraint` at all — it needs a functional index on
+`lower(column)` and dialect-specific SQL, so decide it at design time, not when
+writing the changelog.
+
 ## Required-field defaults — at the ENTITY layer, not elsewhere
 
 When a required field "defaults to X" or is "auto-set on create/update"
