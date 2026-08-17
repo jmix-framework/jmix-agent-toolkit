@@ -34,8 +34,40 @@ and executed.
 Gate-2 check.** bootRun does not exit — it hangs your turn and leaves the HTTP
 port locked by a zombie process. bootRun is not a gate; Gate 2 is `clean test`.
 
-If a seed test is RED after your changes, YOU broke it — fix it to green. Do
-not call a red `clean test` "pre-existing".
+### When the first Gate 2 failure hides the real cause
+
+The Gradle console tail may show only a wrapper exception such as
+`RuntimeException at HikariConfig.java:514`. Read the generated JUnit XML before
+diagnosing the failure:
+
+```bash
+rg -n -C 3 "Failed to load driver class|Caused by" \
+  build/test-results/test/*.xml
+```
+
+One known failure in a freshly generated project is:
+
+```text
+Failed to load driver class org.hsqldb.jdbc.JDBCDriver in either of
+HikariConfig class loader or Thread context classloader
+```
+
+If `src/test/resources/application-test.properties` configures HSQLDB but
+`build.gradle` declares only the production database driver, the test runtime is
+incomplete. Add the HSQLDB test-runtime driver:
+
+```groovy
+testRuntimeOnly 'org.hsqldb:hsqldb'
+```
+
+Then rerun `./gradlew --no-daemon clean test`. Do not change the test datasource
+or investigate unrelated application code when the XML report shows this exact
+missing-driver failure.
+
+If the test suite passed before your changes and a seed test is now RED, assume
+you broke it and fix it to green. Do not call that failure "pre-existing". On the
+first Gate 2 run of a freshly generated project, inspect the JUnit XML and build
+dependencies before deciding whether your changes caused the failure.
 
 A green Gate 2 is necessary but NOT sufficient: the seed tests load the context
 but do NOT open your new views, exercise your new roles, or fire code that only
