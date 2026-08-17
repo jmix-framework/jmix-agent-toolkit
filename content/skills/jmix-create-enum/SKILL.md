@@ -88,14 +88,7 @@ grep -rn "implements .*EnumClass" src/main/java --include='*.java' | head
 If one exists and its `getId()` returns `name()`, **match it**. The `.name()`
 prohibition below is about not introducing that scheme into a project that has no
 id convention yet — it is not a reason to make one new enum the only member of a
-family with a different id scheme. Two enums serialized side by side into the same
-column with different schemes is worse than either scheme applied consistently.
-
-The tradeoff of a `name()`-based id is real, so note it where the base interface is
-declared: renaming a constant becomes a data migration.
-
-Nothing catches this either way. The metamodel accepts both, and a green
-`clean test` says nothing about consistency with the enums already in the project.
+family with a different id scheme.
 
 ## Forbidden
 
