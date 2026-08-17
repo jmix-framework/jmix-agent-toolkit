@@ -60,18 +60,12 @@ class CustomerServiceTest {
 
     @AfterEach
     void tearDown() {
-        cleanup.forEach(dataManager::remove);
+        cleanup.forEach((entity) -> dataManager.load(Id.of(entity)).optional().ifPresent(dataManager::remove));
     }
 }
 ```
 
-Add the instance **returned** by `dataManager.save()` to the cleanup list — not the pre-save argument — so `remove` targets the persisted entity.
-
-This holds only while nothing under test saves that same entity again. When the code under test (a service method, an entity event listener) may call `dataManager.save()` on the registered entity a second time, the held reference goes stale — its version lags the database — and `remove` in `@AfterEach` throws an optimistic-lock exception, leaving the row behind to fail the next test. In that case track the id instead and reload-then-remove:
-
-```java
-dataManager.load(Customer.class).id(customerId).optional().ifPresent(dataManager::remove);
-```
+When the code under test (a service method, an entity event listener) may call `dataManager.save()` on the registered entity a second time, the reference in the cleanup list goes stale — its version lags the database — and `remove` in `@AfterEach` throws an optimistic-lock exception. So use the id to reload-then-remove.
 
 ## Security Test Pattern
 
@@ -155,7 +149,7 @@ Use Masquerade/Selenide or the project's browser-test stack when browser verific
 Before finishing, check:
 
 - Every created persistent record is removed in `@AfterEach`, using the same authentication level needed for deletion.
-- No cleanup entry holds a stale reference: if anything under test may save a registered entity again, cleanup tracks the id and reload-then-removes it instead of holding the returned instance.
+- Cleanup reloads by id then removes instead of removing the instance that can be stale.
 - Test data has unique values to avoid collisions.
 - Assertions verify persisted or visible behavior, not just absence of exceptions.
 - The test command can run one class or method without running the full suite.
