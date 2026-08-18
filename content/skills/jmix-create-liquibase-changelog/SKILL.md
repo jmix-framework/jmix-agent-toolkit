@@ -45,6 +45,12 @@ An entity with an **assigned natural key** takes the id column type of its Java
 field — `bigint` for a `Long` id, not `${uuid.type}`. See `jmix-create-entity`
 (Id strategy).
 
+An entity extending a framework `@MappedSuperclass` inherits its key, and usually
+a version and a tenant column with it. No field in the subclass names them, but
+the table must still create them: read the superclass and take each inherited
+column's name and type from there — do not assume `${uuid.type}` for the primary
+key, these base classes are commonly keyed by an `int`.
+
 ## Entity Table Skeleton
 
 ```xml
