@@ -101,7 +101,7 @@ READ the most specific skill for each artifact:
 - Fetch plans / unfetched-reference / N+1 tuning: `jmix-configure-fetch-plan`
 - DTO / non-persistent UI-bound model: `jmix-create-dto-entity`
 - Reusable Flow UI fragment: `jmix-create-fragment`
-- Component styling / theme tokens (`--aura-*`, `--lumo-*`) / CSS classes: `jmix-style-ui`
+- Component styling / theme tokens (`--lumo-*`, `--vaadin-*`) / `themeNames` / CSS classes: `jmix-style-ui`
 
 ## A skill's framework rule beats sample code in a plan or brief
 

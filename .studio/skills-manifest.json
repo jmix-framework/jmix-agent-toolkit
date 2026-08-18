@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sha256": "a091a7796ef1b64c0e4b6b54b4c1aee9a4a35720681e837c5eaa616606a37571",
+  "sha256": "98fcf697c8cab24575e89e0876b018ab48ac2280186c7115a409e70526becc25",
   "skills": [
     "jmix-add-dialog-detail-flow",
     "jmix-add-entity-event-listener",
@@ -19,6 +19,7 @@
     "jmix-create-test",
     "jmix-ide-static-analysis",
     "jmix-run-background-code",
+    "jmix-style-ui",
     "jmix-verify-api-symbol",
     "jmix-verify-bootrun"
   ],
