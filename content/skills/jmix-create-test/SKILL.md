@@ -99,6 +99,56 @@ class CustomerUiTest {
 
 Use the project's helper for component lookup if it exists. Otherwise keep a local typed helper small and explicit. A `@UiTest` that navigates to a view will fail to find it if the view's id or the component id is wrong — the test, not just `compileJava`, is what catches that.
 
+**Authenticate as a database user when behavior depends on the current user.** By
+default, `@UiTest` uses the system user. The system user is created at application
+startup and has no row in the application's user table. Code that resolves the
+current user through `DataManager` or the user repository therefore finds no
+entity and can silently take a "not the current user" branch. Wrap navigation,
+interaction, and assertions in `runWithUser` so the whole UI operation uses a
+real test user:
+
+```java
+systemAuthenticator.runWithUser("admin", () -> {
+    viewNavigators.detailView(UiTestUtils.getCurrentView(), Order.class)
+            .editEntity(order)
+            .navigate();
+    OrderDetailView view = UiTestUtils.getCurrentView();
+    JmixButton approveButton = UiTestUtils.getComponent(view, "approveButton");
+    assertThat(approveButton.isVisible()).isTrue();
+});
+```
+
+Use `withUser` instead when the authenticated block returns a value. This is
+separate from testing security policies: authenticate whenever the result
+depends on which application user is looking at the data.
+
+**Select an inactive `tabSheet` tab before clicking its components.** Component
+lookup and `@ViewComponent` injection can find a component on a non-selected tab,
+but that tab's content is detached. Vaadin treats the detached component as
+disabled, so `Button.click()` is a silent no-op and does not call its subscribed
+handler. To test the component interaction, select the tab first:
+
+```java
+JmixTabSheet tabSheet = UiTestUtils.getComponent(view, "orderTabSheet");
+JmixButton approveButton = UiTestUtils.getComponent(view, "approveButton");
+
+tabSheet.setSelectedIndex(1); // attach the tab that contains approveButton
+approveButton.click();
+```
+
+If the test targets only the server-side handler, fire the event directly and
+state why the component is detached:
+
+```java
+// The button is on an inactive tab; invoke the server-side handler directly.
+ComponentUtil.fireEvent(approveButton, new ClickEvent<>(approveButton));
+```
+
+Direct event firing does not prove that the tab selection and browser click path
+work. A silent `click()` on a detached component also does not prove that the
+button is broken in a browser. Use a browser test when that client-side path is
+the behavior under test.
+
 **List a nested `@TestConfiguration` in `classes` explicitly.** Do not rely on the
 usual "a static `@TestConfiguration` inside the test class is picked up
 automatically" behaviour once `@SpringBootTest(classes = {...})` names an explicit
@@ -152,6 +202,8 @@ Before finishing, check:
 - Cleanup reloads by id then removes instead of removing the instance that can be stale.
 - Test data has unique values to avoid collisions.
 - Assertions verify persisted or visible behavior, not just absence of exceptions.
+- UI tests that depend on who is viewing the data authenticate as a real database user around navigation, interaction, and assertions.
+- UI tests select the containing `tabSheet` tab before calling `click()` on a component in that tab, unless they intentionally fire the server-side event directly and explain why.
 - The test command can run one class or method without running the full suite.
 - No `@Transactional` on the test class or methods — it rolls back the writes that `@AfterEach` cleanup and the twice-back-to-back run depend on.
 - Run the single class twice back-to-back — a second green run proves no leaked rows or cross-test data dependence that one pass hides.
@@ -166,6 +218,8 @@ Before finishing, check:
 - Tests that depend on data left by previous tests.
 - Cleanup only at the end of the test method.
 - UI tests that assert only that navigation did not throw.
+- Calling `click()` on a component in a non-selected `tabSheet` tab and treating the silent no-op as evidence about browser behavior.
+- Leaving `@UiTest` as the system user when the behavior depends on resolving the current user from the database.
 - Browser tests for behavior that `@UiTest` or service tests can prove.
 - Hardcoded sleeps when framework waits or component assertions are available.
 - `@WithUserDetails` for Jmix security tests when `SystemAuthenticator` or the project auth extension is available.
