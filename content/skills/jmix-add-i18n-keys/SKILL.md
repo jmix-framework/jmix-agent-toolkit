@@ -114,7 +114,12 @@ For localized entity/attribute captions (not bundle-key formatting), inject `io.
 
 ## Exact Reference Audit
 
-Before finishing, search changed XML and Java for message references and verify the keys exist in the correct bundle with identical casing.
+Before finishing, perform both audit passes below.
+
+### 1. Verify references
+
+Search changed XML and Java for message references and verify the keys exist in
+the correct bundle with identical casing.
 
 ```xml
 <button id="createOrderButton" text="msg://createOrderButton.text"/>
@@ -126,6 +131,28 @@ createOrderButton.text=Create order
 
 Do not rely on similar casing such as `CreateOrderButton.text` or `createorderButton.text`.
 
+### 2. Verify translated values
+
+When `jmix.core.available-locales` does not include `en`, read every complete
+`messages_<locale>.properties` file, not only the lines changed during the task.
+Project templates can contain English values under keys that resolve correctly,
+so the reference audit does not detect them. Check seed keys for the login view,
+main view, menu, and user entity as well as newly added keys.
+
+For a locale that normally uses non-Latin text, use this search to find likely
+English values left from the template:
+
+```bash
+rg -n '^[^#=]+=[\x00-\x7F]+$' \
+  -g 'messages_<locale>.properties' src/main/resources
+```
+
+Review every match; this is a heuristic, not proof of an error. Product names,
+URLs, abbreviations, numbers, and intentionally untranslated technical terms can
+be valid. Values such as `MainView.title=App`, `User=User`, or
+`loginForm.username=Username` usually require translation in a non-English-only
+application.
+
 ## Forbidden
 
 - Hardcoded user-visible text in XML or Java controllers.
@@ -136,3 +163,5 @@ Do not rely on similar casing such as `CreateOrderButton.text` or `createorderBu
 - `${0}` placeholders in `formatMessage`; use Java formatter placeholders such as `%s`.
 - Copies of framework or add-on message bundles created before checking for an
   official `jmix-translations-<lang>` artifact.
+- English template values left in a non-English-only application bundle without
+  explicit review.
