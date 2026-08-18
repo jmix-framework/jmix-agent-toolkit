@@ -97,6 +97,15 @@ merely needs to be UNIQUE, which is a unique index on an ordinary column, not an
 id. Match the Liquibase column type to the Java type (`bigint` for `Long`, not
 `${uuid.type}`).
 
+**Inherited key from a framework `@MappedSuperclass`** — when the entity extends a
+base class the framework ships (the application-settings base, and other add-on
+base classes), the key is declared there already. Write NO `@Id`, no
+`@JmixGeneratedValue` and no `@Version` on the subclass. Read that superclass
+before writing the changelog: it decides the id column's name AND type — an `int`
+or `bigint` key is common there, so `${uuid.type}` is the wrong default — and it
+often contributes further columns (a version, a tenant column) that the table must
+still create even though no field in the subclass mentions them.
+
 ## Required references — BOTH annotations, or the field is not really required
 
 A required `@ManyToOne` needs the constraint in two places:
