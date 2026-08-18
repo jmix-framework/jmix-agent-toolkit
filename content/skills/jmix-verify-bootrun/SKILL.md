@@ -156,8 +156,11 @@ the gate. The numbered steps below are for when you start and own the process.
    never becomes ready, tail the log, skip Gate 3, and shut the process down.
 3. With your browser/UI-automation tool, navigate to each view you created, click
    each button/action, fill each field, and confirm no error overlay or server
-   exception. A Jmix UI is a Vaadin web-component UI, so it does not respond to a
-   browser tool the way a plain HTML page does — see the next section.
+   exception. If the application accepts file uploads, select and upload a real
+   file through the browser, then confirm the UI reports success and the file can
+   be opened or otherwise read back.
+   A Jmix UI is a Vaadin web-component UI, so it does not respond to a browser
+   tool the way a plain HTML page does — see the next section.
    Drive the walk **only through real input events** — a genuine click,
    real typing, `Enter`. Never assign a component's `.value` or set a component
    property from the page or console: in a server-driven UI the server holds the
@@ -186,6 +189,20 @@ working after the HTTP response is done:
   current snapshot, falling back to a DOM query on tag name and visible text.
 - **A disabled action is usually a precondition, not a defect.** Jmix actions enable
   on state — find and satisfy what this one waits for before reporting it broken.
+
+### File uploads in a non-root container
+
+If the deliverable includes a container image, a local upload does not verify the
+container filesystem permissions. Run the upload check against the built image or
+the deployed application.
+
+For an image that runs as a non-root `app` user with `/app` as its working
+directory, create the Jmix temporary directory and give the application user
+ownership before switching to that user:
+
+```dockerfile
+RUN mkdir -p /app/.jmix/temp && chown -R app:app /app/.jmix
+```
 
 ## Honest scope — Gate 3 is a render gate
 
