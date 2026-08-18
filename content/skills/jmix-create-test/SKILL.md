@@ -99,6 +99,10 @@ class CustomerUiTest {
 
 Use the project's helper for component lookup if it exists. Otherwise keep a local typed helper small and explicit. A `@UiTest` that navigates to a view will fail to find it if the view's id or the component id is wrong — the test, not just `compileJava`, is what catches that.
 
+`UiTestUtils.getCurrentView()` works as the navigation origin even before the
+test navigates anywhere: `@UiTest` opens the initial view before each test, so a
+current view always exists.
+
 **Authenticate as a database user when behavior depends on the current user.** By
 default, `@UiTest` uses the system user. The system user is created at application
 startup and has no row in the application's user table. Code that resolves the
@@ -122,22 +126,33 @@ Use `withUser` instead when the authenticated block returns a value. This is
 separate from testing security policies: authenticate whenever the result
 depends on which application user is looking at the data.
 
+`runWithUser` inside the test body cannot cover code that runs before the test:
+`@UiTest` opens the initial/main view first, still as the system user. When that
+view's code resolves the current user — or every test in the class needs the
+same real user — implement `UiTestAuthenticator` and pass it in
+`@UiTest(authenticator = ...)` so the whole class, including the initial view,
+runs as that user.
+
 **Select an inactive `tabSheet` tab before clicking its components.** Component
 lookup and `@ViewComponent` injection can find a component on a non-selected tab,
-but that tab's content is detached. Vaadin treats the detached component as
-disabled, so `Button.click()` is a silent no-op and does not call its subscribed
-handler. To test the component interaction, select the tab first:
+but `JmixTabSheet` explicitly disables the content of every non-selected tab
+(and attaches it to the component tree only when its tab is first selected).
+`Button.click()` checks `isEnabled()` first, so on that content it is a silent
+no-op and does not call its subscribed handler. This is specific to inactive tab
+content — a merely detached component, such as one built in a controller and not
+yet added anywhere, clicks normally. To test the component interaction, select
+the tab first:
 
 ```java
 JmixTabSheet tabSheet = UiTestUtils.getComponent(view, "orderTabSheet");
 JmixButton approveButton = UiTestUtils.getComponent(view, "approveButton");
 
-tabSheet.setSelectedIndex(1); // attach the tab that contains approveButton
+tabSheet.setSelectedIndex(1); // enable the tab content that contains approveButton
 approveButton.click();
 ```
 
 If the test targets only the server-side handler, fire the event directly and
-state why the component is detached:
+state why you bypass the disabled component:
 
 ```java
 // The button is on an inactive tab; invoke the server-side handler directly.
@@ -145,7 +160,7 @@ ComponentUtil.fireEvent(approveButton, new ClickEvent<>(approveButton));
 ```
 
 Direct event firing does not prove that the tab selection and browser click path
-work. A silent `click()` on a detached component also does not prove that the
+work. A silent `click()` on the disabled content also does not prove that the
 button is broken in a browser. Use a browser test when that client-side path is
 the behavior under test.
 
