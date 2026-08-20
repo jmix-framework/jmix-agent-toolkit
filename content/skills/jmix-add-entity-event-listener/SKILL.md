@@ -132,6 +132,41 @@ public void onOrderLineChanged(EntityChangedEvent<OrderLine> event) {
 
 For `EntitySavingEvent` and `EntityLoadingEvent`, read and write only local attributes of the event entity. Do not assume referenced entities are loaded or that loading references inside an `EntityLoadingEvent` will cascade loading events predictably.
 
+### Reading a reference you nevertheless need
+
+Inside `EntitySavingEvent` an unloaded reference does NOT lazy-load — the getter
+throws. That is an exception to the ordinary rule (outside the save path a reference
+missing from the fetch plan is lazy-loaded and only local attributes throw), so code
+written from the general rule fails here.
+
+This also rules out the obvious workaround: `dataManager.load(Category.class)
+.id(order.getCategory().getId())` never runs, because `order.getCategory()` throws
+first. `entity.getRef().getId()` is not a safe way to learn a reference's id — it
+needs the reference loaded.
+
+```java
+@EventListener
+public void onOrderSaving(EntitySavingEvent<Order> event) {
+    Order order = event.getEntity();
+    Category category = entityStates.isLoaded(order, "category")
+            ? order.getCategory()
+            : dataManager.load(Order.class).id(order.getId())
+                    .fetchPlan(fp -> fp.addFetchPlan(FetchPlan.BASE)
+                            .add("category", FetchPlan.BASE))
+                    .optional().map(Order::getCategory).orElse(null);
+    // ... use category, keep working with `order`
+}
+```
+
+Read the reference OUT of the separately loaded instance and keep using the event's
+entity. Do NOT continue with the reloaded copy and do not merge it back: it carries
+what is in the database and overwrites values set in memory but not yet saved. Fetch
+references one at a time for the same reason.
+
+This defect hides for a long time: entities being saved usually arrive with their
+references loaded, and it surfaces only when some caller loads the entity under a plan
+that omits one.
+
 ## Forbidden
 
 - Wrong event import packages such as `io.jmix.core.entity.EntityChangedEvent`; use `io.jmix.core.event.EntityChangedEvent`.
