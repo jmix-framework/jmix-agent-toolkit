@@ -268,6 +268,30 @@ and the suite passes — so writing the one new entity with hand-written accesso
 makes it the odd one out for a breakage that does not occur. In a project with
 hand-written accessors, write them by hand.
 
+## A NEW entity needs a full `clean test` first
+
+After adding a new `@JmixEntity`, make the FIRST run a full `./gradlew clean test`.
+A targeted `test --tests '*Something*'` can execute against a stale build result, and
+then every test in the class fails at context load with a message that names the new
+entity:
+
+```
+IllegalArgumentException: MetaClass not found for class com.company.app.entity.Department
+    at io.jmix.security.impl.role.builder.extractor.PolicyExtractorUtils.getEntityNameByEntityClass
+```
+
+The same `clean test`, with no edit at all, is green.
+
+This matters because the two documented causes of `MetaClass not found` — a missing
+`@JmixEntity`, a package outside the scan root — are both FALSE here, so following
+them sends you to "repair" code that is already correct. The frame it surfaces from
+(role building) adds to the illusion by making it look like a broken security policy.
+The same symptom has also appeared without any new entity, after a source file was
+rewritten wholesale, naming an entity that had not been touched.
+
+Third cause for that list: **a stale build. Confirmed by one `clean test`; requires no
+code change.**
+
 ## Composition Checklist
 
 For parent-child aggregates:
