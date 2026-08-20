@@ -238,6 +238,31 @@ public void onClick(final ClickEvent<JmixButton> event) { ... }
 
 Do NOT respond to this error by changing the `InputParameter` type (`intParameter`/`stringParameter`/`withType`/parse) — that is a different layer and leaves the click broken. Fix the handler param to `ClickEvent<JmixButton>` first. (`InputParameter.intParameter("q")` is the correct scalar form; do not switch to `stringParameter` + `Integer.parseInt`.)
 
+## Whose data context does the dialog use
+
+Whether the dialog's Save writes to the database at once or merges into the opening
+view depends on how the dialog was opened — and the default is the immediate write:
+
+| opened with | parent context | what Save does |
+| --- | --- | --- |
+| `.withParentDataContext(ctx)` | yes | merges into the parent; reaches the DB when the parent is saved |
+| from a collection container (`withContainer`, and the standard `list_create` / `list_edit`) | yes | same |
+| from a value-source field (`withField`) | yes | same |
+| none of the above — plain `DialogWindows.detail(...)` | **no** | writes to the database immediately; Cancel upstream no longer undoes it |
+
+So opening someone else's entity from your view with a plain
+`DialogWindows.detail(this, Customer.class).editEntity(customer)` is NOT part of the
+opener's transaction: Save commits, and a later Cancel on the opening view leaves that
+commit in place.
+
+- Independent on purpose: open without `withContainer` / `withField` /
+  `withParentDataContext`, and refresh the opener by reloading its loader in
+  `withAfterCloseListener` — not by attaching a container.
+- Atomic with the parent: pass `.withParentDataContext(...)` explicitly.
+
+Subordination through a container only takes effect when the opening view itself has a
+writable `DataContext`.
+
 ## Forbidden
 
 - Raw Vaadin `Dialog` for entity create/edit flows.
