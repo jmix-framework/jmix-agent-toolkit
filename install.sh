@@ -237,7 +237,9 @@ Common options:
                              (deduped: .bak, .bak1, .bak2, ...) instead of
                              deleting them. Off by default. Guidelines files
                              (CLAUDE.md / AGENTS.md / guidelines.md) are always
-                             backed up regardless of this flag.
+                             backed up regardless of this flag -- unless their
+                             content is already identical, in which case they
+                             are left untouched.
   --verbose, --debug         Print extra diagnostic output (OS, PATH, resolved
                              paths, tool versions) to help troubleshoot problems.
   -h, --help                 Show this help.
@@ -525,6 +527,14 @@ install_agents_md_for() {
     label="$(agent_label "$agent")"
 
     [ -f "$SOURCE_AGENTS_MD" ] || die "AGENTS.md not found in ${RESOLVED_VERSION_DIR}"
+
+    # Identical content: leave the file alone entirely — no backup, no rewrite,
+    # no change marker (issue #22).
+    if [ -f "$dest" ] && cmp -s "$SOURCE_AGENTS_MD" "$dest"; then
+        log "  Unchanged: ${dest}"
+        log "  Project guidelines already up to date for ${label}"
+        return 0
+    fi
 
     local dest_dir
     dest_dir="$(dirname "$dest")"

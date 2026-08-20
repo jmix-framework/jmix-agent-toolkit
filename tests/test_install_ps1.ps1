@@ -107,6 +107,15 @@ Check (Test-Path (Join-Path $proj 'CLAUDE.md.bak1')) 'agents-md: second backup d
 Check ((Get-Content -Raw (Join-Path $proj 'CLAUDE.md.bak')) -eq 'sentinel-1') 'agents-md: dedup did not overwrite earlier .bak'
 Check ((Get-Content -Raw (Join-Path $proj 'CLAUDE.md.bak1')) -eq 'sentinel-2') 'agents-md: .bak1 has correct content'
 
+# Unchanged content: the file is left completely alone -- no new backup and no
+# rewrite (issue #22). CLAUDE.md currently equals content/AGENTS.md.
+$mtimeBefore = (Get-Item -LiteralPath (Join-Path $proj 'CLAUDE.md')).LastWriteTimeUtc
+Start-Sleep -Seconds 1
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check (-not (Test-Path (Join-Path $proj 'CLAUDE.md.bak2'))) 'agents-md: unchanged CLAUDE.md not backed up'
+Check ((Get-Item -LiteralPath (Join-Path $proj 'CLAUDE.md')).LastWriteTimeUtc -eq $mtimeBefore) `
+    'agents-md: unchanged CLAUDE.md not rewritten'
+
 # ---------------------------------------------------------------------------
 # 2. skills, local scope -- must succeed without symlink privilege
 #    (junction on Windows / symlink on Unix), so the assertions run unconditionally.

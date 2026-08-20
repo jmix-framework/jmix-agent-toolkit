@@ -23,7 +23,8 @@
     Add -BackupExistingFiles to any subcommand to rename overwritten files/dirs
     to <name>.bak (deduped: .bak, .bak1, .bak2, ...) instead of deleting them.
     Guidelines files (CLAUDE.md / AGENTS.md / guidelines.md) are always backed
-    up regardless of this switch.
+    up regardless of this switch -- unless their content is already identical,
+    in which case they are left untouched.
 
 .PARAMETER Subcommand
     Optional subcommand. When omitted, the interactive wizard is started.
@@ -49,7 +50,8 @@
     When set, an existing destination file or folder is renamed to a deduped
     <name>.bak (then .bak1, .bak2, ... if that name is taken) instead of being
     deleted before the new content is copied. Off by default. Guidelines files
-    are always backed up regardless of this switch.
+    are always backed up regardless of this switch -- unless their content is
+    already identical, in which case they are left untouched.
 
 .EXAMPLE
     Invoke-RestMethod https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/HEAD/install.ps1 | Invoke-Expression
@@ -505,6 +507,16 @@ function Install-AgentsMdFor {
 
     if (-not (Test-Path $script:SourceAgentsMd)) {
         Write-ErrAndExit "AGENTS.md not found in $($script:ResolvedVersionDir)"
+    }
+
+    # Identical content: leave the file alone entirely - no backup, no rewrite,
+    # no change marker (issue #22).
+    if ((Test-Path -LiteralPath $dest -PathType Leaf) -and
+        (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash -eq
+        (Get-FileHash -LiteralPath $script:SourceAgentsMd -Algorithm SHA256).Hash) {
+        Write-Info "  Unchanged: $dest"
+        Write-Info "  Project guidelines already up to date for $label"
+        return
     }
 
     $destDir = Split-Path -Parent $dest
