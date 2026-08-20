@@ -107,6 +107,7 @@ Symbols commonly invented. NEVER type these — verify first:
 | `dialogs.createDetailView(this, entity, View.class)` | use `dialogWindows.detail(this, EntityClass.class).editEntity(entity).withViewClass(View.class)` |
 | `dataGrid.addItemChangeListener(...)`                | use `addSelectionListener(...)` or `asSingleSelect().addValueChangeListener(...)` |
 | `dataGrid.getSingleSelected()`                       | use `getSingleSelectedItem()`                                |
+| an add-on entity's JPQL name derived from its class name (`audit_EntityLogItem`) | actual: `audit_EntityLog` — an add-on entity's name comes from `@Entity(name = ...)` and need not match the class name; read it from the jar (step 3). Its neighbours `LoggedEntity` and `EntityLogAttr` DO match, so checking two of them and generalising gets the third one wrong |
 
 ## Cost vs benefit
 
