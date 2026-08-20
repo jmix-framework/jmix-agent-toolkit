@@ -109,6 +109,20 @@ Use normal Spring `@EventListener` for logic that must affect the current save/r
 
 `@TransactionalEventListener` is for after-transaction reactions such as notifications or integration events. Do not use it when failure must roll back or reject the current persistence operation.
 
+`EntityChangedEvent` (before commit) is delivered AFTER the SQL flush. If the write
+being validated can itself violate a database constraint, the constraint error is
+raised first and the listener never runs. The invariant still holds — the save is
+rejected either way — but two things follow:
+
+- the user gets a raw database error instead of the listener's explanation, so
+  validation of this kind must not rely on its own message reaching anyone; catch
+  `DataIntegrityViolationException` on the calling side and translate it, or accept
+  both outcomes;
+- tests for such a listener must use data where the constraint provably cannot fire.
+  Otherwise the test asserts the listener's message and gets whichever arrives first,
+  turning green or red depending on what neighbouring tests have already consumed —
+  green on a targeted run, red on a full `clean test`.
+
 Use `EntityChangedEvent.Type.DELETED` to detect deletes. Deleted entity instances cannot be loaded by `event.getEntityId()` because they have already been removed, so delete-side logic must use the old values and old reference ids available from `event.getChanges()`.
 
 For `Type.DELETED`, `event.getChanges()` snapshots every non-read-only property of the entity with its last-known pre-delete value — unlike `Type.UPDATED`, where only actually-mutated attributes appear. So `getOldValue(name)` works for scalar (non-reference) attributes too, and references come back as ids:
