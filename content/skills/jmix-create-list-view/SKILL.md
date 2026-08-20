@@ -226,6 +226,39 @@ The same holds for every overridden view lifecycle method (`beforeEnter`,
 `afterNavigation`): do your work, then call `super`, on every code path. An
 early `return` before `super` is the defect.
 
+## Column widths — `rem` or px, never `em`
+
+```xml
+<column property="number" width="9rem"/>   <!-- RIGHT -->
+<column property="number" width="9em"/>    <!-- WRONG: header and body drift apart -->
+```
+
+`em` resolves against the font size of the element it is applied to, and the Lumo
+theme deliberately sets the grid header smaller than the body
+(`--lumo-font-size-s` 14px against `--lumo-font-size-m` 16px). The same `9em` becomes
+126px in the header and 144px in the body — 8/7 per column, accumulating rightwards
+until the last column is off by a wide margin. Vaadin documents this on Grid:
+"Using the em length unit is discouraged as it might lead to misalignment issues if
+the header, body, and footer cells have different font sizes. Instead, use rem."
+
+The defect hides itself on narrow tables — the first columns line up — so a small
+grid gives no warning that the rule was broken.
+
+### Saved column settings outrank the descriptor
+
+`<settings auto="true"/>` persists width, order and visibility per user. Those saved
+values are applied OVER the descriptor on open, they carry no version marker, and
+editing the descriptor does not invalidate them. So after changing a width, the
+change is visible only to users who never opened that list.
+
+The symptom is indistinguishable from "the deployment did not arrive": new value in
+the source, old value on screen. And it disables verification — **until the saved
+settings are cleared, checking a width change in the browser proves nothing**, which
+makes a correct change look broken and invites a second "fix" of working code.
+
+After changing width, order or the set of columns, clear the stored settings for that
+view (`FLOWUI_USER_SETTINGS`) before verifying.
+
 ## Forbidden
 
 - Declaring actions without visible buttons or another reachable UI trigger.
@@ -239,3 +272,5 @@ early `return` before `super` is the defect.
 - Adding menu policy for dialog-only detail views.
 - A load delegate returning `LoadContext` instead of `List<E>` (the query never runs; the grid is empty at open).
 - An overridden `beforeEnter` that does not call `super.beforeEnter(event)` on every path (the auto-load never fires; the grid is empty).
+- `<column width="…em">` — header and body resolve `em` against different font sizes and drift apart.
+- Verifying a column-width change in the browser without clearing saved user settings first — the check returns a false negative.
