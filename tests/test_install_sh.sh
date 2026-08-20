@@ -54,6 +54,16 @@ bash "$INSTALL" agents-md --agents claude --source "$SOURCE" >/dev/null
 [ "$(cat "${PROJECT}/CLAUDE.md.bak1")" = "sentinel-2" ] || fail "agents-md: .bak1 has wrong content"
 pass "agents-md always backs up guidelines with deduped .bak/.bak1 names"
 
+# Unchanged content: the file is left completely alone -- no new backup and no
+# rewrite (issue #22). CLAUDE.md currently equals content/AGENTS.md.
+sleep 1
+touch "${PROJECT}/.mtime-ref"
+bash "$INSTALL" agents-md --agents claude --source "$SOURCE" >/dev/null
+[ ! -e "${PROJECT}/CLAUDE.md.bak2" ] || fail "agents-md: unchanged guidelines file was backed up"
+[ ! "${PROJECT}/CLAUDE.md" -nt "${PROJECT}/.mtime-ref" ] || fail "agents-md: unchanged guidelines file was rewritten"
+rm -f "${PROJECT}/.mtime-ref"
+pass "agents-md leaves guidelines untouched when content is identical"
+
 # ---------------------------------------------------------------------------
 # 2. skills, local scope (per-skill symlinks into agent dirs)
 # ---------------------------------------------------------------------------
