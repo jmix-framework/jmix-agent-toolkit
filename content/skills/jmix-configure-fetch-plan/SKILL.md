@@ -74,6 +74,40 @@ This is easy to miss because the one-argument form is perfectly correct for a
 argument: `FetchPlan.INSTANCE_NAME` when a grid or caption shows the reference,
 `FetchPlan.BASE` when code reads its other attributes.
 
+### A dotted path `add("a.b", PLAN)` leaves `a` without its own attributes
+
+```java
+.add("product.supplier", FetchPlan.BASE)          // WRONG if you also read product's own fields
+.add("product", p -> p.addFetchPlan(FetchPlan.BASE)
+        .add("supplier", FetchPlan.BASE))         // RIGHT
+```
+
+A dotted path pulls the intermediate reference in only as a HOLDER for the nested
+attribute. `product` enters the plan for the sake of `supplier`, and its own
+attributes are NOT loaded — so the first read of `product.getName()` throws the same
+`Cannot get unfetched attribute` as the one-argument form above. Read it as
+"product at a minimum, plus its supplier", not "product in full, plus its supplier".
+
+**Tests routinely miss this.** Wherever the same data arrives under a default plan the
+intermediate reference carries its `@InstanceName` attribute, so a test that reads
+exactly that attribute passes for a reason unrelated to the plan — and keeps passing
+until the first code path that specifies a plan explicitly.
+
+### What a missing attribute does depends on its KIND
+
+| missing from the plan | behaviour |
+| --- | --- |
+| a local (scalar) attribute | `IllegalStateException: Cannot get unfetched attribute` — no rescue |
+| a reference, ordinary code | lazy-loaded: a silent extra SELECT per row, and the reference arrives with all its local attributes |
+| a reference, inside `EntitySavingEvent` | `IllegalStateException` — lazy loading is not available there |
+
+Two consequences. References rescue themselves and scalars do not, which is why a
+dotted path hurts through the intermediate entity's OWN fields while the chain itself
+survives. And putting a reference in the plan WRONGLY is worse than leaving it out:
+left out it lazy-loads and works (at the cost of N+1); added with an empty nested plan
+— one-argument `.add`, or as a dotted-path holder — it becomes a partial instance that
+throws.
+
 ### Single-table inheritance — a base-class load does not fetch subclass attributes
 
 Given an abstract `Payment` with concrete subclasses `CardPayment` and
