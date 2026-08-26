@@ -61,9 +61,7 @@ For anything NOT already in the project, verify it before you type it:
 
    Every cached jar on one classpath, so you need not know which artifact owns the
    class (`-p` also lists non-public members). `javap` ships inside the JDK and is
-   often NOT on `PATH` — call it as `$JAVA_HOME/bin/javap`, otherwise the bare
-   command fails with "command not found" and this check reads as unavailable,
-   which sends the agent back to guessing.
+   often NOT on `PATH` — call it as `$JAVA_HOME/bin/javap`.
 
    **Read the version the project resolves, not the newest one cached.** Whenever
    verification reads a framework artifact — a jar, an XSD, a sources archive —
@@ -79,14 +77,9 @@ For anything NOT already in the project, verify it before you type it:
    Find a real call site in the wider codebase or a reference app and copy its
    exact shape — useful when the symbol IS used somewhere, but blind when it is
    new to the project (use step 3 then).
-
-   A grep HIT proves the symbol exists; a grep MISS proves nothing. This bites on
-   OVERLOADS: when the class is already called in the project, this step looks like
-   it answered while it cannot tell whether the overload you need exists. The two
-   wrong guesses are not symmetrical — "the overload surely exists" fails at
-   `compileJava`, while "no call site, so no such method" compiles clean and leaves
-   a silent detour no gate catches. Whenever the question is *which overloads
-   exist*, use step 3.
+   A grep HIT proves the symbol exists; a grep MISS proves nothing. Use step 3 
+   whenever the question is "which overloads exist" — including when the class is 
+   already called elsewhere in the project.
 
 Never invent and ship. If nothing confirms a symbol, do not type it — pick one you
 CAN confirm, or omit the optional decoration (e.g. drop an icon attribute rather
