@@ -88,26 +88,6 @@ attributes are NOT loaded — so the first read of `product.getName()` throws th
 `Cannot get unfetched attribute` as the one-argument form above. Read it as
 "product at a minimum, plus its supplier", not "product in full, plus its supplier".
 
-**Tests routinely miss this.** Wherever the same data arrives under a default plan the
-intermediate reference carries its `@InstanceName` attribute, so a test that reads
-exactly that attribute passes for a reason unrelated to the plan — and keeps passing
-until the first code path that specifies a plan explicitly.
-
-### What a missing attribute does depends on its KIND
-
-| missing from the plan | behaviour |
-| --- | --- |
-| a local (scalar) attribute | `IllegalStateException: Cannot get unfetched attribute` — no rescue |
-| a reference, ordinary code | lazy-loaded: a silent extra SELECT per row, and the reference arrives with all its local attributes |
-| a reference, inside `EntitySavingEvent` | `IllegalStateException` — lazy loading is not available there |
-
-Two consequences. References rescue themselves and scalars do not, which is why a
-dotted path hurts through the intermediate entity's OWN fields while the chain itself
-survives. And putting a reference in the plan WRONGLY is worse than leaving it out:
-left out it lazy-loads and works (at the cost of N+1); added with an empty nested plan
-— one-argument `.add`, or as a dotted-path holder — it becomes a partial instance that
-throws.
-
 ### Single-table inheritance — a base-class load does not fetch subclass attributes
 
 Given an abstract `Payment` with concrete subclasses `CardPayment` and
@@ -187,6 +167,14 @@ NullPointerException: Cannot invoke "java.util.Collection.toArray()" because "c"
 ## JmixDataRepository
 
 Select the plan in one of two ways: pass a `FetchPlan` as the **last** method argument, or annotate the method with `@FetchPlan("name")` (`io.jmix.core.repository.FetchPlan`). A plain `String` parameter is bound as an ordinary query parameter, NOT a plan selector. Build complex plans with the `FetchPlans` bean: `fetchPlans.builder(Order.class).addFetchPlan(FetchPlan.BASE).add("customer", FetchPlan.INSTANCE_NAME).build()`.
+
+## What a missing attribute does depends on its KIND
+
+| missing from the plan | behaviour |
+| --- | --- |
+| a local (scalar) attribute | `IllegalStateException: Cannot get unfetched attribute` — no rescue |
+| a reference, ordinary code | lazy-loaded: a silent extra SELECT per row, and the reference arrives with all its local attributes |
+| a reference, inside `EntitySavingEvent` | `IllegalStateException` — lazy loading is not available there |
 
 ## Partial Entity Audit
 
