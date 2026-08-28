@@ -160,12 +160,7 @@ public void onOrderSaving(EntitySavingEvent<Order> event) {
 
 Read the reference OUT of the separately loaded instance and keep using the event's
 entity. Do NOT continue with the reloaded copy and do not merge it back: it carries
-what is in the database and overwrites values set in memory but not yet saved. Fetch
-references one at a time for the same reason.
-
-This defect hides for a long time: entities being saved usually arrive with their
-references loaded, and it surfaces only when some caller loads the entity under a plan
-that omits one.
+what is in the database and overwrites values set in memory but not yet saved.
 
 ## Forbidden
 
