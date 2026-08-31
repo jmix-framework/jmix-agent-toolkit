@@ -39,6 +39,25 @@ read-only even at creation (e.g. auto-generated audit fields), exclude them from
 `attributes` list or use a second `VIEW` policy for that subset — NOT a blanket
 `VIEW` on `*`.
 
+## Where attribute policies are enforced
+
+An attribute policy is enforced by the Flow UI value bindings and grid columns,
+and by `EntitySerialization` — NOT by `DataManager`. The data layer checks
+entity-level and row-level rules only. So a service, a scheduled job, or a custom
+controller running under the role's session persists an attribute the role was
+never granted, with no error. Guard the non-granted attributes in that code
+yourself; the policy will not do it for you.
+
+Two consequences of the additive model belong here too, because each bypasses a
+carefully drawn attribute boundary rather than breaking it:
+
+- The boundary holds only for a principal whose ASSIGNED ROLES IN TOTAL grant no
+  more. A narrow attribute policy stacked on a role granting `*` is not a narrow
+  policy.
+- Treat the datatools entity inspector as outside the boundary unless someone has
+  verified that it honours attribute policies. Do not grant it to a role whose
+  attribute boundary matters.
+
 ## Requirement wording → policy actions
 
 Map the EXACT wording of the requirement to entity-policy actions. Re-read the
@@ -206,6 +225,7 @@ group itself and the project's security checks use that group id.
 - `EntityPolicyAction.ALL` when update/delete are not required.
 - `UPDATE` or `DELETE` entity actions for immutable or create-only records.
 - Entity create permission without `MODIFY` attribute permission for editable fields.
+- Datatools entity inspector access for a role that relies on a narrow attribute policy.
 - View policies only for list views while create/edit dialogs use detail views.
 - Menu policy for a parent group when the user needs access to concrete menu items.
 - Menu policy for views that are not menu entries.
