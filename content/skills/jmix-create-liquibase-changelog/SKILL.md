@@ -217,35 +217,25 @@ If the project uses explicit includes instead of `includeAll`, follow that exist
 
 Some projects keep a BASELINE alongside the dated migrations: one changelog that
 creates every table for a fresh database, and usually a second one that adds every
-FK and index (`010-init-entities.xml` / `020-init-constraints.xml`, or whatever the
-project calls them). A fresh database builds the schema from the baseline and then
-MARK_RANs the dated migrations through their own preconditions, instead of replaying
-years of history — many dated changesets are dialect-specific SQL, dedup passes or
-backfills that only make sense on a populated database.
+FK and index. A fresh database builds the schema from the baseline and MARK_RANs the
+dated migrations through their own preconditions, instead of replaying years of
+history.
 
-Read the root `changelog.xml` and look at what else it includes. Two signs you are
-looking at a baseline: it creates tables that predate the current release, and its
-changesets carry `<validCheckSum>ANY</validCheckSum>`. That marker is there so the
-baseline can be APPENDED TO in place — it is the one exception to "never edit an
-applied changeset", and it exists exactly because the baseline has to keep matching
-the model.
+Read the root `changelog.xml` and look at what else it includes. Two signs of a
+baseline: it creates tables that predate the current release, and its changesets carry
+`<validCheckSum>ANY</validCheckSum>`. That marker is there so the baseline can be
+APPENDED TO in place — it is the one exception to "never edit an applied changeset".
 
 When a project has one, a schema change lands in both places, in the same commit:
 
 - the dated migration — for databases that already exist;
-- the baseline — add the `createTable` (or the new `<column>` on the table's existing
-  `createTable`) INSIDE the existing changeset, next to the related tables; add the FK
-  and each index as a NEW changeset with the next free id in the constraints changelog,
-  following that file's own pattern (`MARK_RAN` preconditions such as `tableExists` and
-  `not foreignKeyConstraintExists`, `CREATE UNIQUE INDEX IF NOT EXISTS` for indexes).
+- the baseline — put the `createTable` (or a new `<column>` on the table's existing
+  `createTable`) INSIDE the existing changeset, next to related tables; add the FK and
+  each index as a NEW changeset in the constraints changelog, following that file's own
+  pattern.
 
 Keep every name identical across the dated file, the baseline and the entity's
 `@Table(indexes = ...)`.
-
-Nothing catches this drift. The dated file alone creates the table on an empty
-database, so `compileJava`, a clean test and a Liquibase idempotency test all pass
-with a stale baseline; the failure surfaces later, in a migration that assumes the
-baseline is complete.
 
 ## Jmix add-on changelogs
 
