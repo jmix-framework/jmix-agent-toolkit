@@ -26,7 +26,9 @@ Use this skill when business logic must react to entity save, change, delete, or
 12. Search the changed code for `@TransactionalEventListener`; if the listener performs validation, rejects updates/deletes, sets required defaults, or performs required synchronous side effects, replace it with `@EventListener` plus `EntitySavingEvent`/`EntityChangedEvent` or another before-commit path.
 13. Add tests or at least compile/startup validation for the event listener.
 
-## EntityChangedEvent Listener Template
+## EntityChangedEvent
+
+### Listener Template
 
 ```java
 import io.jmix.core.DataManager;
@@ -76,7 +78,7 @@ public class LedgerEntryEventListener {
 }
 ```
 
-## Fetch Plan Safety
+### Fetch Plan Safety
 
 For non-deleted events, the loaded entity should contain every property the listener reads. The safest default is loading by event id with the normal plan:
 
@@ -98,7 +100,7 @@ ledgerService.apply(entry.getAccount().getId(), entry.getAmount(), entry.getType
 
 After writing the listener, scan the method: every `entry.getX()` used after loading must be available in the fetch plan.
 
-## Event Timing
+### Event Timing
 
 Use normal Spring `@EventListener` for logic that must affect the current save/remove operation:
 
@@ -111,17 +113,7 @@ Use normal Spring `@EventListener` for logic that must affect the current save/r
 
 `EntityChangedEvent` (before commit) is delivered AFTER the SQL flush. If the write
 being validated can itself violate a database constraint, the constraint error is
-raised first and the listener never runs. The invariant still holds — the save is
-rejected either way — but two things follow:
-
-- the user gets a raw database error instead of the listener's explanation, so
-  validation of this kind must not rely on its own message reaching anyone; catch
-  `DataIntegrityViolationException` on the calling side and translate it, or accept
-  both outcomes;
-- tests for such a listener must use data where the constraint provably cannot fire.
-  Otherwise the test asserts the listener's message and gets whichever arrives first,
-  turning green or red depending on what neighbouring tests have already consumed —
-  green on a targeted run, red on a full `clean test`.
+raised first and the listener never runs.
 
 Use `EntityChangedEvent.Type.DELETED` to detect deletes. Deleted entity instances cannot be loaded by `event.getEntityId()` because they have already been removed, so delete-side logic must use the old values and old reference ids available from `event.getChanges()`.
 
