@@ -241,27 +241,45 @@ Do NOT respond to this error by changing the `InputParameter` type (`intParamete
 ## Whose data context does the dialog use
 
 Whether the dialog's Save writes to the database at once or merges into the opening
-view depends on how the dialog was opened — and the default is the immediate write:
+view depends on how the dialog was opened. The default is the immediate write, and
+`@Composition` on the attribute is what switches it off:
 
 | opened with | parent context | what Save does |
 | --- | --- | --- |
 | `.withParentDataContext(ctx)` | yes | merges into the parent; reaches the DB when the parent is saved |
-| from a collection container (`withContainer`, and the standard `list_create` / `list_edit`) | yes | same |
-| from a value-source field (`withField`) | yes | same |
+| a property-bound `<collection property="x"/>` container where `x` has `@Composition` — passed via `withContainer`, or through `list_create` / `list_edit` on a grid bound to that container | yes | same |
+| a field whose value source is a `@Composition` reference (`withField`, one-to-one composition) | yes | same |
+| a standalone container with a loader — this is the usual list view, including its standard `list_create` / `list_edit` | **no** | writes to the database immediately; the saved entity is then merged into the opener's `DataContext` for tracking only |
+| a property-bound container or a field whose attribute is a plain association (**no** `@Composition`) | **no** | same as above |
 | none of the above — plain `DialogWindows.detail(...)` | **no** | writes to the database immediately; Cancel upstream no longer undoes it |
+
+Passing a container or a field is not by itself enough. The framework sets a parent data
+context only for `@Composition` attributes: a property-bound container whose master
+property is annotated, or a field bound to an annotated reference. Without the
+annotation the dialog saves straight to the database, even though you passed the
+container.
 
 So opening someone else's entity from your view with a plain
 `DialogWindows.detail(this, Customer.class).editEntity(customer)` is NOT part of the
 opener's transaction: Save commits, and a later Cancel on the opening view leaves that
-commit in place.
+commit in place. The same is true of `list_create` in an ordinary list view.
 
 - Independent on purpose: open without `withContainer` / `withField` /
   `withParentDataContext`, and refresh the opener by reloading its loader in
   `withAfterCloseListener` — not by attaching a container.
-- Atomic with the parent: pass `.withParentDataContext(...)` explicitly.
+- Atomic with the parent: pass `.withParentDataContext(...)` explicitly. Do not rely on
+  a container or a field to arrange it unless the attribute has `@Composition`.
 
-Subordination through a container only takes effect when the opening view itself has a
-writable `DataContext`.
+When a parent data context is being set up, both views must be able to take part:
+
+- The opened dialog view has no `DataContext` — `DevelopmentException: No DataContext in
+  view '<id>'. Composition editing is impossible.` Add `<data>` with a writable context
+  to the detail view.
+- The opening view has a read-only context (`<data readOnly="true">`) —
+  `IllegalArgumentException: Unsupported DataContext type ... Parent DataContext must
+  implement DataContextInternal`. Drop `readOnly` on the opening view.
+- The opening view has no `<data>` at all — no error, and no parent context either: the
+  dialog quietly saves to the database.
 
 ## Forbidden
 
