@@ -244,20 +244,25 @@ the header, body, and footer cells have different font sizes. Instead, use rem."
 The defect hides itself on narrow tables — the first columns line up — so a small
 grid gives no warning that the rule was broken.
 
-### Saved column settings outrank the descriptor
+## Saved user settings outrank the descriptor
 
-`<settings auto="true"/>` persists width, order and visibility per user. Those saved
-values are applied OVER the descriptor on open, they carry no version marker, and
-editing the descriptor does not invalidate them. So after changing a width, the
-change is visible only to users who never opened that list.
+Applies when the view declares a `<settings>` facet (e.g. `<settings auto="true"/>`).
+This skill's skeleton does not add one, but existing views often have it.
+
+The facet persists column width, order and visibility per user. Saved values are
+applied OVER the descriptor on open, they carry no version marker, and editing the
+descriptor does not invalidate them. The user does not have to touch anything:
+opening the view once is enough — a full snapshot of all columns is saved on leave.
+So after a descriptor change, the change is visible only to users who never opened
+that view.
 
 The symptom is indistinguishable from "the deployment did not arrive": new value in
 the source, old value on screen. And it disables verification — **until the saved
-settings are cleared, checking a width change in the browser proves nothing**, which
+settings are cleared, checking such a change in the browser proves nothing**, which
 makes a correct change look broken and invites a second "fix" of working code.
 
-After changing width, order or the set of columns, clear the stored settings for that
-view (`FLOWUI_USER_SETTINGS`) before verifying.
+After changing column width, order or visibility on a view with a settings facet,
+clear the stored settings for that view (`FLOWUI_USER_SETTINGS`) before verifying.
 
 ## Forbidden
 
@@ -273,4 +278,4 @@ view (`FLOWUI_USER_SETTINGS`) before verifying.
 - A load delegate returning `LoadContext` instead of `List<E>` (the query never runs; the grid is empty at open).
 - An overridden `beforeEnter` that does not call `super.beforeEnter(event)` on every path (the auto-load never fires; the grid is empty).
 - `<column width="…em">` — header and body resolve `em` against different font sizes and drift apart.
-- Verifying a column-width change in the browser without clearing saved user settings first — the check returns a false negative.
+- On a view with a `<settings>` facet: verifying a change to column width, order or visibility in the browser without clearing saved user settings first — the check returns a false negative.
