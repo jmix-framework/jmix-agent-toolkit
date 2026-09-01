@@ -61,7 +61,7 @@
       {
         "id": "guidelines",
         "title": "Guidelines",
-        "message": "📘 Add Jmix coding guidelines (<code>CLAUDE.md</code> / <code>AGENTS.md</code> / <code>guidelines.md</code>) to the project root for the selected agents. <br>⏭️ Click <i>Skip</i> to leave the project as is.",
+        "message": "📘 Add a few lines to <code>CLAUDE.md</code> / <code>AGENTS.md</code> / <code>guidelines.md</code> that point the agent at the Jmix skills. <br>✍️ Your own instructions are kept — the lines are merged in. A guidelines file installed by an older version of this toolkit is replaced instead. A backup is made either way. <br>⏭️ Click <i>Skip</i> to leave the project as is; the Jmix skills are then installed but nothing routes the agent to them.",
         "inputs": [
           {
             "id": "guidelinesAgents",

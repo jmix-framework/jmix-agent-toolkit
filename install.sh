@@ -22,7 +22,7 @@ STAGING=""
 PW_STAGING=""
 EXTRACTED_DIR=""
 SOURCE_SKILLS_DIR=""
-SOURCE_AGENTS_MD=""
+SOURCE_GUIDELINES_BLOCK=""
 RESOLVED_VERSION_DIR=""
 TARBALL_READY=0
 
@@ -109,23 +109,20 @@ dedup_backup_path() {
 }
 
 # Replaces or installs $dest with a copy of $src. An existing $dest is backed up
-# (moved aside to a deduped <dest>.bak[N]) when $force_backup=1 or
-# BACKUP_EXISTING=1; otherwise it is deleted. Prints a per-item log line.
+# (moved aside to a deduped <dest>.bak[N]) when BACKUP_EXISTING=1; otherwise it
+# is deleted. Prints a per-item log line.
 # $1 - src path (file or dir)
 # $2 - dest path
 # $3 - short label shown in the log line
-# $4 - force_backup: 1 to always back up regardless of --backup-existing-files
-#      (used for guidelines files); defaults to 0
 write_dest() {
     local src="$1"
     local dest="$2"
     local label="$3"
-    local force_backup="${4:-0}"
     local existed=0
     [ -e "$dest" ] && existed=1
     local backup_info=""
     if [ "$existed" -eq 1 ]; then
-        if [ "$force_backup" -eq 1 ] || [ "$BACKUP_EXISTING" -eq 1 ]; then
+        if [ "$BACKUP_EXISTING" -eq 1 ]; then
             local backup
             backup="$(dedup_backup_path "$dest")"
             mv "$dest" "$backup" || die "cannot rename ${dest}"
@@ -235,11 +232,15 @@ Common options:
                              claude, codex, opencode, junie.
   --backup-existing-files    Rename overwritten files/dirs to <name>.bak
                              (deduped: .bak, .bak1, .bak2, ...) instead of
-                             deleting them. Off by default. Guidelines files
-                             (CLAUDE.md / AGENTS.md / guidelines.md) are always
-                             backed up regardless of this flag -- unless their
-                             content is already identical, in which case they
-                             are left untouched.
+                             deleting them. Off by default. Project guidelines
+                             (CLAUDE.md / AGENTS.md / guidelines.md) are merged
+                             rather than overwritten and are not covered by this
+                             flag: a backup is made only when the toolkit
+                             rewrites content it does not own -- replacing a
+                             guidelines file an older toolkit version installed,
+                             or appending to your own file. Replacing only the
+                             marked region never makes a backup, and a file
+                             that is already up to date is left untouched.
   --verbose, --debug         Print extra diagnostic output (OS, PATH, resolved
                              paths, tool versions) to help troubleshoot problems.
   -h, --help                 Show this help.
@@ -263,7 +264,7 @@ EOF
 # =================================================================
 
 # Downloads and extracts the tarball, locates the content/ folder, and populates
-# SOURCE_SKILLS_DIR / SOURCE_AGENTS_MD / RESOLVED_VERSION_DIR. Idempotent.
+# SOURCE_SKILLS_DIR / SOURCE_GUIDELINES_BLOCK / RESOLVED_VERSION_DIR. Idempotent.
 ensure_tarball() {
     [ "$TARBALL_READY" -eq 1 ] && return 0
 
@@ -301,7 +302,7 @@ ensure_tarball() {
         die "content/skills not found in ${SOURCE_DIR:-$CONTENT_REF}"
     fi
     SOURCE_SKILLS_DIR="${content_dir}/skills"
-    SOURCE_AGENTS_MD="${content_dir}/AGENTS.md"
+    SOURCE_GUIDELINES_BLOCK="${content_dir}/guidelines-block.md"
 
     # Store segment under ~/.agents/.jmix/skills/<seg>: the branch name, so
     # multiple Jmix majors coexist on one machine.
@@ -519,33 +520,144 @@ agents_md_dest_for_agent() {
     esac
 }
 
-install_agents_md_for() {
+# The marker pair delimiting the toolkit-managed region inside a project
+# guidelines file. Must match content/guidelines-block.md and install.ps1 exactly.
+BLOCK_BEGIN='<!-- BEGIN jmix-agent-toolkit -->'
+BLOCK_END='<!-- END jmix-agent-toolkit -->'
+
+# Succeeds when $1 holds a well-formed marker region: a BEGIN line, and an END
+# line somewhere after it. A file with only one of the two is NOT well-formed
+# and must be treated as unmanaged, so we append rather than truncate it.
+# Comparisons ignore an optional trailing \r (CRLF files) and a leading UTF-8
+# BOM, so a marker line is recognised regardless of line-ending style or BOM.
+has_guidelines_block() {
+    [ -f "$1" ] || return 1
+    awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '
+        BEGIN { bom = sprintf("%c%c%c", 239, 187, 191) }
+        { sub(/\r$/, ""); if (substr($0, 1, 3) == bom) $0 = substr($0, 4) }
+        $0 == b && !seen_b { seen_b = NR }
+        $0 == e && seen_b  { seen_e = NR }
+        END { exit (seen_b && seen_e) ? 0 : 1 }
+    ' "$1"
+}
+
+# Prints $1 to stdout with its marker region (markers included) replaced by the
+# whole content of block file $2, which carries its own markers. Marker
+# comparisons ignore an optional trailing \r and a leading UTF-8 BOM, but every
+# byte outside the replaced region is reproduced exactly as read -- only the
+# comparison is normalised, never what gets written back. The END marker's own
+# line ending (its trailing \r, if any, and the \n) is taken from the file
+# being edited, not from the block, so a CRLF file gets CRLF right after the
+# inserted block instead of the block's own LF -- matching install.ps1, which
+# leaves that same byte range untouched.
+# $1 - existing guidelines file   $2 - block file
+replace_guidelines_block() {
+    awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" -v blockfile="$2" '
+        BEGIN {
+            bom = sprintf("%c%c%c", 239, 187, 191)
+            while ((getline line < blockfile) > 0) block = block line "\n"
+            trimmed_block = block
+            sub(/[\r\n]+$/, "", trimmed_block)
+        }
+        {
+            norm = $0
+            sub(/\r$/, "", norm)
+            if (substr(norm, 1, 3) == bom) norm = substr(norm, 4)
+        }
+        !done && !inb && norm == b { printf "%s", trimmed_block; inb = 1; next }
+        inb && norm == e {
+            cr = ($0 ~ /\r$/) ? "\r" : ""
+            printf "%s\n", cr
+            inb = 0; done = 1; next
+        }
+        inb                        { next }
+                                    { print }
+    ' "$1"
+}
+
+# Succeeds when $1 looks like a guidelines file this toolkit installed before the
+# block existed. Both conditions must hold: the first non-blank line is one of
+# the three headings the toolkit has ever shipped, and the body mentions the
+# skills. The first-line extraction ignores an optional trailing \r and a
+# leading UTF-8 BOM so CRLF/BOM files are recognised the same as plain LF ones.
+looks_like_legacy_guidelines() {
+    local first
+    first="$(awk '
+        BEGIN { bom = sprintf("%c%c%c", 239, 187, 191) }
+        { sub(/\r$/, ""); if (substr($0, 1, 3) == bom) $0 = substr($0, 4) }
+        NF { print; exit }
+    ' "$1")"
+    case "$first" in
+        '# Agent Instructions'|'# Coding Guidelines'|'# Jmix Coding Guidelines') ;;
+        *) return 1 ;;
+    esac
+    grep -qi '^## Skill routing' "$1" || grep -q 'jmix-[a-z-]' "$1"
+}
+
+# Installs the toolkit-managed block into the agent's project guidelines file.
+# Four branches, in order:
+#   1. no file            -> write the block alone
+#   2. markers present    -> replace only that region, no backup
+#   3. legacy toolkit file-> back up, replace whole file
+#   4. anything else      -> back up, append the block, keep everything they wrote
+install_guidelines_block_for() {
     local agent="$1"
-    local dest
+    local dest label dest_dir tmp backup
     dest="$(agents_md_dest_for_agent "$agent")"
-    local label
     label="$(agent_label "$agent")"
 
-    [ -f "$SOURCE_AGENTS_MD" ] || die "AGENTS.md not found in ${RESOLVED_VERSION_DIR}"
+    [ -f "$SOURCE_GUIDELINES_BLOCK" ] \
+        || die "guidelines-block.md not found in ${RESOLVED_VERSION_DIR}"
 
-    # Identical content: leave the file alone entirely — no backup, no rewrite,
-    # no change marker (issue #22).
-    if [ -f "$dest" ] && cmp -s "$SOURCE_AGENTS_MD" "$dest"; then
-        log "  Unchanged: ${dest}"
-        log "  Project guidelines already up to date for ${label}"
-        return 0
-    fi
-
-    local dest_dir
     dest_dir="$(dirname "$dest")"
     mkdir -p "$dest_dir" || die "cannot create directory ${dest_dir}"
 
-    local dest_existed=0
-    [ -e "$dest" ] && dest_existed=1
-    # Guidelines are always backed up on overwrite, regardless of
-    # --backup-existing-files (issue #17).
-    write_dest "$SOURCE_AGENTS_MD" "$dest" "$dest" 1
-    emit_change "$([ "$dest_existed" -eq 1 ] && printf updated || printf created)" file "$dest"
+    if [ ! -e "$dest" ]; then
+        cp "$SOURCE_GUIDELINES_BLOCK" "$dest" || die "cannot copy to ${dest}"
+        log "  Installed: ${dest}"
+        emit_change created file "$dest"
+        log "  Project guidelines installed for ${label}"
+        return 0
+    fi
+
+    tmp="$(mktemp "${dest_dir}/.jmix-guidelines.XXXXXX")" \
+        || die "cannot create a temp file in ${dest_dir}"
+
+    if has_guidelines_block "$dest"; then
+        replace_guidelines_block "$dest" "$SOURCE_GUIDELINES_BLOCK" > "$tmp" \
+            || { rm -f "$tmp"; die "cannot stage ${dest}"; }
+        if cmp -s "$tmp" "$dest"; then
+            rm -f "$tmp"
+            log "  Unchanged: ${dest}"
+            log "  Project guidelines already up to date for ${label}"
+            return 0
+        fi
+        mv "$tmp" "$dest" || { rm -f "$tmp"; die "cannot write ${dest}"; }
+        log "  Updated: ${dest}"
+        emit_change updated file "$dest"
+        log "  Project guidelines installed for ${label}"
+        return 0
+    fi
+
+    # Branches 3 and 4 rewrite content the toolkit does not own, so they always
+    # back up, regardless of --backup-existing-files (issue #17).
+    backup="$(dedup_backup_path "$dest")"
+    cp "$dest" "$backup" || { rm -f "$tmp"; die "cannot back up ${dest}"; }
+
+    if looks_like_legacy_guidelines "$dest"; then
+        cp "$SOURCE_GUIDELINES_BLOCK" "$tmp" || { rm -f "$tmp"; die "cannot stage ${dest}"; }
+    else
+        {
+            cat "$dest"
+            if [ -n "$(tail -c 1 "$dest")" ]; then printf '\n'; fi
+            printf '\n'
+            cat "$SOURCE_GUIDELINES_BLOCK"
+        } > "$tmp" || { rm -f "$tmp"; die "cannot stage ${dest}"; }
+    fi
+    mv "$tmp" "$dest" || { rm -f "$tmp"; die "cannot write ${dest}"; }
+
+    log "  Updated: ${dest} (backup: $(basename "$backup"))"
+    emit_change updated file "$dest"
     log "  Project guidelines installed for ${label}"
 }
 
@@ -578,7 +690,7 @@ cmd_agents_md() {
 
     local agent
     for agent in $agents; do
-        install_agents_md_for "$agent"
+        install_guidelines_block_for "$agent"
     done
 }
 
@@ -979,13 +1091,13 @@ cmd_wizard() {
     fi
 
     # Step 2: agents-md
-    sel="$(wizard_pick_agent all '[2/5] Add Jmix coding guidelines to this directory?' "$ALL_AGENTS")"
+    sel="$(wizard_pick_agent all '[2/5] Merge Jmix coding guidelines into this directory?' "$ALL_AGENTS")"
     if [ "$sel" != "skip" ]; then
         if prompt_yes_no "Target directory: $(pwd -P). Proceed?" "y"; then
             ensure_tarball
             local agent
             for agent in $sel; do
-                install_agents_md_for "$agent" || true
+                install_guidelines_block_for "$agent" || true
             done
             summary_guidelines="$sel"
         else

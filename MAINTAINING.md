@@ -5,7 +5,9 @@
 - **One branch per Jmix major**: `v2` (Jmix 2), `v3` (Jmix 3), … The repository
   **default branch** is the current stable major, so `HEAD` points at it.
 - Each branch is **self-contained**:
-  - `content/` — `AGENTS.md` (project guidelines) + `skills/<skill>/SKILL.md`.
+  - `content/` — `guidelines-block.md` (the marker-delimited block merged into the
+    project's own guidelines file) + `skills/<skill>/SKILL.md`. The `jmix` skill is
+    the umbrella the block points at; the rest are per-artifact skills.
   - `install.sh` / `install.ps1` — installers. Each contains branch name inside
     `CONTENT_REF` (sh) / `$ContentRef` (ps1) and installs from `content/`.
   - `.studio/` — `studio-meta-data.json` (Studio wizard steps), `skills-manifest.json`
@@ -19,9 +21,10 @@ branch holds exactly one `content/` folder.
 
 - **CLI**: `curl -fsSL .../jmix-agent-toolkit/<branch>/install.sh | bash`.
   The script downloads its own branch tarball (`CONTENT_REF`), installs `content/skills`
-  into the canonical store `~/.agents/.jmix/skills/<branch>/`, symlinks each `jmix-*`
-  skill into every selected agent's skills dir, and copies `content/AGENTS.md` as the
-  project guidelines file. `HEAD` resolves to the default branch (newest stable major).
+  into the canonical store `~/.agents/.jmix/skills/<branch>/`, symlinks each skill folder
+  (`jmix` and `jmix-*`) into every selected agent's skills dir, and merges
+  `content/guidelines-block.md` into the project's guidelines file. `HEAD` resolves to
+  the default branch (newest stable major).
 - **Jmix Studio**: the **AI Agents Toolkit** wizard computes the branch from the project's
   Jmix major (`v<major>`), fetches `.../v<major>/.studio/studio-meta-data.json` (falling back
   to the default branch if that branch does not exist yet), then runs the per-branch

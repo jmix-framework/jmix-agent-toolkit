@@ -9,7 +9,7 @@ The AI agent will use these resources to understand Jmix-specific patterns, mand
 Each Jmix major version lives on its own branch: `v2` for Jmix 2, `v3` for Jmix 3, and so on. The repository default branch is the current stable major. Each branch holds a single `content/` folder:
 
 - `content/` contains the guidelines for that branch's Jmix version.
-  - `AGENTS.md`: General coding guidelines, architecture overview, and development workflow for Jmix projects.
+  - `guidelines-block.md`: A short block, delimited by `<!-- BEGIN jmix-agent-toolkit -->` / `<!-- END jmix-agent-toolkit -->` markers, that the installer merges into the project's own agent guidelines file. It points the agent at the `jmix` skill.
   - `skills/`: A collection of folders, each containing:
       - `SKILL.md`: Detailed instructions and rules for the agent regarding a specific Jmix feature.
       - Optional subdirectories with examples or other materials.
@@ -76,12 +76,12 @@ PowerShell mirrors the same shape: `install.ps1 skills -Agents claude,codex`, `i
 | `--agents CSV`            | `-Agents CSV`          | -       | Comma-separated agents. Required by every subcommand.                                                                                                                                                     |
 | `--scope global\|local`   | `-Scope global\|local` | global  | `skills` only. `global` installs the store under `~/.agents/.jmix/skills/v<major>`; `local` installs the store at `<project>/.skills`. Agent dirs are symlinked to the store.                             |
 | `--context7-key K`        | `-Context7Key K`       | prompt  | Context7 API key. Prompted interactively when omitted.                                                                                                                                                    |
-| `--backup-existing-files` | `-BackupExistingFiles` | off     | Rename overwritten files/dirs to a deduped `<name>.bak` instead of deleting them. Guidelines files (`CLAUDE.md` / `AGENTS.md` / `guidelines.md`) are always backed up; identical ones are left untouched. |
+| `--backup-existing-files` | `-BackupExistingFiles` | off     | Rename overwritten files/dirs to a deduped `<name>.bak` instead of deleting them. Project guidelines (`CLAUDE.md` / `AGENTS.md` / `guidelines.md`) are merged rather than overwritten and are not covered by this flag: a backup is made only when the toolkit rewrites content it does not own — replacing a guidelines file an older toolkit version installed, or appending to your own file. Replacing only the marked region never makes a backup, and an already-current file is left untouched. |
 | `--verbose`, `--debug`    | `-Verbose`             | off     | Print extra diagnostic output (OS, PATH, resolved paths, tool versions) for troubleshooting.                                                                                                              |
 
 **Skills storages:**
-- **Global:** store at `~/.agents/.jmix/skills/v<major>/` (e.g. `v3`); each `jmix-*` folder symlinked into `~/.claude/skills` (Claude CLI), `~/.agents/skills` (Codex, OpenCode), `~/.junie/skills` (Junie).
-- **Local:** store at `<project>/.skills/`; each `jmix-*` folder symlinked into `<project>/.agents/skills`, `<project>/.claude/skills`, `<project>/.junie/skills`.
+- **Global:** store at `~/.agents/.jmix/skills/v<major>/` (e.g. `v3`); each skill folder (`jmix` and `jmix-*`) symlinked into `~/.claude/skills` (Claude CLI), `~/.agents/skills` (Codex, OpenCode), `~/.junie/skills` (Junie).
+- **Local:** store at `<project>/.skills/`; each skill folder (`jmix` and `jmix-*`) symlinked into `<project>/.agents/skills`, `<project>/.claude/skills`, `<project>/.junie/skills`.
 
 > The automatic installer covers skills (installed globally or into the project), project guidelines, MCP server registration, and Playwright testing skills. The Playwright step runs `@playwright/cli` via `npx`, so `npx` (Node.js) must be available on PATH.
 
@@ -91,12 +91,18 @@ If you prefer not to run the script, follow these steps. Check out the branch fo
 
 ### 1. Project Guidelines
 
-Copy the `AGENTS.md` file from this repository to the root of your Jmix application project. Depending on the agent you are using, you may need to rename it or place it in a specific folder:
+The toolkit no longer installs a full guidelines file. Instead it adds a short block that points the agent at the `jmix` skill, which carries the guidelines themselves.
 
-- [Claude CLI](https://code.claude.com/docs): Copy to the project root and rename to `CLAUDE.md`.
-- [Codex](https://developers.openai.com/codex/cli): Copy to the project root and keep as `AGENTS.md`.
-- [OpenCode](https://opencode.ai/docs): Copy to the project root and keep as `AGENTS.md`.
-- [Junie](https://www.jetbrains.com/junie): Copy to the `.junie` project subdirectory and rename to `guidelines.md`.
+Copy the content of `guidelines-block.md` into your project's agent guidelines file, keeping the `<!-- BEGIN jmix-agent-toolkit -->` / `<!-- END jmix-agent-toolkit -->` markers. If the file does not exist yet, create it with just that block. If it does, append the block — everything you wrote stays.
+
+- [Claude CLI](https://code.claude.com/docs): `CLAUDE.md` in the project root.
+- [Codex](https://developers.openai.com/codex/cli): `AGENTS.md` in the project root.
+- [OpenCode](https://opencode.ai/docs): `AGENTS.md` in the project root.
+- [Junie](https://www.jetbrains.com/junie): `.junie/guidelines.md`.
+
+The markers let the installer update the block in place on a later run without touching the rest of the file. Keep your own instructions outside them.
+
+If your project still has a full `AGENTS.md` or `CLAUDE.md` from an earlier version of this toolkit, the installer detects it, backs it up as `<name>.bak`, and replaces it with the block. Doing it by hand, delete the old toolkit content and paste in the block.
 
 ### 2. Agent Skills
 
