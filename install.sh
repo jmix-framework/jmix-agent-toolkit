@@ -530,11 +530,16 @@ BLOCK_END='<!-- END jmix-agent-toolkit -->'
 # and must be treated as unmanaged, so we append rather than truncate it.
 # Comparisons ignore an optional trailing \r (CRLF files) and a leading UTF-8
 # BOM, so a marker line is recognised regardless of line-ending style or BOM.
+# The BOM is written as an octal string literal and measured with length(),
+# never sprintf("%c",239) or a literal 3: gawk in a UTF-8 locale renders %c as a
+# CHARACTER (U+00EF -> two bytes) and counts substr() in characters, so both the
+# constant and the offsets differ from mawk and BSD awk. Octal escapes give the
+# raw bytes everywhere, and length()/blen is right under either model.
 has_guidelines_block() {
     [ -f "$1" ] || return 1
     awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '
-        BEGIN { bom = sprintf("%c%c%c", 239, 187, 191) }
-        { sub(/\r$/, ""); if (substr($0, 1, 3) == bom) $0 = substr($0, 4) }
+        BEGIN { bom = "\357\273\277"; blen = length(bom) }
+        { sub(/\r$/, ""); if (substr($0, 1, blen) == bom) $0 = substr($0, blen + 1) }
         $0 == b && !seen_b { seen_b = NR }
         $0 == e && seen_b  { seen_e = NR }
         END { exit (seen_b && seen_e) ? 0 : 1 }
@@ -554,7 +559,7 @@ has_guidelines_block() {
 replace_guidelines_block() {
     awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" -v blockfile="$2" '
         BEGIN {
-            bom = sprintf("%c%c%c", 239, 187, 191)
+            bom = "\357\273\277"; blen = length(bom)
             while ((getline line < blockfile) > 0) block = block line "\n"
             trimmed_block = block
             sub(/[\r\n]+$/, "", trimmed_block)
@@ -562,7 +567,7 @@ replace_guidelines_block() {
         {
             norm = $0
             sub(/\r$/, "", norm)
-            if (substr(norm, 1, 3) == bom) norm = substr(norm, 4)
+            if (substr(norm, 1, blen) == bom) norm = substr(norm, blen + 1)
         }
         !done && !inb && norm == b { printf "%s", trimmed_block; inb = 1; next }
         inb && norm == e {
@@ -583,8 +588,8 @@ replace_guidelines_block() {
 looks_like_legacy_guidelines() {
     local first
     first="$(awk '
-        BEGIN { bom = sprintf("%c%c%c", 239, 187, 191) }
-        { sub(/\r$/, ""); if (substr($0, 1, 3) == bom) $0 = substr($0, 4) }
+        BEGIN { bom = "\357\273\277"; blen = length(bom) }
+        { sub(/\r$/, ""); if (substr($0, 1, blen) == bom) $0 = substr($0, blen + 1) }
         NF { print; exit }
     ' "$1")"
     case "$first" in
