@@ -130,6 +130,31 @@ public void onOrderLineChanged(EntityChangedEvent<OrderLine> event) {
 }
 ```
 
+The change set covers the deleted entity's OWN attributes. A reference is snapshotted as
+`Id.of(value)` only, so the referenced entity's columns are not reachable through it.
+
+#### A child removed by a database cascade produces no event at all
+
+When a parent is hard-deleted and its children go with it through an `ON DELETE CASCADE`
+foreign key, no hook sees those children. There is nothing to subscribe to and no state
+left to read:
+
+- the parent's `AttributeChanges` gives the child only as an id, so the child's own columns
+  (a `FileRef`, an external key) are unreachable;
+- reloading the child does not work — `EclipselinkPersistenceSupport.beforeCommit` calls
+  `detachAll()`, which flushes, before publishing the events, so the cascade has already run
+  by the time any listener is invoked;
+- JPA `CascadeType.REMOVE` is not a substitute — `JmixEntityManager.remove` sets the removed
+  flag only on the entity handed to it, so `isDeleted` is false for an EclipseLink-cascade-removed
+  child and no `EntityChangedEvent` is published for it;
+- `BeforeDeleteEntityListener`, the one interface that would have run early enough, is
+  `@Deprecated(forRemoval = true)` since 2.8 and has no replacement.
+
+So any per-row cleanup a cascaded child owns — file storage, external APIs — must run
+BEFORE the parent delete is requested (load the children, clean up, then remove the parent,
+in a service method), or be accepted and recorded as a gap. Do not plan it as delete-side
+listener work; there is no event to hang it on.
+
 ## EntitySavingEvent and EntityLoadingEvent
 
 `EntitySavingEvent` contains the entity instance before it is written to the data store. Use it for required defaults, value normalization, and transformations that must be persisted with the current save operation.
