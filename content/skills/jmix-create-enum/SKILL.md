@@ -16,7 +16,7 @@ Use this skill when an entity attribute has a fixed set of values.
 1. Create the enum in the `entity` package.
 2. Implement `io.jmix.core.metamodel.datatype.EnumClass<T>`.
 3. Use stable database ids, not display labels.
-4. Add a typed `fromId()` method annotated with `@Nullable`.
+4. Add a typed `fromId()` method annotated with `@Nullable` from `org.jspecify.annotations` — this is what Jmix itself uses; `org.springframework.lang.Nullable` is deprecated as of Spring 7.0. The jspecify one is `TYPE_USE`, so it binds to the type that follows it rather than to the declaration, and the two are not interchangeable by a mechanical import swap.
 5. Store the enum id type in the entity field.
 6. Add getter/setter conversion in the entity.
 7. Add Liquibase column matching the id type.
@@ -26,7 +26,7 @@ Use this skill when an entity attribute has a fixed set of values.
 
 ```java
 import io.jmix.core.metamodel.datatype.EnumClass;
-import org.springframework.lang.Nullable;
+import org.jspecify.annotations.Nullable;
 
 public enum TransactionType implements EnumClass<String> {
     INCOME("INCOME"),
@@ -96,4 +96,5 @@ family with a different id scheme.
 - Raw `EnumClass` without a type parameter.
 - Storing display labels as ids.
 - `ordinal()` persistence, or introducing `.name()` ids into a project that has no enum id convention yet (an established project-wide convention is matched, not split — see above).
+- `org.springframework.lang.Nullable`; use `org.jspecify.annotations.Nullable`.
 - Missing enum message keys.
