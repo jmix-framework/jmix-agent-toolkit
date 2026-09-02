@@ -273,7 +273,7 @@ hand-written accessors, write them by hand.
 For parent-child aggregates:
 
 - Parent collection has `@Composition`.
-- Parent collection has `@OnDelete(DeletePolicy.CASCADE)` when child lifecycle belongs to parent.
+- Parent collection has `@OnDelete(DeletePolicy.CASCADE)` when child lifecycle belongs to parent **and the parent is soft-deleted** — for a hard-deleted parent see the branch below.
 - Child has a non-null back reference to parent.
 - Child `@ManyToOne` uses `fetch = FetchType.LAZY` and `optional = false`.
 - Child join column is `nullable = false`.
@@ -298,6 +298,32 @@ private List<ChildLine> lines;  // leave uninitialized — Jmix returns a NotIns
 @ManyToOne(fetch = FetchType.LAZY, optional = false)
 private Parent parent;
 ```
+
+### Cascade for a hard-deleted parent
+
+`@OnDelete(DeletePolicy.CASCADE)` is an application-layer policy, and Jmix applies it
+only to a parent that supports soft delete. `EclipselinkPersistenceSupport$OnSaveEntityVisitor.visit`
+calls `processDeletePolicy` only when `EntityValues.isSoftDeletionSupported(entity)` is
+true and jumps over the call otherwise, so on a parent with no `@DeletedDate`/`@DeletedBy`
+the annotation does nothing and the children are orphaned.
+
+Nothing catches this before runtime: it compiles, no IDE inspection fires, and a green
+`clean test` says nothing. Only a test that asserts the children are gone after the parent
+is removed will fail.
+
+For a hard-deleted parent, put the cascade on the child's foreign key in the changelog
+instead:
+
+```xml
+<addForeignKeyConstraint baseTableName="CHILD_LINE" baseColumnNames="PARENT_ID"
+                         constraintName="FK_CHILD_LINE_ON_PARENT"
+                         referencedTableName="PARENT" referencedColumnNames="ID"
+                         onDelete="CASCADE"/>
+```
+
+`jmix-create-liquibase-changelog` presents a DB-level `onDelete="CASCADE"` as the option
+you almost never want, because it assumes the Jmix default of soft delete. A hard-deleted
+composition parent is the exception that wording allows for.
 
 ## Auditing and Soft Delete
 
