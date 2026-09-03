@@ -28,7 +28,8 @@ branch holds exactly one `content/` folder.
 - **Jmix Studio**: the **AI Agents Toolkit** wizard computes the branch from the project's
   Jmix major (`v<major>`), fetches `.../v<major>/.studio/studio-meta-data.json` (falling back
   to the default branch if that branch does not exist yet), then runs the per-branch
-  `install.sh` / `install.ps1` from that same branch.
+  `install.sh` / `install.ps1` and passes that branch as `--content-ref` / `-ContentRef`.
+  A Intellij IDEA Registry override can pin all three to a feature branch for pre-merge testing.
 
 ## Cutting a new version branch (e.g. Jmix 4 → `v4`)
 

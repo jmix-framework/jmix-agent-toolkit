@@ -29,6 +29,10 @@ cd "$PROJECT"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "ok: $*"; }
 
+file_mode() {
+    stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"
+}
+
 # ---------------------------------------------------------------------------
 # 1. agents-md (project guidelines block)
 # ---------------------------------------------------------------------------
@@ -135,6 +139,7 @@ rm -f "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak*
     printf '%s\n' "$END_MARK"
     printf '\nBELOW-SENTINEL\n'
 } > "${PROJECT}/CLAUDE.md"
+chmod 664 "${PROJECT}/CLAUDE.md"
 bash "$INSTALL" agents-md --agents claude --source "$SOURCE" >/dev/null
 grep -q 'ABOVE-SENTINEL' "${PROJECT}/CLAUDE.md" || fail "agents-md: text above the block lost"
 grep -q 'BELOW-SENTINEL' "${PROJECT}/CLAUDE.md" || fail "agents-md: text below the block lost"
@@ -142,6 +147,8 @@ if grep -q 'stale block content' "${PROJECT}/CLAUDE.md"; then
     fail "agents-md: stale block content kept"
 fi
 [ ! -e "${PROJECT}/CLAUDE.md.bak" ] || fail "agents-md: in-place block replacement made a backup"
+[ "$(file_mode "${PROJECT}/CLAUDE.md")" = 664 ] \
+    || fail "agents-md: in-place block replacement changed file permissions"
 pass "agents-md replaces only the marked region"
 
 # 1g. A half-written marker is malformed: append, never truncate.
@@ -152,6 +159,27 @@ grep -q 'KEEP-ME' "${PROJECT}/CLAUDE.md"      || fail "agents-md: malformed-mark
 grep -q 'half a block' "${PROJECT}/CLAUDE.md" || fail "agents-md: malformed-marker content lost"
 grep -qF "$END_MARK" "${PROJECT}/CLAUDE.md"   || fail "agents-md: block not appended to malformed file"
 pass "agents-md appends to a half-marked file instead of truncating it"
+
+# A later run must pair the appended block with its own nearest BEGIN marker;
+# the original orphan marker and the developer's content remain unmanaged.
+bash "$INSTALL" agents-md --agents claude --source "$SOURCE" >/dev/null
+grep -q 'KEEP-ME' "${PROJECT}/CLAUDE.md"      || fail "agents-md: malformed-marker file truncated on re-run"
+grep -q 'half a block' "${PROJECT}/CLAUDE.md" || fail "agents-md: malformed-marker content lost on re-run"
+pass "agents-md preserves a half-marked prefix on re-run"
+
+# 1g2. A marker shown as a standalone line in a fenced example above the real
+#      block is not paired with the real END marker.
+rm -f "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak*
+{
+    printf '# Project\n\n%smarkdown\n%s\n%s\n\n' '```' "$BEGIN_MARK" '```'
+    printf 'TEAM-RULE-SENTINEL\n\n%s\nstale block\n%s\n' "$BEGIN_MARK" "$END_MARK"
+} > "${PROJECT}/CLAUDE.md"
+bash "$INSTALL" agents-md --agents claude --source "$SOURCE" >/dev/null
+grep -q 'TEAM-RULE-SENTINEL' "${PROJECT}/CLAUDE.md" \
+    || fail "agents-md: text after a fenced BEGIN marker lost"
+grep -q '^```$' "${PROJECT}/CLAUDE.md" \
+    || fail "agents-md: fenced marker example was truncated"
+pass "agents-md pairs END with the nearest owned BEGIN"
 
 # 1h. A legacy full-file replaced correctly even with CRLF line endings, so
 #     install.sh's byte-exact marker/heading comparisons are not fooled by a
@@ -231,8 +259,101 @@ cmp -s "${PROJECT}/CLAUDE.md" "${WORK}/expected-1m" \
 [ -f "${PROJECT}/CLAUDE.md.bak" ] || fail "agents-md: no-trailing-newline destination not backed up"
 pass "agents-md appends to a no-trailing-newline destination with exactly one blank-line separator"
 
-# Reset so later sections start from a clean project guidelines state.
+# 1n. A CLAUDE.md that @-imports AGENTS.md (Claude Code import syntax) is left
+#     alone when AGENTS.md carries the block: Claude sees it through the import,
+#     a second copy would only duplicate it. No rewrite, no backup -- and the
+#     AGENTS.md agents are processed first even though claude is listed first.
+rm -f "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak* "${PROJECT}/AGENTS.md" "${PROJECT}"/AGENTS.md.bak*
+printf '# Team rules\n\nSee @AGENTS.md for the shared instructions.\n' > "${PROJECT}/CLAUDE.md"
+cp "${PROJECT}/CLAUDE.md" "${WORK}/claude-import-orig"
+printf '# Shared\n\nNever push to main.\n' > "${PROJECT}/AGENTS.md"
+bash "$INSTALL" agents-md --agents claude,codex --source "$SOURCE" >/dev/null
+grep -qF "$BEGIN_MARK" "${PROJECT}/AGENTS.md" || fail "agents-md: block not merged into AGENTS.md"
+grep -q 'Never push to main.' "${PROJECT}/AGENTS.md" || fail "agents-md: AGENTS.md content lost"
+cmp -s "${PROJECT}/CLAUDE.md" "${WORK}/claude-import-orig" \
+    || fail "agents-md: CLAUDE.md that imports AGENTS.md was rewritten"
+[ ! -e "${PROJECT}/CLAUDE.md.bak" ] || fail "agents-md: CLAUDE.md that imports AGENTS.md was backed up"
+pass "agents-md skips a CLAUDE.md that imports an AGENTS.md carrying the block"
+
+# 1n2. Same import, only claude selected later: AGENTS.md still carries the block
+#      from the earlier run, so CLAUDE.md is still skipped.
+bash "$INSTALL" agents-md --agents claude --source "$SOURCE" >/dev/null
+cmp -s "${PROJECT}/CLAUDE.md" "${WORK}/claude-import-orig" \
+    || fail "agents-md: importing CLAUDE.md rewritten although AGENTS.md already carries the block"
+pass "agents-md keeps skipping an importing CLAUDE.md on a claude-only re-run"
+
+# 1o. Same import, but AGENTS.md has no block and only claude is selected: nothing
+#     else routes Claude to the skills, so the block goes into CLAUDE.md and
+#     AGENTS.md is not touched.
+rm -f "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak* "${PROJECT}/AGENTS.md" "${PROJECT}"/AGENTS.md.bak*
+printf '# Team rules\n\nSee @AGENTS.md for the shared instructions.\n' > "${PROJECT}/CLAUDE.md"
+printf '# Shared\n\nNever push to main.\n' > "${PROJECT}/AGENTS.md"
+bash "$INSTALL" agents-md --agents claude --source "$SOURCE" >/dev/null
+grep -qF "$BEGIN_MARK" "${PROJECT}/CLAUDE.md" || fail "agents-md: block not added to CLAUDE.md when AGENTS.md is unmanaged"
+grep -q 'See @AGENTS.md' "${PROJECT}/CLAUDE.md" || fail "agents-md: import line lost"
+if grep -qF "$BEGIN_MARK" "${PROJECT}/AGENTS.md"; then
+    fail "agents-md: AGENTS.md touched although only claude was selected"
+fi
+pass "agents-md adds the block to an importing CLAUDE.md when AGENTS.md is unmanaged"
+
+# 1p. CLAUDE.md symlinked to AGENTS.md (a common setup). Claude-only: the block
+#     is written through the link, which survives, and AGENTS.md gets it once.
+#     Both agents: the shared file is still touched once, no duplicate block.
+rm -f "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak* "${PROJECT}/AGENTS.md" "${PROJECT}"/AGENTS.md.bak*
+printf '# Shared\n\nNever push to main.\n' > "${PROJECT}/AGENTS.md"
+ln -s AGENTS.md "${PROJECT}/CLAUDE.md"
+bash "$INSTALL" agents-md --agents claude --source "$SOURCE" >/dev/null
+[ -L "${PROJECT}/CLAUDE.md" ] || fail "agents-md: symlinked CLAUDE.md replaced by a regular file"
+[ "$(grep -cF "$BEGIN_MARK" "${PROJECT}/AGENTS.md")" -eq 1 ] \
+    || fail "agents-md: block not written once through the CLAUDE.md symlink"
+grep -q 'Never push to main.' "${PROJECT}/AGENTS.md" || fail "agents-md: linked AGENTS.md content lost"
+bash "$INSTALL" agents-md --agents claude,codex --source "$SOURCE" >/dev/null
+[ -L "${PROJECT}/CLAUDE.md" ] || fail "agents-md: symlinked CLAUDE.md replaced on re-run"
+[ "$(grep -cF "$BEGIN_MARK" "${PROJECT}/AGENTS.md")" -eq 1 ] \
+    || fail "agents-md: block duplicated through the CLAUDE.md symlink"
+pass "agents-md writes through a CLAUDE.md -> AGENTS.md symlink and never duplicates the block"
+
+# 1q. A developer file with a legacy heading that mentions jmix-* things which are
+#     not toolkit skills (jmix-flowui, a jmix-framework URL) is NOT legacy: append.
+rm -f "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak* "${PROJECT}/AGENTS.md" "${PROJECT}"/AGENTS.md.bak*
+printf '# Coding Guidelines\n\nWe use jmix-flowui; see https://github.com/jmix-framework/jmix.\n' \
+    > "${PROJECT}/CLAUDE.md"
+bash "$INSTALL" agents-md --agents claude --source "$SOURCE" >/dev/null
+grep -q 'We use jmix-flowui' "${PROJECT}/CLAUDE.md" \
+    || fail "agents-md: developer file mentioning jmix-flowui was misdetected as legacy and replaced"
+grep -qF "$BEGIN_MARK" "${PROJECT}/CLAUDE.md" || fail "agents-md: block not appended to jmix-flowui file"
+pass "agents-md does not treat jmix-flowui / jmix-framework mentions as a legacy signal"
+
+# Backups are first-class changes in the Studio summary, not only log text.
 rm -f "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak*
+printf '# Team rules\n\nKeep this.\n' > "${PROJECT}/CLAUDE.md"
+marker_output="$(JMIX_EMIT_CHANGE_MARKERS=1 bash "$INSTALL" agents-md \
+    --agents claude --source "$SOURCE")"
+printf '%s\n' "$marker_output" | grep -q $'@@JMIX_CHANGE@@\taction=backed-up\ttype=file\tpath=' \
+    || fail "agents-md: backup not emitted as a Studio change marker"
+pass "agents-md reports a created backup to Studio"
+
+# 1r. The earliest "# Coding Guidelines" vintage, trimmed down to its "## Skills
+#     and MCP" section with no skill name left: still recognised as legacy.
+rm -f "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak*
+printf '# Coding Guidelines\n\nThis file provides guidance to AI coding agents.\n\n## Skills and MCP\n\n- ALWAYS use the Skill tool.\n' \
+    > "${PROJECT}/CLAUDE.md"
+bash "$INSTALL" agents-md --agents claude --source "$SOURCE" >/dev/null
+cmp -s "${PROJECT}/CLAUDE.md" "$BLOCK" \
+    || fail "agents-md: early-vintage file with only a 'Skills and MCP' section not replaced"
+pass "agents-md replaces an early-vintage file recognised by its 'Skills and MCP' section"
+
+# 1s. A destination that exists but is not a file is an error, not a merge.
+rm -f "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak*
+mkdir "${PROJECT}/CLAUDE.md"
+if bash "$INSTALL" agents-md --agents claude --source "$SOURCE" >/dev/null 2>&1; then
+    fail "agents-md: a directory named CLAUDE.md should fail"
+fi
+rmdir "${PROJECT}/CLAUDE.md"
+pass "agents-md fails cleanly when the destination is a directory"
+
+# Reset so later sections start from a clean project guidelines state.
+rm -f "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak* "${PROJECT}/AGENTS.md" "${PROJECT}"/AGENTS.md.bak*
 
 # ---------------------------------------------------------------------------
 # 2. skills, local scope (per-skill symlinks into agent dirs)
@@ -262,6 +383,23 @@ bash "$INSTALL" skills --agents claude --scope global --source "$SOURCE" >/dev/n
 [ -d "${HOME}/.agents/.jmix/skills/v3" ]                  || fail "skills(global): v3 store missing"
 [ -e "${HOME}/.claude/skills/${SKILL}/SKILL.md" ]         || fail "skills(global): symlink does not resolve"
 pass "skills(global) builds v3 store under HOME and resolving symlink"
+
+# Studio can pin a feature branch independently of the release default. The
+# resolved ref keys the global store and is accepted by every subcommand via
+# the common argument pre-parser.
+bash "$INSTALL" skills --content-ref no-agents-md-test --agents claude \
+    --scope global --source "$SOURCE" >/dev/null
+[ -d "${HOME}/.agents/.jmix/skills/no-agents-md-test" ] \
+    || fail "skills(global): content-ref override did not key the store"
+pass "skills(global) honours --content-ref"
+
+# Every Studio command must pass the same resolved branch to the script it
+# downloads; otherwise a feature-branch script silently fetches v3 content.
+[ "$(grep -o -- '--content-ref' "${SOURCE}/.studio/studio-meta-data.json" | wc -l | tr -d ' ')" -eq 10 ] \
+    || fail "studio metadata: a macOS/Linux command omits --content-ref"
+[ "$(grep -o -- '-ContentRef' "${SOURCE}/.studio/studio-meta-data.json" | wc -l | tr -d ' ')" -eq 5 ] \
+    || fail "studio metadata: a Windows command omits -ContentRef"
+pass "Studio commands pass the resolved content ref"
 
 # ---------------------------------------------------------------------------
 # 5. OpenCode MCP entries (no agent CLI needed; requires jq)

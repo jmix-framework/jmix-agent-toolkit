@@ -223,6 +223,9 @@ Usage:
   install.sh playwright    [options]                             # install Playwright
 
 Common options:
+  --content-ref REF          Repository branch/ref to download and use. Defaults
+                             to this release branch (v3). Studio passes its
+                             resolved toolkit branch here.
   --source DIR               Install from a local checkout of this repository
                              instead of downloading. Skips the network. Mainly
                              for CI and offline use.
@@ -525,9 +528,9 @@ agents_md_dest_for_agent() {
 BLOCK_BEGIN='<!-- BEGIN jmix-agent-toolkit -->'
 BLOCK_END='<!-- END jmix-agent-toolkit -->'
 
-# Succeeds when $1 holds a well-formed marker region: a BEGIN line, and an END
-# line somewhere after it. A file with only one of the two is NOT well-formed
-# and must be treated as unmanaged, so we append rather than truncate it.
+# Succeeds when $1 holds a well-formed marker region. Each END is paired with
+# the nearest preceding BEGIN, so an orphan or quoted BEGIN above the real block
+# can never capture developer content. A half-marked file is unmanaged.
 # Comparisons ignore an optional trailing \r (CRLF files) and a leading UTF-8
 # BOM, so a marker line is recognised regardless of line-ending style or BOM.
 # The BOM is written as an octal string literal and measured with length(),
@@ -539,10 +542,15 @@ has_guidelines_block() {
     [ -f "$1" ] || return 1
     awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '
         BEGIN { bom = "\357\273\277"; blen = length(bom) }
-        { sub(/\r$/, ""); if (substr($0, 1, blen) == bom) $0 = substr($0, blen + 1) }
-        $0 == b && !seen_b { seen_b = NR }
-        $0 == e && seen_b  { seen_e = NR }
-        END { exit (seen_b && seen_e) ? 0 : 1 }
+        {
+            sub(/\r$/, "")
+            if (substr($0, 1, blen) == bom) $0 = substr($0, blen + 1)
+            if ($0 == b) { candidate = NR; next }
+            if ($0 == e && candidate) {
+                found = 1; exit
+            }
+        }
+        END { exit found ? 0 : 1 }
     ' "$1"
 }
 
@@ -557,7 +565,7 @@ has_guidelines_block() {
 # leaves that same byte range untouched.
 # $1 - existing guidelines file   $2 - block file
 replace_guidelines_block() {
-    awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" -v blockfile="$2" '
+    awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" -v h="## Jmix" -v blockfile="$2" '
         BEGIN {
             bom = "\357\273\277"; blen = length(bom)
             while ((getline line < blockfile) > 0) block = block line "\n"
@@ -565,26 +573,49 @@ replace_guidelines_block() {
             sub(/[\r\n]+$/, "", trimmed_block)
         }
         {
+            raw[NR] = $0
             norm = $0
             sub(/\r$/, "", norm)
             if (substr(norm, 1, blen) == bom) norm = substr(norm, blen + 1)
+            if (norm == b) { candidate = NR; owned = 0; next }
+            if (candidate && NR == candidate + 1 && norm == h) owned = 1
+            if (norm == e && candidate) {
+                fallback_start = candidate; fallback_finish = NR
+                if (owned) { preferred_start = candidate; preferred_finish = NR }
+                candidate = 0; owned = 0
+            }
         }
-        !done && !inb && norm == b { printf "%s", trimmed_block; inb = 1; next }
-        inb && norm == e {
-            cr = ($0 ~ /\r$/) ? "\r" : ""
-            printf "%s\n", cr
-            inb = 0; done = 1; next
+        END {
+            if (preferred_start) { start = preferred_start; finish = preferred_finish }
+            else                 { start = fallback_start;  finish = fallback_finish }
+            found = (start && finish)
+            for (i = 1; i <= NR; i++) {
+                if (found && i == start) {
+                    if (substr(raw[i], 1, blen) == bom) printf "%s", bom
+                    printf "%s", trimmed_block
+                    cr = (raw[finish] ~ /\r$/) ? "\r" : ""
+                    printf "%s\n", cr
+                    i = finish
+                } else {
+                    print raw[i]
+                }
+            }
         }
-        inb                        { next }
-                                    { print }
     ' "$1"
 }
 
+# Skill names a shipped (pre-block) guidelines file may reference: the toolkit's
+# own skills plus the names its earliest files used. A closed set, deliberately
+# NOT a bare `jmix-[a-z-]` -- a developer's own file can mention jmix-flowui or
+# a github.com/jmix-framework URL without being ours. Must match install.ps1.
+LEGACY_SKILL_NAMES_RE='jmix-(add-dialog-detail-flow|add-entity-event-listener|add-i18n-keys|configure-fetch-plan|create-composition-detail-view|create-custom-ui-component|create-detail-view|create-dto-entity|create-entity|create-enum|create-fragment|create-list-view|create-liquibase-changelog|create-resource-role|create-row-level-role|create-service|create-test|fetch-plans|ide-static-analysis|role-based-access|run-background-code|services|style-ui|verify-api-symbol|verify-bootrun)'
+
 # Succeeds when $1 looks like a guidelines file this toolkit installed before the
 # block existed. Both conditions must hold: the first non-blank line is one of
-# the three headings the toolkit has ever shipped, and the body mentions the
-# skills. The first-line extraction ignores an optional trailing \r and a
-# leading UTF-8 BOM so CRLF/BOM files are recognised the same as plain LF ones.
+# the three headings the toolkit has ever shipped, and the body carries one of
+# the toolkit's section headings or skill names. The first-line extraction
+# ignores an optional trailing \r and a leading UTF-8 BOM so CRLF/BOM files are
+# recognised the same as plain LF ones.
 looks_like_legacy_guidelines() {
     local first
     first="$(awk '
@@ -596,7 +627,42 @@ looks_like_legacy_guidelines() {
         '# Agent Instructions'|'# Coding Guidelines'|'# Jmix Coding Guidelines') ;;
         *) return 1 ;;
     esac
-    grep -qi '^## Skill routing' "$1" || grep -q 'jmix-[a-z-]' "$1"
+    grep -qi '^## Skill routing' "$1" || grep -q '^## Skills and MCP' "$1" \
+        || grep -Eq "$LEGACY_SKILL_NAMES_RE" "$1"
+}
+
+# Moves staged file $1 over $2. A symlinked $2 (e.g. CLAUDE.md -> AGENTS.md) is
+# written through instead, so the link itself survives.
+commit_staged() {
+    if [ -L "$2" ]; then
+        cat "$1" > "$2" && rm -f "$1"
+    else
+        mv "$1" "$2"
+    fi
+}
+
+# A mktemp file starts as 0600. Copy the destination's permission bits onto it
+# before an atomic rename so updating guidelines does not make a shared project
+# unreadable to other users. Symlinks are written through by commit_staged().
+preserve_dest_mode() {
+    local staged="$1" dest="$2" mode
+    [ -L "$dest" ] && return 0
+    mode="$(stat -f '%Lp' "$dest" 2>/dev/null || stat -c '%a' "$dest")" \
+        || die "cannot read permissions of ${dest}"
+    chmod "$mode" "$staged" || die "cannot preserve permissions of ${dest}"
+}
+
+# Succeeds when CLAUDE.md $1 already gets the block through the AGENTS.md next
+# to it: AGENTS.md carries the block, and CLAUDE.md either is that same file
+# (symlink or hard link) or @-imports it -- Claude Code merges `@AGENTS.md`
+# imports at load time. Installing the block into CLAUDE.md as well would only
+# duplicate it.
+claude_md_covered_by_agents_md() {
+    local claude_md="$1" agents_md
+    agents_md="$(dirname "$claude_md")/AGENTS.md"
+    has_guidelines_block "$agents_md" || return 1
+    [ "$claude_md" -ef "$agents_md" ] && return 0
+    [ -f "$claude_md" ] && grep -Eq '(^|[[:space:]])@(\./)?AGENTS\.md([[:space:]]|$)' "$claude_md"
 }
 
 # Installs the toolkit-managed block into the agent's project guidelines file.
@@ -605,6 +671,9 @@ looks_like_legacy_guidelines() {
 #   2. markers present    -> replace only that region, no backup
 #   3. legacy toolkit file-> back up, replace whole file
 #   4. anything else      -> back up, append the block, keep everything they wrote
+# Before 2-4, a CLAUDE.md that already gets the block through AGENTS.md (see
+# claude_md_covered_by_agents_md) is skipped, and a dest that exists but is not
+# a file is an error.
 install_guidelines_block_for() {
     local agent="$1"
     local dest label dest_dir tmp backup
@@ -625,6 +694,14 @@ install_guidelines_block_for() {
         return 0
     fi
 
+    [ -f "$dest" ] || die "cannot merge guidelines into ${dest}: it exists but is not a file"
+
+    if [ "$agent" = claude ] && claude_md_covered_by_agents_md "$dest"; then
+        log "  Skipped: ${dest} (imports AGENTS.md, which already carries the block)"
+        log "  Project guidelines reach ${label} through AGENTS.md"
+        return 0
+    fi
+
     tmp="$(mktemp "${dest_dir}/.jmix-guidelines.XXXXXX")" \
         || die "cannot create a temp file in ${dest_dir}"
 
@@ -637,7 +714,8 @@ install_guidelines_block_for() {
             log "  Project guidelines already up to date for ${label}"
             return 0
         fi
-        mv "$tmp" "$dest" || { rm -f "$tmp"; die "cannot write ${dest}"; }
+        preserve_dest_mode "$tmp" "$dest"
+        commit_staged "$tmp" "$dest" || { rm -f "$tmp"; die "cannot write ${dest}"; }
         log "  Updated: ${dest}"
         emit_change updated file "$dest"
         log "  Project guidelines installed for ${label}"
@@ -648,6 +726,7 @@ install_guidelines_block_for() {
     # back up, regardless of --backup-existing-files (issue #17).
     backup="$(dedup_backup_path "$dest")"
     cp "$dest" "$backup" || { rm -f "$tmp"; die "cannot back up ${dest}"; }
+    emit_change backed-up file "$backup"
 
     if looks_like_legacy_guidelines "$dest"; then
         cp "$SOURCE_GUIDELINES_BLOCK" "$tmp" || { rm -f "$tmp"; die "cannot stage ${dest}"; }
@@ -659,11 +738,31 @@ install_guidelines_block_for() {
             cat "$SOURCE_GUIDELINES_BLOCK"
         } > "$tmp" || { rm -f "$tmp"; die "cannot stage ${dest}"; }
     fi
-    mv "$tmp" "$dest" || { rm -f "$tmp"; die "cannot write ${dest}"; }
+    preserve_dest_mode "$tmp" "$dest"
+    commit_staged "$tmp" "$dest" || { rm -f "$tmp"; die "cannot write ${dest}"; }
 
     log "  Updated: ${dest} (backup: $(basename "$backup"))"
     emit_change updated file "$dest"
     log "  Project guidelines installed for ${label}"
+}
+
+# Installs the block for every agent in $1 (space-separated), AGENTS.md agents
+# before claude so claude_md_covered_by_agents_md sees AGENTS.md in its final
+# state whatever order the agents were given in. $2=1 keeps going after a
+# failed agent (wizard).
+install_guidelines_blocks() {
+    local agents="$1" lenient="${2:-0}" ordered="" has_claude=0 agent
+    for agent in $agents; do
+        if [ "$agent" = claude ]; then has_claude=1; else ordered="${ordered} ${agent}"; fi
+    done
+    [ "$has_claude" -eq 1 ] && ordered="${ordered} claude"
+    for agent in $ordered; do
+        if [ "$lenient" -eq 1 ]; then
+            install_guidelines_block_for "$agent" || true
+        else
+            install_guidelines_block_for "$agent"
+        fi
+    done
 }
 
 cmd_agents_md() {
@@ -692,11 +791,7 @@ cmd_agents_md() {
 
     log "Project guidelines target directory: $(pwd -P)"
     ensure_tarball
-
-    local agent
-    for agent in $agents; do
-        install_guidelines_block_for "$agent"
-    done
+    install_guidelines_blocks "$agents"
 }
 
 # =================================================================
@@ -1100,10 +1195,7 @@ cmd_wizard() {
     if [ "$sel" != "skip" ]; then
         if prompt_yes_no "Target directory: $(pwd -P). Proceed?" "y"; then
             ensure_tarball
-            local agent
-            for agent in $sel; do
-                install_guidelines_block_for "$agent" || true
-            done
+            install_guidelines_blocks "$sel" 1
             summary_guidelines="$sel"
         else
             summary_guidelines="skipped (declined)"
@@ -1166,12 +1258,18 @@ cmd_wizard() {
 # Main dispatch
 # =================================================================
 
-# Pull global --verbose/--debug out of the args so every subcommand benefits.
+# Pull global options out of the args so every subcommand benefits.
 _args=()
-for _a in "$@"; do
-    case "$_a" in
-        --verbose|--debug) VERBOSE=1 ;;
-        *) _args+=("$_a") ;;
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --content-ref)
+            [ $# -ge 2 ] || die "--content-ref requires an argument"
+            [ -n "$2" ] || die "--content-ref cannot be empty"
+            CONTENT_REF="$2"; shift 2 ;;
+        --verbose|--debug)
+            VERBOSE=1; shift ;;
+        *)
+            _args+=("$1"); shift ;;
     esac
 done
 set -- ${_args[@]+"${_args[@]}"}

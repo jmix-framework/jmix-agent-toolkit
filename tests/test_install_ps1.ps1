@@ -219,6 +219,47 @@ Check ($after -match 'KEEP-ME')          'agents-md: malformed-marker file not t
 Check ($after -match 'half a block')     'agents-md: malformed-marker content kept'
 Check ($after.Contains($endMark))        'agents-md: block appended to malformed file'
 
+# A later run must pair the appended block with its own nearest BEGIN marker;
+# the original orphan marker and the developer's content remain unmanaged.
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$after = [System.IO.File]::ReadAllText($claudeMd)
+Check ($after -match 'KEEP-ME')      'agents-md: malformed-marker file not truncated on re-run'
+Check ($after -match 'half a block') 'agents-md: malformed-marker content kept on re-run'
+
+# 1g2. Whole-line, nearest-pair semantics match install.sh. Standalone markers
+#      in fenced examples and inline marker mentions are developer content.
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+$fence = '```'
+[System.IO.File]::WriteAllText($claudeMd,
+    "# Project`n`n${fence}markdown`n$beginMark`n$fence`n`nTEAM-RULE-SENTINEL`n`n$beginMark`nstale block`n$endMark`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$after = [System.IO.File]::ReadAllText($claudeMd)
+Check ($after -match 'TEAM-RULE-SENTINEL') 'agents-md: text after a fenced BEGIN marker kept'
+Check ($after.Contains($fence))             'agents-md: fenced marker example not truncated'
+
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+[System.IO.File]::WriteAllText($claudeMd,
+    "# Project`n`nKeep the ``$beginMark`` and ``$endMark`` lines.`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$after = [System.IO.File]::ReadAllText($claudeMd)
+Check ($after -match 'Keep the')                         'agents-md: inline marker prose kept'
+Check ($after -match [regex]::Escape("and ``$endMark``")) 'agents-md: inline END marker prose kept'
+
+# 1g3. Merging is byte-preserving. A legacy Windows-1252 byte in developer text
+#      must not be decoded to U+FFFD while the UTF-8 block is updated.
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+$prefixBytes = [byte[]](0x23,0x20,0x50,0x72,0x6f,0x6a,0x65,0x63,0x74,0x0a,0x0a,0x63,0x61,0x66,0xe9,0x0a,0x0a)
+$staleBytes = [System.Text.Encoding]::ASCII.GetBytes("$beginMark`nstale block`n$endMark`n")
+[System.IO.File]::WriteAllBytes($claudeMd, $prefixBytes + $staleBytes)
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$afterBytes = [System.IO.File]::ReadAllBytes($claudeMd)
+Check ($afterBytes[14] -eq 0xe9) 'agents-md: non-UTF-8 developer byte preserved'
+Check (-not (($afterBytes | ForEach-Object { $_.ToString('X2') }) -join '').Contains('EFBFBD')) `
+    'agents-md: invalid UTF-8 byte not replaced by U+FFFD'
+
 # 1h. A legacy full-file replaced correctly even with CRLF line endings -- a
 #     regression guard keeping install.ps1 in step with install.sh's now-fixed
 #     byte-exact marker/heading comparisons.
@@ -305,9 +346,106 @@ Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $expected1m) `
     'agents-md: no-trailing-newline destination appended to byte-for-byte'
 Check (Test-Path "$claudeMd.bak") 'agents-md: no-trailing-newline destination backed up'
 
-# Reset so later sections start from a clean project guidelines state.
+$agentsMd = Join-Path $proj 'AGENTS.md'
+function Reset-Guidelines {
+    foreach ($f in @($claudeMd, $agentsMd)) {
+        if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
+    }
+    Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+    Get-ChildItem -Path $proj -Filter 'AGENTS.md.bak*' | Remove-Item -Force
+}
+
+# 1n. A CLAUDE.md that @-imports AGENTS.md (Claude Code import syntax) is left
+#     alone when AGENTS.md carries the block: Claude sees it through the import,
+#     a second copy would only duplicate it. No rewrite, no backup -- and the
+#     AGENTS.md agents are processed first even though claude is listed first.
+Reset-Guidelines
+$importText = "# Team rules`n`nSee @AGENTS.md for the shared instructions.`n"
+[System.IO.File]::WriteAllText($claudeMd, $importText)
+[System.IO.File]::WriteAllText($agentsMd, "# Shared`n`nNever push to main.`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude,codex', '-Source', $Source)
+Check ((Get-Content -Raw $agentsMd) -match [regex]::Escape($beginMark)) 'agents-md: block merged into AGENTS.md'
+Check ((Get-Content -Raw $agentsMd) -match 'Never push to main\.')     'agents-md: AGENTS.md content kept'
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $importText) `
+    'agents-md: CLAUDE.md that imports AGENTS.md not rewritten'
+Check (-not (Test-Path "$claudeMd.bak")) 'agents-md: CLAUDE.md that imports AGENTS.md not backed up'
+
+# 1n2. Same import, only claude selected later: AGENTS.md still carries the block
+#      from the earlier run, so CLAUDE.md is still skipped.
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $importText) `
+    'agents-md: importing CLAUDE.md still skipped on a claude-only re-run'
+
+# 1o. Same import, but AGENTS.md has no block and only claude is selected: nothing
+#     else routes Claude to the skills, so the block goes into CLAUDE.md and
+#     AGENTS.md is not touched.
+Reset-Guidelines
+[System.IO.File]::WriteAllText($claudeMd, $importText)
+[System.IO.File]::WriteAllText($agentsMd, "# Shared`n`nNever push to main.`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check ((Get-Content -Raw $claudeMd) -match [regex]::Escape($beginMark)) `
+    'agents-md: block added to importing CLAUDE.md when AGENTS.md is unmanaged'
+Check ((Get-Content -Raw $claudeMd) -match 'See @AGENTS\.md') 'agents-md: import line kept'
+Check (-not ((Get-Content -Raw $agentsMd) -match [regex]::Escape($beginMark))) `
+    'agents-md: AGENTS.md untouched when only claude selected'
+
+# 1p. CLAUDE.md symlinked to AGENTS.md (a common setup). Claude-only: the block is
+#     written through the link, which survives, and AGENTS.md gets it once. Both
+#     agents: the shared file is still touched once. Needs symlink privilege.
+if (Test-SymlinkCapable) {
+    Reset-Guidelines
+    [System.IO.File]::WriteAllText($agentsMd, "# Shared`n`nNever push to main.`n")
+    New-Item -ItemType SymbolicLink -Path $claudeMd -Target 'AGENTS.md' | Out-Null
+    $null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+    Check ((Get-Item -LiteralPath $claudeMd -Force).LinkType -eq 'SymbolicLink') `
+        'agents-md: symlinked CLAUDE.md survives'
+    Check (([regex]::Matches((Get-Content -Raw $agentsMd), [regex]::Escape($beginMark))).Count -eq 1) `
+        'agents-md: block written once through the CLAUDE.md symlink'
+    Check ((Get-Content -Raw $agentsMd) -match 'Never push to main\.') 'agents-md: linked AGENTS.md content kept'
+    $null = Invoke-Installer @('agents-md', '-Agents', 'claude,codex', '-Source', $Source)
+    Check ((Get-Item -LiteralPath $claudeMd -Force).LinkType -eq 'SymbolicLink') `
+        'agents-md: symlinked CLAUDE.md survives a re-run'
+    Check (([regex]::Matches((Get-Content -Raw $agentsMd), [regex]::Escape($beginMark))).Count -eq 1) `
+        'agents-md: block not duplicated through the CLAUDE.md symlink'
+} else {
+    Write-Host 'skip: no symlink privilege, skipping the CLAUDE.md -> AGENTS.md symlink case'
+}
+
+# 1q. A developer file with a legacy heading that mentions jmix-* things which are
+#     not toolkit skills (jmix-flowui, a jmix-framework URL) is NOT legacy: append.
+Reset-Guidelines
+[System.IO.File]::WriteAllText($claudeMd, "# Coding Guidelines`n`nWe use jmix-flowui; see https://github.com/jmix-framework/jmix.`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check ((Get-Content -Raw $claudeMd) -match 'We use jmix-flowui') `
+    'agents-md: jmix-flowui / jmix-framework mentions are not a legacy signal'
+Check ((Get-Content -Raw $claudeMd) -match [regex]::Escape($beginMark)) 'agents-md: block appended to jmix-flowui file'
+
+# Backups are first-class changes in the Studio summary, not only log text.
+Reset-Guidelines
+[System.IO.File]::WriteAllText($claudeMd, "# Team rules`n`nKeep this.`n")
+$env:JMIX_EMIT_CHANGE_MARKERS = '1'
+$markerOutput = Invoke-InstallerCapture @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Remove-Item Env:JMIX_EMIT_CHANGE_MARKERS
+Check ($markerOutput -match '@@JMIX_CHANGE@@\s+action=backed-up\s+type=file\s+path=') `
+    'agents-md: backup emitted as a Studio change marker'
+
+# 1r. The earliest "# Coding Guidelines" vintage, trimmed down to its "## Skills
+#     and MCP" section with no skill name left: still recognised as legacy.
+Reset-Guidelines
+[System.IO.File]::WriteAllText($claudeMd, "# Coding Guidelines`n`nThis file provides guidance to AI coding agents.`n`n## Skills and MCP`n`n- ALWAYS use the Skill tool.`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
+    "agents-md: early-vintage file recognised by its 'Skills and MCP' section"
+
+# 1s. A destination that exists but is not a file is an error, not a merge.
+Reset-Guidelines
+New-Item -ItemType Directory -Path $claudeMd | Out-Null
+Check ((Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)) -ne 0) `
+    'agents-md: a directory named CLAUDE.md fails'
 Remove-Item -LiteralPath $claudeMd -Force
-Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+
+# Reset so later sections start from a clean project guidelines state.
+Reset-Guidelines
 
 # ---------------------------------------------------------------------------
 # 2. skills, local scope -- must succeed without symlink privilege
@@ -338,6 +476,13 @@ Check (Test-Path (Join-Path $proj ".claude/skills/$skill/SKILL.md")) 'skills(loc
 Check ((Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'global', '-Source', $Source)) -eq 0) `
     'skills(global) exits 0'
 Check (Test-Path (Join-Path $homeDir '.agents/.jmix/skills/v3')) 'skills(global): v3 store created'
+
+# Studio can pin a feature branch independently of the release default.
+Check ((Invoke-Installer @('skills', '-ContentRef', 'no-agents-md-test', '-Agents', 'claude',
+        '-Scope', 'global', '-Source', $Source)) -eq 0) `
+    'skills(global): content-ref override exits 0'
+Check (Test-Path (Join-Path $homeDir '.agents/.jmix/skills/no-agents-md-test')) `
+    'skills(global): content-ref override keys the store'
 
 # ---------------------------------------------------------------------------
 # 3. OpenCode MCP entries (no agent CLI needed)

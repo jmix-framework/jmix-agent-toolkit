@@ -34,7 +34,11 @@
 
 .PARAMETER Source
     Install from a local checkout of this repository instead of downloading.
-    Skips the network and overrides -Ref. Mainly for CI and offline use.
+    Skips the network. Mainly for CI and offline use.
+
+.PARAMETER ContentRef
+    Repository branch/ref to download and use. Defaults to this release branch
+    (v3). Studio passes its resolved toolkit branch here.
 
 .PARAMETER Agents
     Comma-separated list of agents (e.g. "claude,codex"). Single value is also
@@ -73,15 +77,15 @@ param(
     [string]$Agents = '',
     [string]$Scope = '',
     [string]$Context7Key = '',
+    [string]$ContentRef = 'v3',
     [switch]$BackupExistingFiles
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-# Branch identity: this script lives on the $ContentRef branch and installs that
-# branch's content/. Set per branch when cutting a new version (see MAINTAINING.md).
-$ContentRef = 'v3'
+# Branch identity defaults to this release branch. Studio overrides it when a
+# feature branch is pinned in the Registry.
 
 $script:RepoOwner = 'jmix-framework'
 $script:RepoName  = 'jmix-agent-toolkit'
@@ -508,16 +512,20 @@ function Get-AgentsMdDest {
 $script:BlockBegin = '<!-- BEGIN jmix-agent-toolkit -->'
 $script:BlockEnd   = '<!-- END jmix-agent-toolkit -->'
 
+# Treat strings in this section as byte containers. ISO-8859-1 maps every byte
+# to one code point and back, so marker splicing never decodes or re-encodes the
+# developer's file. The UTF-8 bytes of guidelines-block.md also pass unchanged.
+$script:BytePreservingEncoding = [System.Text.Encoding]::GetEncoding(28591)
+
 function Get-FileTextRaw {
     param([string]$Path)
-    return [System.IO.File]::ReadAllText($Path)
+    return [System.IO.File]::ReadAllText($Path, $script:BytePreservingEncoding)
 }
 
-# Writes UTF-8 without a BOM, so the guidelines file stays plain text for every
-# agent that reads it.
+# Writes the exact bytes represented by Get-FileTextRaw.
 function Set-FileTextRaw {
     param([string]$Path, [string]$Text)
-    [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText($Path, $Text, $script:BytePreservingEncoding)
 }
 
 # Writes $Text to a temp file in $Dest's directory, then moves it over $Dest.
@@ -525,8 +533,15 @@ function Set-FileTextRaw {
 # write that fails partway never truncates the developer's own text above and
 # below the marker region; the temp file is removed on any failure path so a
 # failed run never leaves a stray temp file in the developer's project.
+# A symlinked $Dest (e.g. CLAUDE.md -> AGENTS.md) is written through instead, so
+# the link itself survives -- Move-Item would replace it with a plain file.
 function Set-FileTextAtomic {
     param([string]$Dest, [string]$Text)
+    $destItem = Get-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
+    if ($destItem -and $destItem.LinkType) {
+        Set-FileTextRaw -Path $Dest -Text $Text
+        return
+    }
     $destDir = Split-Path -Parent $Dest
     $tmp = Join-Path $destDir (".jmix-guidelines." + [guid]::NewGuid().ToString('N'))
     try {
@@ -538,35 +553,87 @@ function Set-FileTextAtomic {
     }
 }
 
-# Returns @{ Start; End } for a well-formed marker region in $Text, or $null.
-# A file with only one of the two markers is NOT well-formed and must be treated
-# as unmanaged, so the caller appends rather than truncates.
-# NOTE: the markers are matched as substrings here while install.sh matches them
-# as whole lines, normalised for a trailing \r and a leading UTF-8 BOM.
-# ReadAllText already strips a BOM and a substring match does not care about
-# line endings, so the two agree on every input -- not because the marker is
-# always alone on its line, but because neither installer's comparison is
-# sensitive to what surrounds it any more. Keep it that way when editing the
-# block.
+# Returns @{ Start; End } for a well-formed toolkit region in $Text, or $null.
+# Markers must occupy whole lines and each END is paired with its nearest
+# preceding BEGIN. Prefer the last pair carrying the current block heading;
+# otherwise use the last pair for compatibility with stale block contents.
+# These rules match install.sh and prevent orphan, inline, or indented markers
+# from capturing developer content.
 function Get-BlockRange {
     param([string]$Text)
-    $b = $Text.IndexOf($script:BlockBegin)
-    if ($b -lt 0) { return $null }
-    $e = $Text.IndexOf($script:BlockEnd, $b)
-    if ($e -lt 0) { return $null }
-    return @{ Start = $b; End = $e + $script:BlockEnd.Length }
+    $bom = [char]0x00EF + [char]0x00BB + [char]0x00BF
+    $beginPattern = '(?m)^(?:' + [regex]::Escape($bom) + ')?' +
+                    [regex]::Escape($script:BlockBegin) + '\r?$'
+    $endPattern = '(?m)^' + [regex]::Escape($script:BlockEnd) + '\r?$'
+    $eventsPattern = $beginPattern + '|' + $endPattern
+    $candidate = $null
+    $fallback = $null
+    $preferred = $null
+
+    foreach ($match in [regex]::Matches($Text, $eventsPattern,
+            [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)) {
+        $normalized = $match.Value.TrimEnd("`r")
+        if ($normalized.EndsWith($script:BlockBegin, [System.StringComparison]::Ordinal)) {
+            $candidate = $match
+            continue
+        }
+        if ($null -eq $candidate) { continue }
+
+        $contentStart = $candidate.Index + $candidate.Length
+        $content = $Text.Substring($contentStart, $match.Index - $contentStart)
+        $start = $candidate.Index
+        if ($candidate.Value.StartsWith($bom, [System.StringComparison]::Ordinal)) {
+            $start += $bom.Length
+        }
+        $range = @{ Start = $start; End = $match.Index + $match.Length }
+        $fallback = $range
+        if ($content -cmatch '^\n## Jmix\r?\n') { $preferred = $range }
+        $candidate = $null
+    }
+    if ($null -ne $preferred) { return $preferred }
+    return $fallback
 }
+
+# Skill names a shipped (pre-block) guidelines file may reference: the toolkit's
+# own skills plus the names its earliest files used. A closed set, deliberately
+# NOT a bare `jmix-[a-z-]` -- a developer's own file can mention jmix-flowui or
+# a github.com/jmix-framework URL without being ours. Must match install.sh.
+$script:LegacySkillNamesRe = 'jmix-(add-dialog-detail-flow|add-entity-event-listener|add-i18n-keys|configure-fetch-plan|create-composition-detail-view|create-custom-ui-component|create-detail-view|create-dto-entity|create-entity|create-enum|create-fragment|create-list-view|create-liquibase-changelog|create-resource-role|create-row-level-role|create-service|create-test|fetch-plans|ide-static-analysis|role-based-access|run-background-code|services|style-ui|verify-api-symbol|verify-bootrun)'
 
 # True when $Text looks like a guidelines file this toolkit installed before the
 # block existed. Both conditions must hold: the first non-blank line is one of the
-# three headings the toolkit has ever shipped, and the body mentions the skills.
+# three headings the toolkit has ever shipped, and the body carries one of the
+# toolkit's section headings or skill names.
 function Test-LegacyGuidelines {
     param([string]$Text)
     $first = ($Text -split "`r?`n" | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1)
-    if ($first -ne '# Agent Instructions' -and $first -ne '# Coding Guidelines' -and $first -ne '# Jmix Coding Guidelines') { return $false }
+    if ($first -cne '# Agent Instructions' -and $first -cne '# Coding Guidelines' -and $first -cne '# Jmix Coding Guidelines') { return $false }
     # -cmatch (case-sensitive): install.sh's grep is case-sensitive by default too,
     # so this stays in step with it for mixed-case content.
-    return (($Text -match '(?mi)^## Skill routing') -or ($Text -cmatch 'jmix-[a-z-]'))
+    return (($Text -match '(?mi)^## Skill routing') -or
+            ($Text -cmatch '(?m)^## Skills and MCP') -or
+            ($Text -cmatch $script:LegacySkillNamesRe))
+}
+
+# True when CLAUDE.md $ClaudeMd already gets the block through the AGENTS.md next
+# to it: AGENTS.md carries the block, and CLAUDE.md either is a link to that same
+# file or @-imports it -- Claude Code merges `@AGENTS.md` imports at load time.
+# Installing the block into CLAUDE.md as well would only duplicate it.
+function Test-ClaudeMdCoveredByAgentsMd {
+    param([string]$ClaudeMd)
+    $dir      = Split-Path -Parent $ClaudeMd
+    $agentsMd = Join-Path $dir 'AGENTS.md'
+    if (-not (Test-Path -LiteralPath $agentsMd -PathType Leaf)) { return $false }
+    if ($null -eq (Get-BlockRange -Text (Get-FileTextRaw -Path $agentsMd))) { return $false }
+    $item = Get-Item -LiteralPath $ClaudeMd -Force
+    if ($item.LinkType -and $item.Target) {
+        # A link target is relative to the link's directory or absolute; Combine
+        # keeps an absolute second argument as is.
+        $target   = @($item.Target)[0]
+        $resolved = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $target))
+        if ($resolved -eq [System.IO.Path]::GetFullPath($agentsMd)) { return $true }
+    }
+    return ((Get-FileTextRaw -Path $ClaudeMd) -cmatch '(?m)(^|\s)@(\./)?AGENTS\.md(\s|$)')
 }
 
 # Installs the toolkit-managed block into the agent's project guidelines file.
@@ -577,6 +644,8 @@ function Test-LegacyGuidelines {
 #   2. markers present     -> replace only that region, no backup
 #   3. legacy toolkit file -> back up, replace whole file
 #   4. anything else       -> back up, append the block, keep everything they wrote
+# Before 2-4, a CLAUDE.md that already gets the block through AGENTS.md (see
+# Test-ClaudeMdCoveredByAgentsMd) is skipped.
 function Install-GuidelinesBlockFor {
     param([string]$Agent)
     $dest  = Get-AgentsMdDest -Agent $Agent
@@ -602,6 +671,12 @@ function Install-GuidelinesBlockFor {
         Write-ErrAndExit "cannot merge guidelines into $dest`: it exists but is not a file"
     }
 
+    if ($Agent -eq 'claude' -and (Test-ClaudeMdCoveredByAgentsMd -ClaudeMd $dest)) {
+        Write-Info "  Skipped: $dest (imports AGENTS.md, which already carries the block)"
+        Write-Info "  Project guidelines reach $label through AGENTS.md"
+        return
+    }
+
     $text  = Get-FileTextRaw -Path $dest
     $range = Get-BlockRange -Text $text
 
@@ -609,7 +684,7 @@ function Install-GuidelinesBlockFor {
         $merged = $text.Substring(0, $range.Start) +
                   $block.TrimEnd("`r", "`n") +
                   $text.Substring($range.End)
-        if ($merged -eq $text) {
+        if ($merged -ceq $text) {
             Write-Info "  Unchanged: $dest"
             Write-Info "  Project guidelines already up to date for $label"
             return
@@ -624,7 +699,9 @@ function Install-GuidelinesBlockFor {
     # Branches 3 and 4 rewrite content the toolkit does not own, so they always
     # back up, regardless of -BackupExistingFiles (issue #17).
     $backupName = Get-DedupBackupName -Path $dest
-    Copy-Item -LiteralPath $dest -Destination (Join-Path $destDir $backupName) -ErrorAction Stop
+    $backupPath = Join-Path $destDir $backupName
+    Copy-Item -LiteralPath $dest -Destination $backupPath -ErrorAction Stop
+    Write-ChangeMarker -Action 'backed-up' -Type 'file' -Path $backupPath
 
     if (Test-LegacyGuidelines -Text $text) {
         Set-FileTextAtomic -Dest $dest -Text $block
@@ -639,13 +716,28 @@ function Install-GuidelinesBlockFor {
     Write-Info "  Project guidelines installed for $label"
 }
 
+# Installs the block for every agent in $Agents, AGENTS.md agents before claude
+# so Test-ClaudeMdCoveredByAgentsMd sees AGENTS.md in its final state whatever
+# order the agents were given in. -Lenient keeps going after a failed agent
+# (wizard).
+function Install-GuidelinesBlocks {
+    param([string[]]$Agents, [switch]$Lenient)
+    $ordered = @($Agents | Where-Object { $_ -ne 'claude' })
+    if ($Agents -contains 'claude') { $ordered += 'claude' }
+    foreach ($a in $ordered) {
+        if ($Lenient) {
+            try { Install-GuidelinesBlockFor -Agent $a } catch { Write-Info "error: $($_.Exception.Message)" }
+        } else {
+            Install-GuidelinesBlockFor -Agent $a
+        }
+    }
+}
+
 function Invoke-CmdAgentsMd {
     $agents = Resolve-AgentsCsv -Csv $Agents -Subcommand 'agents-md'
     Write-Info "Project guidelines target directory: $((Get-Location).Path)"
     Initialize-Tarball
-    foreach ($a in $agents) {
-        Install-GuidelinesBlockFor -Agent $a
-    }
+    Install-GuidelinesBlocks -Agents $agents
 }
 
 # =================================================================
@@ -977,9 +1069,7 @@ function Invoke-Wizard {
     if ($sel[0] -ne 'skip') {
         if (Read-YesNo -Message "Target directory: $((Get-Location).Path). Proceed?" -Default 'y') {
             Initialize-Tarball
-            foreach ($a in $sel) {
-                try { Install-GuidelinesBlockFor -Agent $a } catch { Write-Info "error: $($_.Exception.Message)" }
-            }
+            Install-GuidelinesBlocks -Agents $sel -Lenient
             $summaryStrings.guidelines = $sel -join ', '
         } else {
             $summaryStrings.guidelines = 'skipped (declined)'
