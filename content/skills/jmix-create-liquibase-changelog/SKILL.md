@@ -201,6 +201,36 @@ entity), NOT by the database — Jmix uses soft delete by default, so a DB-level
 `onDelete="CASCADE"` would never fire. Leave the FK without `onDelete` unless
 you specifically need hard-delete DB-level enforcement.
 
+## Two referential actions on one row — the dialects disagree
+
+`onDelete` is not an independent per-constraint choice once two foreign keys can
+act on the **same row in one statement**. The common shape is a self-referencing
+table that also belongs to a cascading owner:
+
+```
+EMPLOYEE(DEPARTMENT_ID -> DEPARTMENT ON DELETE CASCADE,
+         MANAGER_ID    -> EMPLOYEE   ON DELETE SET NULL)
+```
+
+Deleting a department whose head reports to a manager in that same department
+makes `FK_EMPLOYEE_ON_DEPARTMENT` delete the row while `FK_EMPLOYEE_ON_MANAGER`
+sets its `MANAGER_ID` to null. The targeted dialects do not agree about that:
+
+| Dialect | Result |
+| --- | --- |
+| PostgreSQL | performs all of the actions correctly |
+| HSQLDB | fails — `triggered data change violation`, SQLSTATE 27000 (standard SQL forbids one statement updating and deleting the same row) |
+
+So the usual test store is STRICTER than production here. A green suite is
+neither necessary nor sufficient evidence, and the trap is not the failure but
+the repair: HSQLDB fails loudly in a test, and the obvious way to make it pass
+is to weaken the model's `onDelete` clauses — which silently changes production
+behaviour on the dialect that had no problem.
+
+The remedy is to remove the rows in **separate statements from the application
+side** (clear or delete the self-references first, then delete the owner), NOT
+to weaken the clauses.
+
 ## Root Changelog Reachability
 
 ```xml
