@@ -195,11 +195,25 @@ Order the parent first, the child (with its FK) second:
 </changeSet>
 ```
 
-For a **composition** child, the delete cascade is enforced by Jmix at the
-application layer (`@Composition` + `@OnDelete(DeletePolicy.CASCADE)` on the
-entity), NOT by the database — Jmix uses soft delete by default, so a DB-level
-`onDelete="CASCADE"` would never fire. Leave the FK without `onDelete` unless
-you specifically need hard-delete DB-level enforcement.
+For a **composition** child, which layer actually removes the child rows depends
+on the **parent's** deletion traits. Check them before choosing `onDelete`:
+
+- **Parent carries `@DeletedDate`/`@DeletedBy`** (soft delete): the cascade is
+  enforced by Jmix at the application layer (`@Composition` +
+  `@OnDelete(DeletePolicy.CASCADE)` on the entity), NOT by the database. The
+  parent row is never physically deleted, so a DB-level `onDelete="CASCADE"`
+  would not fire. Leave the FK without `onDelete`.
+- **Parent carries neither** (hard delete): the application-layer policy never
+  runs — `processDeletePolicy` is called only when
+  `EntityValues.isSoftDeletionSupported(parent)` holds — so the annotation is
+  inert and the database clause is the ONLY thing that removes the children. The
+  child's FK MUST carry `onDelete="CASCADE"`.
+
+An entity is soft-deletable only when it carries those annotations, so a plain
+entity is hard-deleted: in a project that has not opted into soft delete, the
+second branch is the normal case, not the exception. Getting it wrong leaves
+orphaned child rows with no compile error, no inspection warning and a green
+`clean test` — only a test that asserts the children are gone catches it.
 
 ## Root Changelog Reachability
 
