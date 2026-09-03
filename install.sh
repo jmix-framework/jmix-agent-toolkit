@@ -647,7 +647,7 @@ commit_staged() {
 preserve_dest_mode() {
     local staged="$1" dest="$2" mode
     [ -L "$dest" ] && return 0
-    mode="$(stat -f '%Lp' "$dest" 2>/dev/null || stat -c '%a' "$dest")" \
+    mode="$(stat -c '%a' "$dest" 2>/dev/null || stat -f '%Lp' "$dest")" \
         || die "cannot read permissions of ${dest}"
     chmod "$mode" "$staged" || die "cannot preserve permissions of ${dest}"
 }

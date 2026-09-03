@@ -108,6 +108,24 @@ Check (-not (Test-Path "$claudeMd.bak")) 'agents-md: unchanged file not backed u
 Check ((Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc -eq $mtimeBefore) `
     'agents-md: unchanged file not rewritten'
 
+# 1b2. The same no-op guarantee holds when the checked-out block uses CRLF.
+$crlfSource = Join-Path $work 'source-crlf'
+$crlfContent = Join-Path $crlfSource 'content'
+New-Item -ItemType Directory -Force -Path (Join-Path $crlfContent 'skills') | Out-Null
+$crlfBlock = [regex]::Replace($blockText, '\r?\n', "`r`n")
+[System.IO.File]::WriteAllText((Join-Path $crlfContent 'guidelines-block.md'), $crlfBlock,
+    (New-Object System.Text.UTF8Encoding($false)))
+Remove-Item -LiteralPath $claudeMd -Force
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $crlfSource)
+$crlfHashBefore = (Get-FileHash -LiteralPath $claudeMd -Algorithm SHA256).Hash
+(Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc = [datetime]'2001-01-01T00:00:00Z'
+$crlfMtimeBefore = (Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $crlfSource)
+Check ((Get-FileHash -LiteralPath $claudeMd -Algorithm SHA256).Hash -eq $crlfHashBefore) `
+    'agents-md: unchanged CRLF block bytes preserved'
+Check ((Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc -eq $crlfMtimeBefore) `
+    'agents-md: unchanged CRLF block not rewritten'
+
 # 1c. An old full AGENTS.md from a previous toolkit version is replaced whole,
 #     with a backup. Heading "# Agent Instructions", and ONLY the
 #     "## Skill routing" half of the content rule.

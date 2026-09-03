@@ -563,8 +563,8 @@ function Get-BlockRange {
     param([string]$Text)
     $bom = [char]0x00EF + [char]0x00BB + [char]0x00BF
     $beginPattern = '(?m)^(?:' + [regex]::Escape($bom) + ')?' +
-                    [regex]::Escape($script:BlockBegin) + '\r?$'
-    $endPattern = '(?m)^' + [regex]::Escape($script:BlockEnd) + '\r?$'
+                    [regex]::Escape($script:BlockBegin) + '(?=\r?$)'
+    $endPattern = '(?m)^' + [regex]::Escape($script:BlockEnd) + '(?=\r?$)'
     $eventsPattern = $beginPattern + '|' + $endPattern
     $candidate = $null
     $fallback = $null
@@ -587,7 +587,7 @@ function Get-BlockRange {
         }
         $range = @{ Start = $start; End = $match.Index + $match.Length }
         $fallback = $range
-        if ($content -cmatch '^\n## Jmix\r?\n') { $preferred = $range }
+        if ($content -cmatch '^\r?\n## Jmix\r?\n') { $preferred = $range }
         $candidate = $null
     }
     if ($null -ne $preferred) { return $preferred }
