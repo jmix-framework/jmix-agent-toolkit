@@ -6,12 +6,14 @@ on:
     paths:
       - 'install.sh'
       - 'install.ps1'
+      - 'content/guidelines-block.md'
       - 'tests/**'
       - '.github/workflows/test-installers.yml'
   pull_request:
     paths:
       - 'install.sh'
       - 'install.ps1'
+      - 'content/guidelines-block.md'
       - 'tests/**'
       - '.github/workflows/test-installers.yml'
   workflow_dispatch:

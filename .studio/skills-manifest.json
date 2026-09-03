@@ -1,7 +1,8 @@
 {
   "schemaVersion": 1,
-  "sha256": "3bed983cac094558b29a846ef96be8ee10825e3abf5bca9a9287b69600500569",
+  "sha256": "3117f8245efe72e2199e6d97d546fdbc86c8d3aa67d10da6499c0f59e6af48fc",
   "skills": [
+    "jmix",
     "jmix-add-dialog-detail-flow",
     "jmix-add-entity-event-listener",
     "jmix-add-i18n-keys",

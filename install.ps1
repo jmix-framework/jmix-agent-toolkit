@@ -22,16 +22,23 @@
 
     Add -BackupExistingFiles to any subcommand to rename overwritten files/dirs
     to <name>.bak (deduped: .bak, .bak1, .bak2, ...) instead of deleting them.
-    Guidelines files (CLAUDE.md / AGENTS.md / guidelines.md) are always backed
-    up regardless of this switch -- unless their content is already identical,
-    in which case they are left untouched.
+    Project guidelines (CLAUDE.md / AGENTS.md / guidelines.md) are merged
+    rather than overwritten and are not covered by this switch: a backup is
+    made only when the toolkit rewrites content it does not own -- replacing a
+    guidelines file an older toolkit version installed, or appending to your
+    own file. Replacing only the marked region never makes a backup, and a
+    file that is already up to date is left untouched.
 
 .PARAMETER Subcommand
     Optional subcommand. When omitted, the interactive wizard is started.
 
 .PARAMETER Source
     Install from a local checkout of this repository instead of downloading.
-    Skips the network and overrides -Ref. Mainly for CI and offline use.
+    Skips the network. Mainly for CI and offline use.
+
+.PARAMETER ContentRef
+    Repository branch/ref to download and use. Defaults to this release branch
+    (v3). Studio passes its resolved toolkit branch here.
 
 .PARAMETER Agents
     Comma-separated list of agents (e.g. "claude,codex"). Single value is also
@@ -49,9 +56,12 @@
 .PARAMETER BackupExistingFiles
     When set, an existing destination file or folder is renamed to a deduped
     <name>.bak (then .bak1, .bak2, ... if that name is taken) instead of being
-    deleted before the new content is copied. Off by default. Guidelines files
-    are always backed up regardless of this switch -- unless their content is
-    already identical, in which case they are left untouched.
+    deleted before the new content is copied. Off by default. Project
+    guidelines are merged rather than overwritten and are not covered by this
+    switch: a backup is made only when the toolkit rewrites content it does
+    not own -- replacing a guidelines file an older toolkit version installed,
+    or appending to your own file. Replacing only the marked region never
+    makes a backup, and a file that is already up to date is left untouched.
 
 .EXAMPLE
     Invoke-RestMethod https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/HEAD/install.ps1 | Invoke-Expression
@@ -67,15 +77,15 @@ param(
     [string]$Agents = '',
     [string]$Scope = '',
     [string]$Context7Key = '',
+    [string]$ContentRef = 'v3',
     [switch]$BackupExistingFiles
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-# Branch identity: this script lives on the $ContentRef branch and installs that
-# branch's content/. Set per branch when cutting a new version (see MAINTAINING.md).
-$ContentRef = 'v3'
+# Branch identity defaults to this release branch. Studio overrides it when a
+# feature branch is pinned in the Registry.
 
 $script:RepoOwner = 'jmix-framework'
 $script:RepoName  = 'jmix-agent-toolkit'
@@ -88,7 +98,7 @@ $script:TarballReady     = $false
 $script:Staging          = $null
 $script:ExtractedDir     = $null
 $script:SourceSkillsDir  = $null
-$script:SourceAgentsMd   = $null
+$script:SourceGuidelinesBlock = $null
 $script:ResolvedVersionDir = $null
 $script:IsWindowsHost    = ($env:OS -eq 'Windows_NT')
 
@@ -205,15 +215,12 @@ function Write-Dest {
     param(
         [string]$Src,
         [string]$Dest,
-        [string]$Label,
-        # Always back up an existing $Dest regardless of -BackupExistingFiles
-        # (used for guidelines files).
-        [switch]$ForceBackup
+        [string]$Label
     )
     $existed = Test-Path $Dest
     $backupInfo = ''
     if ($existed) {
-        if ($ForceBackup -or $BackupExistingFiles) {
+        if ($BackupExistingFiles) {
             $backupName = Get-DedupBackupName -Path $Dest
             Rename-Item -Path $Dest -NewName $backupName -ErrorAction Stop
             $backupInfo = " (backup: $backupName)"
@@ -313,7 +320,7 @@ function Initialize-Tarball {
     if (-not (Test-Path $script:SourceSkillsDir -PathType Container)) {
         Write-ErrAndExit "content/skills not found in $(if ($Source) { $Source } else { $ContentRef })"
     }
-    $script:SourceAgentsMd = Join-Path $contentDir 'AGENTS.md'
+    $script:SourceGuidelinesBlock = Join-Path $contentDir 'guidelines-block.md'
 
     # Store segment under ~/.agents/.jmix/skills/<seg>: the branch name, so multiple
     # Jmix majors coexist on one machine.
@@ -500,45 +507,237 @@ function Get-AgentsMdDest {
     }
 }
 
-function Install-AgentsMdFor {
+# The marker pair delimiting the toolkit-managed region inside a project
+# guidelines file. Must match content/guidelines-block.md and install.sh exactly.
+$script:BlockBegin = '<!-- BEGIN jmix-agent-toolkit -->'
+$script:BlockEnd   = '<!-- END jmix-agent-toolkit -->'
+
+# Treat strings in this section as byte containers. ISO-8859-1 maps every byte
+# to one code point and back, so marker splicing never decodes or re-encodes the
+# developer's file. The UTF-8 bytes of guidelines-block.md also pass unchanged.
+$script:BytePreservingEncoding = [System.Text.Encoding]::GetEncoding(28591)
+
+function Get-FileTextRaw {
+    param([string]$Path)
+    return [System.IO.File]::ReadAllText($Path, $script:BytePreservingEncoding)
+}
+
+# Writes the exact bytes represented by Get-FileTextRaw.
+function Set-FileTextRaw {
+    param([string]$Path, [string]$Text)
+    [System.IO.File]::WriteAllText($Path, $Text, $script:BytePreservingEncoding)
+}
+
+# Writes $Text to a temp file in $Dest's directory, then moves it over $Dest.
+# Staging into a temp file first (instead of writing $Dest directly) means a
+# write that fails partway never truncates the developer's own text above and
+# below the marker region; the temp file is removed on any failure path so a
+# failed run never leaves a stray temp file in the developer's project.
+# A symlinked $Dest (e.g. CLAUDE.md -> AGENTS.md) is written through instead, so
+# the link itself survives -- Move-Item would replace it with a plain file.
+function Set-FileTextAtomic {
+    param([string]$Dest, [string]$Text)
+    $destItem = Get-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
+    if ($destItem -and $destItem.LinkType) {
+        Set-FileTextRaw -Path $Dest -Text $Text
+        return
+    }
+    $destDir = Split-Path -Parent $Dest
+    $tmp = Join-Path $destDir (".jmix-guidelines." + [guid]::NewGuid().ToString('N'))
+    try {
+        Set-FileTextRaw -Path $tmp -Text $Text
+        Move-Item -LiteralPath $tmp -Destination $Dest -Force -ErrorAction Stop
+    } catch {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
+# Returns @{ Start; End } for a well-formed toolkit region in $Text, or $null.
+# Markers must occupy whole lines and each END is paired with its nearest
+# preceding BEGIN. Prefer the last pair carrying the current block heading;
+# otherwise use the last pair for compatibility with stale block contents.
+# These rules match install.sh and prevent orphan, inline, or indented markers
+# from capturing developer content.
+function Get-BlockRange {
+    param([string]$Text)
+    $bom = [char]0x00EF + [char]0x00BB + [char]0x00BF
+    $beginPattern = '(?m)^(?:' + [regex]::Escape($bom) + ')?' +
+                    [regex]::Escape($script:BlockBegin) + '(?=\r?$)'
+    $endPattern = '(?m)^' + [regex]::Escape($script:BlockEnd) + '(?=\r?$)'
+    $eventsPattern = $beginPattern + '|' + $endPattern
+    $candidate = $null
+    $fallback = $null
+    $preferred = $null
+
+    foreach ($match in [regex]::Matches($Text, $eventsPattern,
+            [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)) {
+        $normalized = $match.Value.TrimEnd("`r")
+        if ($normalized.EndsWith($script:BlockBegin, [System.StringComparison]::Ordinal)) {
+            $candidate = $match
+            continue
+        }
+        if ($null -eq $candidate) { continue }
+
+        $contentStart = $candidate.Index + $candidate.Length
+        $content = $Text.Substring($contentStart, $match.Index - $contentStart)
+        $start = $candidate.Index
+        if ($candidate.Value.StartsWith($bom, [System.StringComparison]::Ordinal)) {
+            $start += $bom.Length
+        }
+        $range = @{ Start = $start; End = $match.Index + $match.Length }
+        $fallback = $range
+        if ($content -cmatch '^\r?\n## Jmix\r?\n') { $preferred = $range }
+        $candidate = $null
+    }
+    if ($null -ne $preferred) { return $preferred }
+    return $fallback
+}
+
+# Skill names a shipped (pre-block) guidelines file may reference: the toolkit's
+# own skills plus the names its earliest files used. A closed set, deliberately
+# NOT a bare `jmix-[a-z-]` -- a developer's own file can mention jmix-flowui or
+# a github.com/jmix-framework URL without being ours. Must match install.sh.
+$script:LegacySkillNamesRe = 'jmix-(add-dialog-detail-flow|add-entity-event-listener|add-i18n-keys|configure-fetch-plan|create-composition-detail-view|create-custom-ui-component|create-detail-view|create-dto-entity|create-entity|create-enum|create-fragment|create-list-view|create-liquibase-changelog|create-resource-role|create-row-level-role|create-service|create-test|fetch-plans|ide-static-analysis|role-based-access|run-background-code|services|style-ui|verify-api-symbol|verify-bootrun)'
+
+# True when $Text looks like a guidelines file this toolkit installed before the
+# block existed. Both conditions must hold: the first non-blank line is one of the
+# three headings the toolkit has ever shipped, and the body carries one of the
+# toolkit's section headings or skill names.
+function Test-LegacyGuidelines {
+    param([string]$Text)
+    $first = ($Text -split "`r?`n" | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1)
+    if ($first -cne '# Agent Instructions' -and $first -cne '# Coding Guidelines' -and $first -cne '# Jmix Coding Guidelines') { return $false }
+    # -cmatch (case-sensitive): install.sh's grep is case-sensitive by default too,
+    # so this stays in step with it for mixed-case content.
+    return (($Text -match '(?mi)^## Skill routing') -or
+            ($Text -cmatch '(?m)^## Skills and MCP') -or
+            ($Text -cmatch $script:LegacySkillNamesRe))
+}
+
+# True when CLAUDE.md $ClaudeMd already gets the block through the AGENTS.md next
+# to it: AGENTS.md carries the block, and CLAUDE.md either is a link to that same
+# file or @-imports it -- Claude Code merges `@AGENTS.md` imports at load time.
+# Installing the block into CLAUDE.md as well would only duplicate it.
+function Test-ClaudeMdCoveredByAgentsMd {
+    param([string]$ClaudeMd)
+    $dir      = Split-Path -Parent $ClaudeMd
+    $agentsMd = Join-Path $dir 'AGENTS.md'
+    if (-not (Test-Path -LiteralPath $agentsMd -PathType Leaf)) { return $false }
+    if ($null -eq (Get-BlockRange -Text (Get-FileTextRaw -Path $agentsMd))) { return $false }
+    $item = Get-Item -LiteralPath $ClaudeMd -Force
+    if ($item.LinkType -and $item.Target) {
+        # A link target is relative to the link's directory or absolute; Combine
+        # keeps an absolute second argument as is.
+        $target   = @($item.Target)[0]
+        $resolved = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $target))
+        if ($resolved -eq [System.IO.Path]::GetFullPath($agentsMd)) { return $true }
+    }
+    return ((Get-FileTextRaw -Path $ClaudeMd) -cmatch '(?m)(^|\s)@(\./)?AGENTS\.md(\s|$)')
+}
+
+# Installs the toolkit-managed block into the agent's project guidelines file.
+# Four branches, in order, plus an early exit for a destination path that exists
+# but is not a file (e.g. CLAUDE.md is a directory) -- there is nothing to merge
+# into, so this reports an error and exits rather than attempting anything else:
+#   1. no file             -> write the block alone
+#   2. markers present     -> replace only that region, no backup
+#   3. legacy toolkit file -> back up, replace whole file
+#   4. anything else       -> back up, append the block, keep everything they wrote
+# Before 2-4, a CLAUDE.md that already gets the block through AGENTS.md (see
+# Test-ClaudeMdCoveredByAgentsMd) is skipped.
+function Install-GuidelinesBlockFor {
     param([string]$Agent)
-    $dest = Get-AgentsMdDest -Agent $Agent
+    $dest  = Get-AgentsMdDest -Agent $Agent
     $label = Get-AgentLabel -Agent $Agent
 
-    if (-not (Test-Path $script:SourceAgentsMd)) {
-        Write-ErrAndExit "AGENTS.md not found in $($script:ResolvedVersionDir)"
+    if (-not (Test-Path -LiteralPath $script:SourceGuidelinesBlock)) {
+        Write-ErrAndExit "guidelines-block.md not found in $($script:ResolvedVersionDir)"
     }
+    $block = Get-FileTextRaw -Path $script:SourceGuidelinesBlock
 
-    # Identical content: leave the file alone entirely - no backup, no rewrite,
-    # no change marker (issue #22).
-    if ((Test-Path -LiteralPath $dest -PathType Leaf) -and
-        (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash -eq
-        (Get-FileHash -LiteralPath $script:SourceAgentsMd -Algorithm SHA256).Hash) {
-        Write-Info "  Unchanged: $dest"
-        Write-Info "  Project guidelines already up to date for $label"
+    $destDir = Split-Path -Parent $dest
+    if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+
+    if (-not (Test-Path -LiteralPath $dest)) {
+        Set-FileTextRaw -Path $dest -Text $block
+        Write-Info "  Installed: $dest"
+        Write-ChangeMarker -Action 'created' -Type 'file' -Path $dest
+        Write-Info "  Project guidelines installed for $label"
         return
     }
 
-    $destDir = Split-Path -Parent $dest
-    if (-not (Test-Path $destDir)) {
-        New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $dest -PathType Leaf)) {
+        Write-ErrAndExit "cannot merge guidelines into $dest`: it exists but is not a file"
     }
 
-    $destExisted = Test-Path $dest
-    # Guidelines are always backed up on overwrite, regardless of
-    # -BackupExistingFiles (issue #17).
-    Write-Dest -Src $script:SourceAgentsMd -Dest $dest -Label $dest -ForceBackup
-    Write-ChangeMarker -Action $(if ($destExisted) { 'updated' } else { 'created' }) -Type 'file' -Path $dest
+    if ($Agent -eq 'claude' -and (Test-ClaudeMdCoveredByAgentsMd -ClaudeMd $dest)) {
+        Write-Info "  Skipped: $dest (imports AGENTS.md, which already carries the block)"
+        Write-Info "  Project guidelines reach $label through AGENTS.md"
+        return
+    }
+
+    $text  = Get-FileTextRaw -Path $dest
+    $range = Get-BlockRange -Text $text
+
+    if ($null -ne $range) {
+        $merged = $text.Substring(0, $range.Start) +
+                  $block.TrimEnd("`r", "`n") +
+                  $text.Substring($range.End)
+        if ($merged -ceq $text) {
+            Write-Info "  Unchanged: $dest"
+            Write-Info "  Project guidelines already up to date for $label"
+            return
+        }
+        Set-FileTextAtomic -Dest $dest -Text $merged
+        Write-Info "  Updated: $dest"
+        Write-ChangeMarker -Action 'updated' -Type 'file' -Path $dest
+        Write-Info "  Project guidelines installed for $label"
+        return
+    }
+
+    # Branches 3 and 4 rewrite content the toolkit does not own, so they always
+    # back up, regardless of -BackupExistingFiles (issue #17).
+    $backupName = Get-DedupBackupName -Path $dest
+    $backupPath = Join-Path $destDir $backupName
+    Copy-Item -LiteralPath $dest -Destination $backupPath -ErrorAction Stop
+    Write-ChangeMarker -Action 'backed-up' -Type 'file' -Path $backupPath
+
+    if (Test-LegacyGuidelines -Text $text) {
+        Set-FileTextAtomic -Dest $dest -Text $block
+    } else {
+        $prefix = $text
+        if ($prefix.Length -gt 0 -and -not $prefix.EndsWith("`n")) { $prefix += "`n" }
+        Set-FileTextAtomic -Dest $dest -Text ($prefix + "`n" + $block)
+    }
+
+    Write-Info "  Updated: $dest (backup: $backupName)"
+    Write-ChangeMarker -Action 'updated' -Type 'file' -Path $dest
     Write-Info "  Project guidelines installed for $label"
+}
+
+# Installs the block for every agent in $Agents, AGENTS.md agents before claude
+# so Test-ClaudeMdCoveredByAgentsMd sees AGENTS.md in its final state whatever
+# order the agents were given in. -Lenient keeps going after a failed agent
+# (wizard).
+function Install-GuidelinesBlocks {
+    param([string[]]$Agents, [switch]$Lenient)
+    $ordered = @($Agents | Where-Object { $_ -ne 'claude' })
+    if ($Agents -contains 'claude') { $ordered += 'claude' }
+    foreach ($a in $ordered) {
+        if ($Lenient) {
+            try { Install-GuidelinesBlockFor -Agent $a } catch { Write-Info "error: $($_.Exception.Message)" }
+        } else {
+            Install-GuidelinesBlockFor -Agent $a
+        }
+    }
 }
 
 function Invoke-CmdAgentsMd {
     $agents = Resolve-AgentsCsv -Csv $Agents -Subcommand 'agents-md'
     Write-Info "Project guidelines target directory: $((Get-Location).Path)"
     Initialize-Tarball
-    foreach ($a in $agents) {
-        Install-AgentsMdFor -Agent $a
-    }
+    Install-GuidelinesBlocks -Agents $agents
 }
 
 # =================================================================
@@ -866,13 +1065,11 @@ function Invoke-Wizard {
     }
 
     # Step 2: agents-md
-    $sel = @(Read-AgentChoice -Label '[2/5] Add Jmix coding guidelines to this directory?' -Options $script:AllAgents -Default 'all')
+    $sel = @(Read-AgentChoice -Label '[2/5] Merge Jmix coding guidelines into this directory?' -Options $script:AllAgents -Default 'all')
     if ($sel[0] -ne 'skip') {
         if (Read-YesNo -Message "Target directory: $((Get-Location).Path). Proceed?" -Default 'y') {
             Initialize-Tarball
-            foreach ($a in $sel) {
-                try { Install-AgentsMdFor -Agent $a } catch { Write-Info "error: $($_.Exception.Message)" }
-            }
+            Install-GuidelinesBlocks -Agents $sel -Lenient
             $summaryStrings.guidelines = $sel -join ', '
         } else {
             $summaryStrings.guidelines = 'skipped (declined)'
