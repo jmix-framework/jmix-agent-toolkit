@@ -17,11 +17,36 @@ Use this skill when adding or changing a database-backed Jmix entity.
 4. Add `@Version`.
 5. Add `@InstanceName` on a stable human-readable field or method.
 6. Define columns with exact `nullable`, `length`, `precision`, and `scale` constraints from requirements.
+   **Check every column name against the reserved words of every targeted dialect** — see
+   "Column names — a reserved word fails on one dialect and passes on another" below.
 7. Use `FetchType.LAZY` for relationships.
 8. Create the Liquibase changelog using `jmix-create-liquibase-changelog`.
 9. Add entity and attribute message keys using `jmix-add-i18n-keys`.
 10. Add or update views and security roles if the entity is user-facing.
 11. Before finishing, compare every required constraint against the source requirements and the Liquibase changelog.
+
+## Column names — a reserved word fails on one dialect and passes on another
+
+A column name derived from the field name may be an SQL **reserved word**, and
+the dialects a project targets do not agree about which words those are. The
+check is per dialect, not per SQL standard: a green suite against the test store
+proves nothing about the production store.
+
+- **PostgreSQL:** `select catcode from pg_get_keywords() where word = '<lower-case name>'`
+  — `reserved` cannot be used as an identifier at all. `END` is reserved;
+  `START`, `LANGUAGE`, `TEXT`, `TYPE` and `NAME` are unreserved and fine.
+- **HSQLDB** (the usual test store): default settings accept SQL-standard
+  keywords as identifiers, so it will NOT warn you — `START`, `END` and
+  `LANGUAGE` all pass there in DDL, INSERT, SELECT and UPDATE.
+
+Rename the field or give it an explicit prefixed `@Column(name = "...")`. Common
+offenders an entity field naturally produces: `end`, `order`, `user`, `group`,
+`desc`, `references`.
+
+This is the expensive failure mode. Liquibase emits the `createTable` unquoted
+and EclipseLink emits `t.END` unquoted, so the defect surfaces only when the
+changelog is first applied to the production dialect — after compile, static
+analysis and a full green `clean test` have all passed.
 
 ## Entity Template
 
