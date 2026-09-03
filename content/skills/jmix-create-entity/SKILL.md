@@ -303,6 +303,21 @@ private Parent parent;
 
 Add audit fields with the Spring Data annotations from `org.springframework.data.annotation`: `@CreatedBy`, `@CreatedDate`, `@LastModifiedBy`, `@LastModifiedDate`. For soft delete add `@DeletedBy` and `@DeletedDate` from `io.jmix.core.annotation` — soft-deleted rows are then auto-filtered out of `DataManager`/JPQL queries.
 
+That filter is installed on the EclipseLink descriptor, so it applies to **writes** as well as to the queries the application issues. EclipseLink's own relationship read during flush is filtered too, so **inserting or updating a row whose reference points at a soft-deleted entity fails** — with a message that names the wrong cause:
+
+```
+IllegalStateException: During synchronization a new object was found through
+a relationship that was not marked cascade PERSIST
+```
+
+Nothing in that text points at soft deletion, and no `cascade` setting fixes it. If a reference to a soft-deleted row is a legal state in the model (a child that may sit beneath a deleted parent), the save must carry the hint:
+
+```java
+dataManager.save(new SaveContext()
+        .setHint(PersistenceHints.SOFT_DELETION, false)
+        .saving(entity));
+```
+
 ## Calculated and Transient Properties
 
 Non-persistent derived attributes use `@JmixProperty` + `@Transient` + `@DependsOnProperties({"a", "b"})` (`@JmixProperty` from `io.jmix.core.metamodel.annotation`). The same applies to an `@InstanceName` method: it must carry `@DependsOnProperties` listing every attribute it reads so they are fetched.
