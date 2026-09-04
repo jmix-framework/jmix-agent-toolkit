@@ -83,38 +83,387 @@ function Invoke-InstallerCapture {
 }
 
 # ---------------------------------------------------------------------------
-# 1. agents-md (project guidelines)
+# 1. agents-md (project guidelines block)
 # ---------------------------------------------------------------------------
+$blockPath  = Join-Path $Source 'content/guidelines-block.md'
+$blockText  = [System.IO.File]::ReadAllText($blockPath)
+$beginMark  = '<!-- BEGIN jmix-agent-toolkit -->'
+$endMark    = '<!-- END jmix-agent-toolkit -->'
+$claudeMd   = Join-Path $proj 'CLAUDE.md'
+
+# 1a. No guidelines file yet -> the file is created holding exactly the block.
 Check ((Invoke-Installer @('agents-md', '-Agents', 'claude,codex,opencode,junie', '-Source', $Source)) -eq 0) `
     'agents-md exits 0'
-Check (Test-Path (Join-Path $proj 'CLAUDE.md'))            'agents-md: CLAUDE.md'
+Check (Test-Path $claudeMd)                                'agents-md: CLAUDE.md'
 Check (Test-Path (Join-Path $proj 'AGENTS.md'))            'agents-md: AGENTS.md'
 Check (Test-Path (Join-Path $proj '.junie/guidelines.md')) 'agents-md: .junie/guidelines.md'
-$claude = Get-Content -Raw (Join-Path $proj 'CLAUDE.md')
-$agents = Get-Content -Raw (Join-Path $Source 'content/AGENTS.md')
-Check ($claude -eq $agents) 'agents-md: CLAUDE.md content matches v2/AGENTS.md'
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
+    'agents-md: fresh CLAUDE.md is exactly the block'
 
-# Guidelines are always backed up on overwrite (no -BackupExistingFiles), and
-# repeated runs dedup the backup name: .bak, then .bak1 (issue #17).
-Set-Content -LiteralPath (Join-Path $proj 'CLAUDE.md') -Value 'sentinel-1' -NoNewline
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
-Check (Test-Path (Join-Path $proj 'CLAUDE.md.bak')) 'agents-md: existing CLAUDE.md backed up without flag'
-Check ((Get-Content -Raw (Join-Path $proj 'CLAUDE.md.bak')) -eq 'sentinel-1') 'agents-md: .bak keeps original content'
-
-Set-Content -LiteralPath (Join-Path $proj 'CLAUDE.md') -Value 'sentinel-2' -NoNewline
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
-Check (Test-Path (Join-Path $proj 'CLAUDE.md.bak1')) 'agents-md: second backup deduped to .bak1'
-Check ((Get-Content -Raw (Join-Path $proj 'CLAUDE.md.bak')) -eq 'sentinel-1') 'agents-md: dedup did not overwrite earlier .bak'
-Check ((Get-Content -Raw (Join-Path $proj 'CLAUDE.md.bak1')) -eq 'sentinel-2') 'agents-md: .bak1 has correct content'
-
-# Unchanged content: the file is left completely alone -- no new backup and no
-# rewrite (issue #22). CLAUDE.md currently equals content/AGENTS.md.
-$mtimeBefore = (Get-Item -LiteralPath (Join-Path $proj 'CLAUDE.md')).LastWriteTimeUtc
+# 1b. An up-to-date file is left completely alone: no rewrite, no backup (issue #22).
+$mtimeBefore = (Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc
 Start-Sleep -Seconds 1
 $null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
-Check (-not (Test-Path (Join-Path $proj 'CLAUDE.md.bak2'))) 'agents-md: unchanged CLAUDE.md not backed up'
-Check ((Get-Item -LiteralPath (Join-Path $proj 'CLAUDE.md')).LastWriteTimeUtc -eq $mtimeBefore) `
-    'agents-md: unchanged CLAUDE.md not rewritten'
+Check (-not (Test-Path "$claudeMd.bak")) 'agents-md: unchanged file not backed up'
+Check ((Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc -eq $mtimeBefore) `
+    'agents-md: unchanged file not rewritten'
+
+# 1b2. The same no-op guarantee holds when the checked-out block uses CRLF.
+$crlfSource = Join-Path $work 'source-crlf'
+$crlfContent = Join-Path $crlfSource 'content'
+New-Item -ItemType Directory -Force -Path (Join-Path $crlfContent 'skills') | Out-Null
+$crlfBlock = [regex]::Replace($blockText, '\r?\n', "`r`n")
+[System.IO.File]::WriteAllText((Join-Path $crlfContent 'guidelines-block.md'), $crlfBlock,
+    (New-Object System.Text.UTF8Encoding($false)))
+Remove-Item -LiteralPath $claudeMd -Force
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $crlfSource)
+$crlfHashBefore = (Get-FileHash -LiteralPath $claudeMd -Algorithm SHA256).Hash
+(Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc = [datetime]'2001-01-01T00:00:00Z'
+$crlfMtimeBefore = (Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $crlfSource)
+Check ((Get-FileHash -LiteralPath $claudeMd -Algorithm SHA256).Hash -eq $crlfHashBefore) `
+    'agents-md: unchanged CRLF block bytes preserved'
+Check ((Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc -eq $crlfMtimeBefore) `
+    'agents-md: unchanged CRLF block not rewritten'
+
+# 1c. An old full AGENTS.md from a previous toolkit version is replaced whole,
+#     with a backup. Heading "# Agent Instructions", and ONLY the
+#     "## Skill routing" half of the content rule.
+Remove-Item -LiteralPath $claudeMd -Force
+Set-Content -LiteralPath $claudeMd -NoNewline -Value @"
+# Agent Instructions
+
+Use these instructions.
+
+## Skill routing
+
+- Persistent entity: create an entity
+"@
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
+    'agents-md: legacy guidelines replaced by the block (Agent Instructions + Skill routing)'
+Check ((Get-Content -Raw "$claudeMd.bak") -match '# Agent Instructions') `
+    'agents-md: legacy guidelines backed up (Agent Instructions + Skill routing)'
+
+# 1c2. The other legacy heading and ONLY the other half of the content rule:
+#      "# Coding Guidelines" (this toolkit's first heading) + a jmix skill name.
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+Set-Content -LiteralPath $claudeMd -NoNewline -Value @"
+# Coding Guidelines
+
+Read jmix-create-entity before adding an entity.
+"@
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
+    'agents-md: legacy Coding Guidelines file replaced by the block (Coding Guidelines + skill name)'
+Check ((Get-Content -Raw "$claudeMd.bak") -match '# Coding Guidelines') `
+    'agents-md: legacy Coding Guidelines backed up'
+
+# 1c3. A developer file with a legacy-looking heading but no toolkit content is
+#      NOT legacy: it must be appended to, never replaced.
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+Set-Content -LiteralPath $claudeMd -NoNewline -Value @"
+# Agent Instructions
+
+Always rebase before pushing.
+"@
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$after = [System.IO.File]::ReadAllText($claudeMd)
+Check ($after -match 'Always rebase before pushing\.') `
+    'agents-md: non-toolkit file with a lookalike heading not wrongly replaced'
+Check ($after.Contains($beginMark)) 'agents-md: block appended to non-toolkit lookalike file'
+
+# 1d. The developer's own file is kept and the block is appended below it.
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+Set-Content -LiteralPath $claudeMd -Value "# My project`n`nRun the linter before every commit."
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$after = [System.IO.File]::ReadAllText($claudeMd)
+Check ($after -match 'Run the linter before every commit\.') 'agents-md: developer content kept on append'
+Check ($after.Contains($beginMark))                          'agents-md: block appended'
+Check (Test-Path "$claudeMd.bak")                            'agents-md: appended-to file backed up'
+
+# 1d2. A 0-byte destination file is a degenerate "anything else" case: appended
+# to with exactly one blank-line separator, never an extra leading blank line.
+# Regression guard for a byte-for-byte divergence from install.sh, where an
+# empty file wrongly grew an extra blank line before the block.
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+[System.IO.File]::WriteAllText($claudeMd, '')
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$expected1d2 = "`n" + $blockText
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $expected1d2) `
+    'agents-md: empty destination file appended to byte-for-byte'
+Check (Test-Path "$claudeMd.bak") 'agents-md: empty destination file backed up'
+
+# Restore the state handed to case 1e: developer content + appended block, one
+# backup, so 1e's assumptions about backup filenames still hold.
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+Set-Content -LiteralPath $claudeMd -Value "# My project`n`nRun the linter before every commit."
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+
+# 1e. Appending is idempotent: a second run replaces the region in place.
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$after = [System.IO.File]::ReadAllText($claudeMd)
+$beginCount = ([regex]::Matches($after, [regex]::Escape($beginMark))).Count
+Check ($beginCount -eq 1)                                    'agents-md: block not appended twice'
+Check ($after -match 'Run the linter before every commit\.') 'agents-md: developer content kept on re-run'
+Check (-not (Test-Path "$claudeMd.bak1")) `
+    'agents-md: up-to-date block inside a developer file made no new backup'
+
+# 1f. Only the marked region is replaced; text above AND below survives, and no
+#     backup is made because nothing outside our own region changed.
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+[System.IO.File]::WriteAllText($claudeMd,
+    "ABOVE-SENTINEL`n`n$beginMark`nstale block content`n$endMark`n`nBELOW-SENTINEL`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$after = [System.IO.File]::ReadAllText($claudeMd)
+Check ($after -match 'ABOVE-SENTINEL')          'agents-md: text above the block kept'
+Check ($after -match 'BELOW-SENTINEL')          'agents-md: text below the block kept'
+Check (-not ($after -match 'stale block content')) 'agents-md: stale block content removed'
+Check (-not (Test-Path "$claudeMd.bak"))        'agents-md: in-place replacement made no backup'
+
+# 1g. A half-written marker is malformed: append, never truncate.
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+[System.IO.File]::WriteAllText($claudeMd, "KEEP-ME`n$beginMark`nhalf a block`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$after = [System.IO.File]::ReadAllText($claudeMd)
+Check ($after -match 'KEEP-ME')          'agents-md: malformed-marker file not truncated'
+Check ($after -match 'half a block')     'agents-md: malformed-marker content kept'
+Check ($after.Contains($endMark))        'agents-md: block appended to malformed file'
+
+# A later run must pair the appended block with its own nearest BEGIN marker;
+# the original orphan marker and the developer's content remain unmanaged.
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$after = [System.IO.File]::ReadAllText($claudeMd)
+Check ($after -match 'KEEP-ME')      'agents-md: malformed-marker file not truncated on re-run'
+Check ($after -match 'half a block') 'agents-md: malformed-marker content kept on re-run'
+
+# 1g2. Whole-line, nearest-pair semantics match install.sh. Standalone markers
+#      in fenced examples and inline marker mentions are developer content.
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+$fence = '```'
+[System.IO.File]::WriteAllText($claudeMd,
+    "# Project`n`n${fence}markdown`n$beginMark`n$fence`n`nTEAM-RULE-SENTINEL`n`n$beginMark`nstale block`n$endMark`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$after = [System.IO.File]::ReadAllText($claudeMd)
+Check ($after -match 'TEAM-RULE-SENTINEL') 'agents-md: text after a fenced BEGIN marker kept'
+Check ($after.Contains($fence))             'agents-md: fenced marker example not truncated'
+
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+[System.IO.File]::WriteAllText($claudeMd,
+    "# Project`n`nKeep the ``$beginMark`` and ``$endMark`` lines.`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$after = [System.IO.File]::ReadAllText($claudeMd)
+Check ($after -match 'Keep the')                         'agents-md: inline marker prose kept'
+Check ($after -match [regex]::Escape("and ``$endMark``")) 'agents-md: inline END marker prose kept'
+
+# 1g3. Merging is byte-preserving. A legacy Windows-1252 byte in developer text
+#      must not be decoded to U+FFFD while the UTF-8 block is updated.
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+$prefixBytes = [byte[]](0x23,0x20,0x50,0x72,0x6f,0x6a,0x65,0x63,0x74,0x0a,0x0a,0x63,0x61,0x66,0xe9,0x0a,0x0a)
+$staleBytes = [System.Text.Encoding]::ASCII.GetBytes("$beginMark`nstale block`n$endMark`n")
+[System.IO.File]::WriteAllBytes($claudeMd, $prefixBytes + $staleBytes)
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$afterBytes = [System.IO.File]::ReadAllBytes($claudeMd)
+Check ($afterBytes[14] -eq 0xe9) 'agents-md: non-UTF-8 developer byte preserved'
+Check (-not (($afterBytes | ForEach-Object { $_.ToString('X2') }) -join '').Contains('EFBFBD')) `
+    'agents-md: invalid UTF-8 byte not replaced by U+FFFD'
+
+# 1h. A legacy full-file replaced correctly even with CRLF line endings -- a
+#     regression guard keeping install.ps1 in step with install.sh's now-fixed
+#     byte-exact marker/heading comparisons.
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+[System.IO.File]::WriteAllText($claudeMd,
+    "# Agent Instructions`r`n`r`nUse these instructions.`r`n`r`n## Skill routing`r`n`r`n- Persistent entity: create an entity`r`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
+    'agents-md: CRLF legacy guidelines replaced by the block'
+Check ((Get-Content -Raw "$claudeMd.bak") -match 'Agent Instructions') `
+    'agents-md: CRLF legacy guidelines backed up'
+
+# 1i. A legacy file with a leading UTF-8 BOM is still recognised.
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+$bomChar = [char]0xFEFF
+[System.IO.File]::WriteAllText($claudeMd,
+    "$bomChar# Coding Guidelines`n`nRead jmix-create-entity before adding an entity.`n",
+    (New-Object System.Text.UTF8Encoding($false)))
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
+    'agents-md: BOM legacy guidelines replaced by the block'
+Check ((Get-Content -Raw "$claudeMd.bak") -match 'Coding Guidelines') `
+    'agents-md: BOM legacy guidelines backed up'
+
+# 1j. A developer file already holding the block, whole file CRLF: only the
+#     marked region is replaced in place, no backup, and CRLF outside the
+#     region survives untouched.
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+[System.IO.File]::WriteAllText($claudeMd,
+    "ABOVE-SENTINEL`r`n`r`n$beginMark`r`nstale block content`r`n$endMark`r`n`r`nBELOW-SENTINEL`r`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$after = [System.IO.File]::ReadAllText($claudeMd)
+Check ($after.Contains("ABOVE-SENTINEL`r`n"))          'agents-md(CRLF): text above the block kept its CRLF ending'
+Check ($after.Contains("BELOW-SENTINEL`r`n"))          'agents-md(CRLF): text below the block kept its CRLF ending'
+Check (-not ($after.Contains('stale block content')))  'agents-md(CRLF): stale block content removed'
+Check (-not (Test-Path "$claudeMd.bak"))               'agents-md(CRLF): in-place replacement made no backup'
+
+# 1k. A third heading this toolkit actually shipped: "# Jmix Coding Guidelines".
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+Set-Content -LiteralPath $claudeMd -NoNewline -Value @"
+# Jmix Coding Guidelines
+
+Use these instructions.
+
+## Skill routing
+
+- Persistent entity: create an entity
+"@
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
+    "agents-md: '# Jmix Coding Guidelines' legacy file replaced by the block"
+Check ((Get-Content -Raw "$claudeMd.bak") -match 'Jmix Coding Guidelines') `
+    "agents-md: '# Jmix Coding Guidelines' legacy file backed up"
+
+# 1l. An early-vintage file: no "## Skill routing" heading at all, its only
+#     toolkit signal is an old skill name ("jmix-services") that predates
+#     jmix-create-entity.
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+Set-Content -LiteralPath $claudeMd -NoNewline -Value @"
+# Coding Guidelines
+
+See jmix-services for the service layer conventions.
+"@
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
+    'agents-md: early-vintage file (jmix-services, no Skill routing) replaced'
+Check ((Get-Content -Raw "$claudeMd.bak") -match 'jmix-services') `
+    'agents-md: early-vintage file backed up'
+
+# 1m. A no-trailing-newline destination file is appended to exactly like one
+#     that already ends in a newline (guard, not a fix -- already byte-identical
+#     across installers).
+Remove-Item -LiteralPath $claudeMd -Force
+Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+[System.IO.File]::WriteAllText($claudeMd, "# My project`n`nRun the linter before every commit.")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$expected1m = "# My project`n`nRun the linter before every commit.`n`n" + $blockText
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $expected1m) `
+    'agents-md: no-trailing-newline destination appended to byte-for-byte'
+Check (Test-Path "$claudeMd.bak") 'agents-md: no-trailing-newline destination backed up'
+
+$agentsMd = Join-Path $proj 'AGENTS.md'
+function Reset-Guidelines {
+    foreach ($f in @($claudeMd, $agentsMd)) {
+        if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
+    }
+    Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
+    Get-ChildItem -Path $proj -Filter 'AGENTS.md.bak*' | Remove-Item -Force
+}
+
+# 1n. A CLAUDE.md that @-imports AGENTS.md (Claude Code import syntax) is left
+#     alone when AGENTS.md carries the block: Claude sees it through the import,
+#     a second copy would only duplicate it. No rewrite, no backup -- and the
+#     AGENTS.md agents are processed first even though claude is listed first.
+Reset-Guidelines
+$importText = "# Team rules`n`nSee @AGENTS.md for the shared instructions.`n"
+[System.IO.File]::WriteAllText($claudeMd, $importText)
+[System.IO.File]::WriteAllText($agentsMd, "# Shared`n`nNever push to main.`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude,codex', '-Source', $Source)
+Check ((Get-Content -Raw $agentsMd) -match [regex]::Escape($beginMark)) 'agents-md: block merged into AGENTS.md'
+Check ((Get-Content -Raw $agentsMd) -match 'Never push to main\.')     'agents-md: AGENTS.md content kept'
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $importText) `
+    'agents-md: CLAUDE.md that imports AGENTS.md not rewritten'
+Check (-not (Test-Path "$claudeMd.bak")) 'agents-md: CLAUDE.md that imports AGENTS.md not backed up'
+
+# 1n2. Same import, only claude selected later: AGENTS.md still carries the block
+#      from the earlier run, so CLAUDE.md is still skipped.
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $importText) `
+    'agents-md: importing CLAUDE.md still skipped on a claude-only re-run'
+
+# 1o. Same import, but AGENTS.md has no block and only claude is selected: nothing
+#     else routes Claude to the skills, so the block goes into CLAUDE.md and
+#     AGENTS.md is not touched.
+Reset-Guidelines
+[System.IO.File]::WriteAllText($claudeMd, $importText)
+[System.IO.File]::WriteAllText($agentsMd, "# Shared`n`nNever push to main.`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check ((Get-Content -Raw $claudeMd) -match [regex]::Escape($beginMark)) `
+    'agents-md: block added to importing CLAUDE.md when AGENTS.md is unmanaged'
+Check ((Get-Content -Raw $claudeMd) -match 'See @AGENTS\.md') 'agents-md: import line kept'
+Check (-not ((Get-Content -Raw $agentsMd) -match [regex]::Escape($beginMark))) `
+    'agents-md: AGENTS.md untouched when only claude selected'
+
+# 1p. CLAUDE.md symlinked to AGENTS.md (a common setup). Claude-only: the block is
+#     written through the link, which survives, and AGENTS.md gets it once. Both
+#     agents: the shared file is still touched once. Needs symlink privilege.
+if (Test-SymlinkCapable) {
+    Reset-Guidelines
+    [System.IO.File]::WriteAllText($agentsMd, "# Shared`n`nNever push to main.`n")
+    New-Item -ItemType SymbolicLink -Path $claudeMd -Target 'AGENTS.md' | Out-Null
+    $null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+    Check ((Get-Item -LiteralPath $claudeMd -Force).LinkType -eq 'SymbolicLink') `
+        'agents-md: symlinked CLAUDE.md survives'
+    Check (([regex]::Matches((Get-Content -Raw $agentsMd), [regex]::Escape($beginMark))).Count -eq 1) `
+        'agents-md: block written once through the CLAUDE.md symlink'
+    Check ((Get-Content -Raw $agentsMd) -match 'Never push to main\.') 'agents-md: linked AGENTS.md content kept'
+    $null = Invoke-Installer @('agents-md', '-Agents', 'claude,codex', '-Source', $Source)
+    Check ((Get-Item -LiteralPath $claudeMd -Force).LinkType -eq 'SymbolicLink') `
+        'agents-md: symlinked CLAUDE.md survives a re-run'
+    Check (([regex]::Matches((Get-Content -Raw $agentsMd), [regex]::Escape($beginMark))).Count -eq 1) `
+        'agents-md: block not duplicated through the CLAUDE.md symlink'
+} else {
+    Write-Host 'skip: no symlink privilege, skipping the CLAUDE.md -> AGENTS.md symlink case'
+}
+
+# 1q. A developer file with a legacy heading that mentions jmix-* things which are
+#     not toolkit skills (jmix-flowui, a jmix-framework URL) is NOT legacy: append.
+Reset-Guidelines
+[System.IO.File]::WriteAllText($claudeMd, "# Coding Guidelines`n`nWe use jmix-flowui; see https://github.com/jmix-framework/jmix.`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check ((Get-Content -Raw $claudeMd) -match 'We use jmix-flowui') `
+    'agents-md: jmix-flowui / jmix-framework mentions are not a legacy signal'
+Check ((Get-Content -Raw $claudeMd) -match [regex]::Escape($beginMark)) 'agents-md: block appended to jmix-flowui file'
+
+# Backups are first-class changes in the Studio summary, not only log text.
+Reset-Guidelines
+[System.IO.File]::WriteAllText($claudeMd, "# Team rules`n`nKeep this.`n")
+$env:JMIX_EMIT_CHANGE_MARKERS = '1'
+$markerOutput = Invoke-InstallerCapture @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Remove-Item Env:JMIX_EMIT_CHANGE_MARKERS
+Check ($markerOutput -match '@@JMIX_CHANGE@@\s+action=backed-up\s+type=file\s+path=') `
+    'agents-md: backup emitted as a Studio change marker'
+
+# 1r. The earliest "# Coding Guidelines" vintage, trimmed down to its "## Skills
+#     and MCP" section with no skill name left: still recognised as legacy.
+Reset-Guidelines
+[System.IO.File]::WriteAllText($claudeMd, "# Coding Guidelines`n`nThis file provides guidance to AI coding agents.`n`n## Skills and MCP`n`n- ALWAYS use the Skill tool.`n")
+$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
+    "agents-md: early-vintage file recognised by its 'Skills and MCP' section"
+
+# 1s. A destination that exists but is not a file is an error, not a merge.
+Reset-Guidelines
+New-Item -ItemType Directory -Path $claudeMd | Out-Null
+Check ((Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)) -ne 0) `
+    'agents-md: a directory named CLAUDE.md fails'
+Remove-Item -LiteralPath $claudeMd -Force
+
+# Reset so later sections start from a clean project guidelines state.
+Reset-Guidelines
 
 # ---------------------------------------------------------------------------
 # 2. skills, local scope -- must succeed without symlink privilege
@@ -145,6 +494,13 @@ Check (Test-Path (Join-Path $proj ".claude/skills/$skill/SKILL.md")) 'skills(loc
 Check ((Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'global', '-Source', $Source)) -eq 0) `
     'skills(global) exits 0'
 Check (Test-Path (Join-Path $homeDir '.agents/.jmix/skills/v2')) 'skills(global): v2 store created'
+
+# Studio can pin a feature branch independently of the release default.
+Check ((Invoke-Installer @('skills', '-ContentRef', 'no-agents-md-test', '-Agents', 'claude',
+        '-Scope', 'global', '-Source', $Source)) -eq 0) `
+    'skills(global): content-ref override exits 0'
+Check (Test-Path (Join-Path $homeDir '.agents/.jmix/skills/no-agents-md-test')) `
+    'skills(global): content-ref override keys the store'
 
 # ---------------------------------------------------------------------------
 # 3. OpenCode MCP entries (no agent CLI needed)
