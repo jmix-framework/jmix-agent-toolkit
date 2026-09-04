@@ -224,7 +224,7 @@ Usage:
 
 Common options:
   --content-ref REF          Repository branch/ref to download and use. Defaults
-                             to this release branch (v3). Studio passes its
+                             to this release branch (v2). Studio passes its
                              resolved toolkit branch here.
   --source DIR               Install from a local checkout of this repository
                              instead of downloading. Skips the network. Mainly

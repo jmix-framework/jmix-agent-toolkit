@@ -38,7 +38,7 @@
 
 .PARAMETER ContentRef
     Repository branch/ref to download and use. Defaults to this release branch
-    (v3). Studio passes its resolved toolkit branch here.
+    (v2). Studio passes its resolved toolkit branch here.
 
 .PARAMETER Agents
     Comma-separated list of agents (e.g. "claude,codex"). Single value is also
@@ -83,10 +83,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-
-# Branch identity: this script lives on the $ContentRef branch and installs that
-# branch's content/. Set per branch when cutting a new version (see MAINTAINING.md).
-$ContentRef = 'v2'
 
 $script:RepoOwner = 'jmix-framework'
 $script:RepoName  = 'jmix-agent-toolkit'

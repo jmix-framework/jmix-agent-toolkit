@@ -37,7 +37,7 @@ branch holds exactly one `content/` folder.
 2. Update `content/` for the new major (`AGENTS.md` stack + the `skills/`).
 3. Set the branch identity in both installers:
    - `install.sh`: `CONTENT_REF="v4"`
-   - `install.ps1`: `$ContentRef = 'v4'`
+   - `install.ps1`: the `$ContentRef` param default, `[string]$ContentRef = 'v4'`
 4. Regenerate the manifest: `python3 .studio/gen_skills_manifest.py`.
 5. Run the installer tests:
    - `bash tests/test_install_sh.sh`

@@ -394,7 +394,7 @@ bash "$INSTALL" skills --content-ref no-agents-md-test --agents claude \
 pass "skills(global) honours --content-ref"
 
 # Every Studio command must pass the same resolved branch to the script it
-# downloads; otherwise a feature-branch script silently fetches v3 content.
+# downloads; otherwise a feature-branch script silently fetches v2 content.
 [ "$(grep -o -- '--content-ref' "${SOURCE}/.studio/studio-meta-data.json" | wc -l | tr -d ' ')" -eq 10 ] \
     || fail "studio metadata: a macOS/Linux command omits --content-ref"
 [ "$(grep -o -- '-ContentRef' "${SOURCE}/.studio/studio-meta-data.json" | wc -l | tr -d ' ')" -eq 5 ] \
