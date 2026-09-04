@@ -23,7 +23,7 @@ Use this skill when business logic must react to entity save, change, delete, or
 9. Use a before-commit `@EventListener` path for validation that must reject the current save/remove operation.
 10. Put multi-entity changes in a transactional service method when atomicity matters.
 11. Reject unsupported updates/deletes inside the event path before treating work as complete.
-12. Search the changed code for `@TransactionalEventListener`; if the listener performs validation, rejects updates/deletes, or sets required defaults, replace it with `@EventListener` plus `EntitySavingEvent`/`EntityChangedEvent` or another before-commit path. Decide by the direction of failure, not by whether the side effect is required — see "Event Timing".
+12. Search the changed code for `@TransactionalEventListener`; if the listener performs validation, rejects updates/deletes, or sets required defaults, replace it with `@EventListener` plus `EntitySavingEvent`/`EntityChangedEvent` or another before-commit path. Decide by the direction of failure — see "Event Timing".
 13. Add tests or at least compile/startup validation for the event listener.
 
 ## EntityChangedEvent
@@ -111,7 +111,7 @@ Use normal Spring `@EventListener` for logic that must affect the current save/r
 
 `@TransactionalEventListener` is for after-transaction reactions such as notifications or integration events. Do not use it when failure must roll back or reject the current persistence operation.
 
-**The criterion is the direction of failure, not whether the side effect is required.**
+**The criterion is the direction of failure.**
 A handler that must be able to REJECT the operation belongs before commit. A handler
 that mutates a resource the database transaction cannot roll back — file storage, an
 external API, an outbound notification — belongs AFTER commit, however required it is.
@@ -121,14 +121,6 @@ because the deletion is "a required synchronous side effect". `EntityChangedEven
 published in `beforeCommit`, so if anything later aborts the transaction the row is
 still there and its file is gone — the exact inverse of the leak the handler exists to
 prevent.
-
-Nothing is lost by waiting. `AttributeChanges` is an immutable snapshot taken before
-the events are published — a `final Set<Change>`, each holding a `final Object oldValue`,
-with no reference to the entity or the persistence context — so `event.getChanges()`
-reads identically from an `AFTER_COMMIT` handler.
-
-The corollary is worth a test: an `AFTER_COMMIT` handler never runs when the transaction
-rolls back, so a test asserting it fired is the only proof it is wired at all.
 
 `EntityChangedEvent` (before commit) is delivered AFTER the SQL flush. If the write
 being validated can itself violate a database constraint, the constraint error is
