@@ -137,18 +137,7 @@ The change set covers the deleted entity's OWN attributes. A reference is snapsh
 
 When a parent is hard-deleted and its children go with it through an `ON DELETE CASCADE`
 foreign key, no hook sees those children. There is nothing to subscribe to and no state
-left to read:
-
-- the parent's `AttributeChanges` gives the child only as an id, so the child's own columns
-  (a `FileRef`, an external key) are unreachable;
-- reloading the child does not work — `EclipselinkPersistenceSupport.beforeCommit` calls
-  `detachAll()`, which flushes, before publishing the events, so the cascade has already run
-  by the time any listener is invoked;
-- JPA `CascadeType.REMOVE` is not a substitute — `JmixEntityManager.remove` sets the removed
-  flag only on the entity handed to it, so `isDeleted` is false for an EclipseLink-cascade-removed
-  child and no `EntityChangedEvent` is published for it;
-- `BeforeDeleteEntityListener`, the one interface that would have run early enough, is
-  `@Deprecated(forRemoval = true)` since 2.8 and has no replacement.
+left to read.
 
 So any per-row cleanup a cascaded child owns — file storage, external APIs — must run
 BEFORE the parent delete is requested (load the children, clean up, then remove the parent,
