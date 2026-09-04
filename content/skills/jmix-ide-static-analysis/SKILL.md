@@ -84,10 +84,17 @@ checks, and to a green `clean test`:
 
 ### Known false positives — do NOT chase these
 
-Expected noise; state them as understood and move on:
+Expected noise; state them as understood and move on.
+
+**Severity is not a guide here.** The Jmix plugin reports some correct, idiomatic code
+as ERROR, so an errors-only filter does not separate real findings from noise. An ERROR
+on a `query(...)` argument, a `msg://` key, or a property path still has to be checked
+against the framework — its Javadoc, its source, or a Studio-generated example — before
+you change any code to satisfy it.
 
 | Finding | Why it is not a defect |
 |---|---|
+| **ERROR** `'e' unexpected` on a condition-only `dataManager.load(X.class).query("e.foo = ?1", …)` | `FluentLoader.ByCondition` builds the `select e from <Entity> e` prefix itself, so the argument is a condition, not a statement — the plugin's JPQL parser reads it as a whole query and trips on the leading alias. `FluentLoader.query(String, Object...)`'s Javadoc gives `"e.name = ?1 and e.status = ?2"` and says to always use `e` as the alias, and Jmix Studio's own generated tests use the same form. Do not expand it to full JPQL to silence the tool. |
 | "Method is never used" on `@ConfigurationProperties` getters/setters | called by Spring through reflection |
 | "Method is never used" on entity getters/setters | called by Jmix/JPA through reflection and by view descriptors |
 | "Unused property" on an i18n key | normal when the view that references it does not exist yet (e.g. a detail-view title key added while building the list view) |
