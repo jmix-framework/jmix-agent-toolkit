@@ -42,6 +42,15 @@ Jmix add-on that owns database tables.
 | FileRef | `varchar(1024)` |
 | Enum id string | `varchar(50)` |
 
+A column NAME is not a free choice either: if it is a reserved word in any
+targeted dialect the `createTable` fails there, and the dialects disagree —
+PostgreSQL rejects `END` outright (check with
+`select catcode from pg_get_keywords() where word = '<lower-case name>'`) while
+HSQLDB accepts SQL-standard keywords as identifiers by default and never warns.
+Liquibase emits the name unquoted, so this surfaces only when the changelog
+first reaches the production dialect. Rename instead of quoting. See
+`jmix-create-entity` (Column names).
+
 An entity with an **assigned natural key** takes the id column type of its Java
 field — `bigint` for a `Long` id, not `${uuid.type}`. See `jmix-create-entity`
 (Id strategy).
