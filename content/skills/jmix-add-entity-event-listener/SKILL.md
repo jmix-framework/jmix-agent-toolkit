@@ -15,7 +15,7 @@ Use this skill when business logic must react to entity save, change, delete, or
    - `io.jmix.core.event.EntityChangedEvent`
    - `io.jmix.core.event.EntityLoadingEvent`
    - `io.jmix.core.event.EntitySavingEvent`
-4. For created entities, load by `event.getEntityId()` when related data is needed.
+4. For created entities, load by `event.getEntityId()` when related data is needed. To bypass access control, call `dataManager.unconstrained()` — never inject `UnconstrainedDataManager` (see below).
 5. If you specify a custom fetch plan, include every scalar and reference property read later (see `jmix-configure-fetch-plan`).
 6. For deleted entities, do not load `event.getEntityId()`; use old values or old reference ids from `event.getChanges()`.
 7. Use `EntitySavingEvent` for defaults or transformations that must happen before data is saved; a required persistent default still belongs at the entity layer (see `jmix-create-entity`).
@@ -100,6 +100,24 @@ ledgerService.apply(entry.getAccount().getId(), entry.getAmount(), entry.getType
 
 After writing the listener, scan the method: every `entry.getX()` used after loading must be available in the fetch plan.
 
+### Bypassing access control
+
+A listener often runs under a principal who lacks the permission its work needs — a
+CREATED handler inserting a guaranteed child row, for example, when whoever created the
+parent holds no CREATE on the child. Get the unconstrained API off the injected
+`DataManager`:
+
+```java
+dataManager.unconstrained().save(child);
+```
+
+Do NOT declare an `UnconstrainedDataManager` injection point. It looks like the obvious
+way and the application will not start: `DataManagerImpl` extends
+`UnconstrainedDataManagerImpl`, so both `core_DataManager` and `core_UnconstrainedDataManager`
+match the type and neither bean name matches the parameter name, so Spring reports an
+ambiguity. Jmix's own `DataManagerImpl` holds such a field only because a self-reference is
+deprioritized during injection, which is not available to application code.
+
 ### Event Timing
 
 Use normal Spring `@EventListener` for logic that must affect the current save/remove operation:
@@ -175,5 +193,6 @@ what is in the database and overwrites values set in memory but not yet saved.
 - Assuming `EntityLoadingEvent` is a replacement for fetching references or running cross-entity queries.
 - Reading an entity property that is omitted from a custom fetch plan.
 - `@TransactionalEventListener` for validation, required synchronous side effects, or immutable-record enforcement.
+- Injecting `UnconstrainedDataManager` by type; use `dataManager.unconstrained()`.
 - Putting UI code in entity listeners.
 - Side effects without an explicit service method when several entities must stay consistent.
