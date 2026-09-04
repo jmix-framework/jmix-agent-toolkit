@@ -23,7 +23,7 @@ Use this skill when business logic must react to entity save, change, delete, or
 9. Use a before-commit `@EventListener` path for validation that must reject the current save/remove operation.
 10. Put multi-entity changes in a transactional service method when atomicity matters.
 11. Reject unsupported updates/deletes inside the event path before treating work as complete.
-12. Search the changed code for `@TransactionalEventListener`; if the listener performs validation, rejects updates/deletes, sets required defaults, or performs required synchronous side effects, replace it with `@EventListener` plus `EntitySavingEvent`/`EntityChangedEvent` or another before-commit path.
+12. Search the changed code for `@TransactionalEventListener`; if the listener performs validation, rejects updates/deletes, or sets required defaults, replace it with `@EventListener` plus `EntitySavingEvent`/`EntityChangedEvent` or another before-commit path. Decide by the direction of failure — see "Event Timing".
 13. Add tests or at least compile/startup validation for the event listener.
 
 ## EntityChangedEvent
@@ -111,6 +111,17 @@ Use normal Spring `@EventListener` for logic that must affect the current save/r
 
 `@TransactionalEventListener` is for after-transaction reactions such as notifications or integration events. Do not use it when failure must roll back or reject the current persistence operation.
 
+**The criterion is the direction of failure.**
+A handler that must be able to REJECT the operation belongs before commit. A handler
+that mutates a resource the database transaction cannot roll back — file storage, an
+external API, an outbound notification — belongs AFTER commit, however required it is.
+
+The mistake this prevents: deleting an uploaded file from a before-commit handler
+because the deletion is "a required synchronous side effect". `EntityChangedEvent` is
+published in `beforeCommit`, so if anything later aborts the transaction the row is
+still there and its file is gone — the exact inverse of the leak the handler exists to
+prevent.
+
 `EntityChangedEvent` (before commit) is delivered AFTER the SQL flush. If the write
 being validated can itself violate a database constraint, the constraint error is
 raised first and the listener never runs.
@@ -188,6 +199,7 @@ what is in the database and overwrites values set in memory but not yet saved.
 - Assuming `EntityChangedEvent` directly contains the full entity instance.
 - Assuming `EntityLoadingEvent` is a replacement for fetching references or running cross-entity queries.
 - Reading an entity property that is omitted from a custom fetch plan.
-- `@TransactionalEventListener` for validation, required synchronous side effects, or immutable-record enforcement.
+- `@TransactionalEventListener` for validation, or for immutable-record enforcement — anything that must be able to reject the operation.
+- A before-commit handler for a side effect the transaction cannot undo (file storage, external APIs, notifications).
 - Putting UI code in entity listeners.
 - Side effects without an explicit service method when several entities must stay consistent.
