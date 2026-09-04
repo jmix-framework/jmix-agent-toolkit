@@ -155,6 +155,7 @@ needs the reference loaded.
 public void onOrderSaving(EntitySavingEvent<Order> event) {
     Order order = event.getEntity();
     Category category = entityStates.isLoaded(order, "category")
+                    && order.getCategory() != null
             ? order.getCategory()
             : dataManager.load(Order.class).id(order.getId())
                     .fetchPlan(fp -> fp.addFetchPlan(FetchPlan.BASE)
@@ -167,6 +168,32 @@ public void onOrderSaving(EntitySavingEvent<Order> event) {
 Read the reference OUT of the separately loaded instance and keep using the event's
 entity. Do NOT continue with the reloaded copy and do not merge it back: it carries
 what is in the database and overwrites values set in memory but not yet saved.
+
+**Why the guard tests the value too.** `EntityStates.isLoaded` reports EVERY
+attribute of a `DataManager.getReference(Order.class, id)` instance as loaded,
+even though that instance carries nothing but an id. Guarding on `isLoaded`
+alone therefore takes the "already here" branch for a reference set by id, the
+getter returns null, and a listener deriving a required value fails on an
+ordinary save. Whenever the value cannot legitimately be null, guard on
+`isLoaded(...) && value != null` so a null falls through to the reload — a null
+here can mean "not really here" rather than "genuinely null". None of this is
+visible statically: the branch compiles and the fully-loaded path passes; only a
+test that sets the reference through `getReference` catches it.
+
+**A soft-deletable target needs the hint.** Jmix filters soft-deleted rows out
+of the reload, so if the reference points at a soft-deleted row the recipe above
+yields `null` — indistinguishable from a reference that was never set. When the
+referenced entity carries `@DeletedDate`/`@DeletedBy` and a deleted target must
+still be reachable, issue the load with soft deletion off:
+
+```java
+dataManager.load(Order.class).id(order.getId())
+        .fetchPlan(fp -> fp.addFetchPlan(FetchPlan.BASE).add("category", FetchPlan.BASE))
+        .hint(PersistenceHints.SOFT_DELETION, false)
+        .optional().map(Order::getCategory).orElse(null);
+```
+
+The same caution applies wherever an id taken from a change set is loaded back.
 
 ## Forbidden
 
