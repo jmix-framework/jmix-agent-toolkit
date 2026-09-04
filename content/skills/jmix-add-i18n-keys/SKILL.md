@@ -133,10 +133,9 @@ Do not rely on similar casing such as `CreateOrderButton.text` or `createorderBu
 
 ### 2. Verify translated values
 
-The scope is the BUNDLE, not whether `en` is declared. Every locale bundle other
-than the one whose language the keys are authored in must be reviewed for leftover
-template values — including in an `en,<other>` application, where the second bundle
-is generated as an English template and every key in it resolves.
+Every locale bundle other than the one whose language the keys are authored in must be reviewed for leftover template
+values — including in an `en,<other>` application, where the second bundle is generated as an English template and every
+key in it resolves.
 
 Read each such `messages_<locale>.properties` file complete, not only the lines
 changed during the task. Project templates can contain English values under keys
