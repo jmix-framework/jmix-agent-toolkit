@@ -302,14 +302,8 @@ private Parent parent;
 ### Cascade for a hard-deleted parent
 
 `@OnDelete(DeletePolicy.CASCADE)` is an application-layer policy, and Jmix applies it
-only to a parent that supports soft delete. `EclipselinkPersistenceSupport$OnSaveEntityVisitor.visit`
-calls `processDeletePolicy` only when `EntityValues.isSoftDeletionSupported(entity)` is
-true and jumps over the call otherwise, so on a parent with no `@DeletedDate`/`@DeletedBy`
+only to a parent that supports soft delete. On a parent with no `@DeletedDate`/`@DeletedBy`
 the annotation does nothing and the children are orphaned.
-
-Nothing catches this before runtime: it compiles, no IDE inspection fires, and a green
-`clean test` says nothing. Only a test that asserts the children are gone after the parent
-is removed will fail.
 
 For a hard-deleted parent, put the cascade on the child's foreign key in the changelog
 instead:
