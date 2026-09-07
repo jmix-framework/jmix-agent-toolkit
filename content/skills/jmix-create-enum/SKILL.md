@@ -55,6 +55,14 @@ public enum TransactionType implements EnumClass<String> {
 }
 ```
 
+A constant may carry further constructor arguments and accessors beside the stable id — a
+policy value a validator reads, a display order, a threshold. They are invisible to the
+metamodel: an enum is not a `@JmixEntity`, so the attribute loader never runs over it, and
+the enumeration datatype Jmix builds for an `EnumClass` reads only `getEnumConstants()` and
+`getId()`. So extra state needs no message key and appears in no fetch plan. Only the
+**stable id** is ever persisted — never a second field, however convenient its value looks
+as a column.
+
 ## Entity Mapping
 
 ```java
