@@ -18,6 +18,8 @@ Use this skill when adding or changing a database-backed Jmix entity.
 5. Add `@InstanceName` on a stable human-readable field or method.
 6. Define columns with exact `nullable`, `length`, `precision`, and `scale` constraints from requirements.
    **Check every column name against the reserved words of every targeted dialect** — see "Column names" below.
+   **A `length` of 255 is `@Column`'s own default — omit it** and let the changelog spell
+   `varchar(255)`; see "Constraint Audit" below.
 7. Use `FetchType.LAZY` for relationships.
 8. Create the Liquibase changelog using `jmix-create-liquibase-changelog`.
 9. Add entity and attribute message keys using `jmix-add-i18n-keys`.
@@ -397,7 +399,13 @@ drift is silent. Check Java annotations and the Liquibase changelog side
 by side:
 
 - `nullable` / `@NotNull`
-- `length`
+- `length` — compare the **effective** length, not whether the attribute is written.
+  `@Column`'s own default is 255, so a 255-character column omits `length` from the
+  annotation (writing it is redundant, and a common IDE inspection reports it — the same
+  finding a static-analysis gate raises) while the changelog must still spell
+  `varchar(255)`, because SQL has no such default. An attribute present on one side and
+  absent on the other is not drift here. `precision` and `scale` default to 0, which is
+  never the requirement, so those are always written on both sides.
 - `precision` and `scale`
 - enum id values and column type
 - foreign key nullability
