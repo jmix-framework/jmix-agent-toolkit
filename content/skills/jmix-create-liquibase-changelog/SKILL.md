@@ -204,16 +204,8 @@ on the **parent's** deletion traits. Check them before choosing `onDelete`:
   parent row is never physically deleted, so a DB-level `onDelete="CASCADE"`
   would not fire. Leave the FK without `onDelete`.
 - **Parent carries neither** (hard delete): the application-layer policy never
-  runs — `processDeletePolicy` is called only when
-  `EntityValues.isSoftDeletionSupported(parent)` holds — so the annotation is
-  inert and the database clause is the ONLY thing that removes the children. The
-  child's FK MUST carry `onDelete="CASCADE"`.
-
-An entity is soft-deletable only when it carries those annotations, so a plain
-entity is hard-deleted: in a project that has not opted into soft delete, the
-second branch is the normal case, not the exception. Getting it wrong leaves
-orphaned child rows with no compile error, no inspection warning and a green
-`clean test` — only a test that asserts the children are gone catches it.
+  runs, so the annotation is inert and the database clause is the ONLY thing that removes the children. 
+  The child's FK MUST carry `onDelete="CASCADE"`.
 
 ## Root Changelog Reachability
 
