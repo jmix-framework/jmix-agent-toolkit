@@ -216,6 +216,24 @@ on the **parent's** deletion traits. Check them before choosing `onDelete`:
   runs, so the annotation is inert and the database clause is the ONLY thing that removes the children. 
   The child's FK MUST carry `onDelete="CASCADE"`.
 
+## Two referential actions on one row
+
+`onDelete` is not an independent per-constraint choice once two foreign keys can
+act on the **same row in one statement**. The common shape is a self-referencing
+table that also belongs to a cascading owner:
+
+```
+EMPLOYEE(DEPARTMENT_ID -> DEPARTMENT ON DELETE CASCADE,
+         MANAGER_ID    -> EMPLOYEE   ON DELETE SET NULL)
+```
+
+Deleting a department whose head reports to a manager in that same department
+makes `FK_EMPLOYEE_ON_DEPARTMENT` delete the row while `FK_EMPLOYEE_ON_MANAGER`
+sets its `MANAGER_ID` to null. 
+
+In this case, separate statements from the application side: clear or delete the self-references first, 
+then delete the owner.
+
 ## Root Changelog Reachability
 
 ```xml
