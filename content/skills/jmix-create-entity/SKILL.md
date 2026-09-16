@@ -401,11 +401,9 @@ by side:
 - `nullable` / `@NotNull`
 - `length` — compare the **effective** length, not whether the attribute is written.
   `@Column`'s own default is 255, so a 255-character column omits `length` from the
-  annotation (writing it is redundant, and a common IDE inspection reports it — the same
-  finding a static-analysis gate raises) while the changelog must still spell
-  `varchar(255)`, because SQL has no such default. An attribute present on one side and
-  absent on the other is not drift here. `precision` and `scale` default to 0, which is
-  never the requirement, so those are always written on both sides.
+  annotation while the changelog must still spell `varchar(255)`, because SQL has no such default.
+  An attribute present on one side and absent on the other is not drift here. `precision` and `scale` default to 0,
+  which is never the requirement, so those are always written on both sides.
 - `precision` and `scale`
 - enum id values and column type
 - foreign key nullability
