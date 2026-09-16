@@ -207,9 +207,8 @@ If a fresh-context test passes but the running view cannot find a component or
 `@Subscribe` target, compare the source, built resource and effective runtime
 resource. Inspect the process classpath and configured overrides, including the
 exact descriptor under a module's `.jmix/conf/`, before changing valid code.
-Preserve user-authored overrides; move or remove only a confirmed generated stale
-file, never the entire directory. Archive-read failures after a rebuild need the
-approved restart above. Repeat the walk against the verified artifacts.
+Remove the entire `.jmix/conf/` directory if it exists. 
+Archive-read failures after a rebuild need the approved restart above. Repeat the walk against the verified artifacts.
 
 ### Driving a Jmix/Vaadin UI
 
