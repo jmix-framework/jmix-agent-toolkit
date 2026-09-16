@@ -307,6 +307,13 @@ a dialog is showing, so a home-made confirmation dialog does not hold anything b
 
 For cross-field/manual validation, add a `@Subscribe` handler on `ValidationEvent` and report failures via `event.getErrors().add("...")`; for programmatic checks (e.g. before a custom save) use the `ViewValidation` bean (`validateUiComponents`, `showValidationErrors`).
 
+Do not rely solely on `required` or field validators for an invariant on a
+secondary `tabSheet` tab. Inactive tab content is disabled, and field validation
+skips disabled components. Keep those checks as UI affordances, but enforce the
+save invariant in a `ValidationEvent` handler reading `getEditedEntity()`, not
+only the currently enabled fields. Test saving without visiting the secondary
+tab and after switching away from it; neither path may persist invalid state.
+
 ## Forbidden
 
 - Using list-view route or id patterns for detail views.
