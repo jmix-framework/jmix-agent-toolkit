@@ -410,6 +410,13 @@ by side:
 - indexes and unique constraints
 - default values for required fields
 
+When a field uses `@PropertyDatatype`, inspect the datatype class's `@Ddl` too.
+Compare its SQL type with the intended column and verify the effective generated
+DDL; matching `@Column` and Liquibase alone can hide a conflicting datatype
+declaration. Do not assume the field annotation wins. Use a compatible datatype
+or separate display formatting from schema typing, and review generated migrations
+for unintended precision or scale changes before applying them.
+
 ## Semantic Constraint Checks
 
 Apply common Java validation and persistence mappings when the field semantics are clear:
