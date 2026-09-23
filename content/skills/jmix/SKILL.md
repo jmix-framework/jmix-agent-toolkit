@@ -55,6 +55,7 @@ READ the most specific skill for each artifact:
 - Reusable Flow UI fragment: `jmix-create-fragment`
 - Component styling / theme tokens (`--aura-*`, `--lumo-*`) / CSS classes: `jmix-style-ui`
 - Moving a project upgraded from Jmix 2.x off Lumo onto Aura: `jmix-migrate-theme-to-aura`
+- Main view still on the Jmix 2.x structure after that port (no user menu, empty initial layout, logo 403): `jmix-setup-main-view`
 
 ## A skill's framework rule beats sample code in a plan or brief
 
