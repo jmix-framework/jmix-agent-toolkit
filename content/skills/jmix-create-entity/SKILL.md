@@ -346,9 +346,10 @@ The same rule covers `@OnDeleteInverse(DeletePolicy.DENY)` / `UNLINK` on an ordi
 `@ManyToOne`: Jmix runs the delete-policy processor only when the entity being
 DELETED supports soft delete. The trait that matters is on the reference's target
 (`Product` when the annotation sits on `OrderLine.product`), not on the entity that
-carries the annotation. On a hard-deleted target the annotation is dead code: DENY
-surfaces as a foreign-key violation from the database — a persistence exception, never
-`DeletePolicyException` — and UNLINK does nothing.
+carries the annotation. On a hard-deleted target the annotation is just an indicator 
+for Studio to generate a FK constraint with `ON DELETE`. 
+DENY surfaces as a foreign-key violation from the database — a persistence exception, never
+`DeletePolicyException`.
 
 For a hard-deleted target put the policy on the foreign key in the changelog instead
 (see `jmix-create-liquibase-changelog`, "Two referential actions on one row"):
