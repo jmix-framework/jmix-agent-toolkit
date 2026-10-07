@@ -169,6 +169,8 @@ values without weakening the entity constraint:
 <checkbox id="subscribedField" property="subscribed" required="false"/>
 ```
 
+A `comboBox` whose items are set only in the controller must not be bound in the descriptor: the binding sets the value when the entity arrives, before `setItems`, and opening a saved record fails. Call `setItems(…)` first, then `setValueSource(new ContainerValueSource<>(container, "property"))`.
+
 Do not expose technical fields (`id`, `version`) in user-facing forms. Hide parent/default fields only when they are initialized elsewhere.
 
 ## Final XML Type Audit
