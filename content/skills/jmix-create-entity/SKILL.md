@@ -383,6 +383,8 @@ dataManager.save(new SaveContext()
 
 Non-persistent derived attributes use `@JmixProperty` + `@Transient` + `@DependsOnProperties({"a", "b"})` (`@JmixProperty` from `io.jmix.core.metamodel.annotation`). The same applies to an `@InstanceName` method: it must carry `@DependsOnProperties` listing every attribute it reads so they are fetched.
 
+`@DependsOnProperties` lists only the entity's own attributes; a referenced entity is fetched with its instance name only, so don't read its other attributes in a calculated property.
+
 ## File attributes
 
 Use `FileRef` for an uploaded file reference. The JPA converter is applied automatically:
