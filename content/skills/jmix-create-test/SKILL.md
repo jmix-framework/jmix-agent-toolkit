@@ -196,6 +196,38 @@ Omitting it does not fail loudly: the beans simply never get defined, and the te
 runs against the real collaborator (a live HTTP call, or a `NoSuchBeanDefinition`
 far from the cause).
 
+**Destroy the per-test Vaadin service when the suite boots more than one context.**
+`JmixUiTestExtension` creates a servlet and a `VaadinService` before every test and
+never destroys them ([jmix#5794](https://github.com/jmix-framework/jmix/issues/5794)).
+Vaadin 25.1 registers each service in a static signal-environment list and removes it
+only on `destroy()`, so every context the Spring context cache closes stays in memory
+until the JVM exits. Until the framework fixes it, add an `AfterEachCallback` and
+register it BEFORE `@UiTest`: `afterEach` callbacks run in reverse registration order,
+so it then runs after `JmixUiTestExtension` has closed the test's dialogs and
+notifications.
+
+```java
+public class VaadinServiceCleanupExtension implements AfterEachCallback {
+
+    @Override
+    public void afterEach(ExtensionContext context) {
+        if (VaadinService.getCurrent() instanceof TestSpringVaadinServletService service) {
+            try {
+                service.getServlet().destroy(); // also destroys the service
+            } finally {
+                CurrentInstance.clearAll();
+                RequestContextHolder.resetRequestAttributes();
+            }
+        }
+    }
+}
+
+@ExtendWith(VaadinServiceCleanupExtension.class) // before @UiTest
+@UiTest
+@SpringBootTest(classes = {AppApplication.class, FlowuiTestAssistConfiguration.class})
+class CustomerUiTest { /* ... */ }
+```
+
 ## Reaching what is NOT a component on the form
 
 `UiTestUtils.getComponent(...)` only finds components in the view. Dialogs and
