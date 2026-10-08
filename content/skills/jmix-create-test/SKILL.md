@@ -239,6 +239,19 @@ DataGrid<Order> grid = (DataGrid<Order>) FragmentUtils.getComponent(fragment, "o
 `FragmentUtils.findComponent(fragment, id)` is the `Optional` form; both live in
 `io.jmix.flowui.fragment`.
 
+A grid column whose attribute the current role may not view is removed from the Vaadin
+grid, but `DataGrid` still keeps it by key: `getColumnByKey("discount")` returns the
+column and its `isVisible()` is `true`, so an assertion on visibility reports a hidden
+column as shown. Assert the removal through the column's element:
+
+```java
+Grid.Column<Order> column = grid.getColumnByKey("discount");
+assertThat(column == null || column.getElement().getParent() == null).isTrue();
+```
+
+A form field bound to such an attribute is hidden with `setVisible(false)`, so
+`assertThat(field.isVisible()).isFalse()` is correct for fields.
+
 ## Testing code that runs outside a user session
 
 A scheduler / `@Async` / application event listener path has no authenticated user, and a test that
