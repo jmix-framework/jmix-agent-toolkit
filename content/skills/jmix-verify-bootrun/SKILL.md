@@ -210,6 +210,13 @@ exact descriptor under a module's `.jmix/conf/`, before changing valid code.
 Remove the entire `.jmix/conf/` directory if it exists. 
 Archive-read failures after a rebuild need the approved restart above. Repeat the walk against the verified artifacts.
 
+Remove `.jmix/conf/` also after every walk during which code was edited while the app
+was running, and before the next Gate 2 run. The IDE hot deploy writes changed controller
+classes there, `clean test` does not clean `.jmix/`, and Jmix then loads the stale class
+with its own class loader. The symptom is a `ClassCastException` between two classes with
+the same name (`OrderDetailView cannot be cast to OrderDetailView`) in every test that
+opens the view.
+
 ### Driving a Jmix/Vaadin UI
 
 The page is built from `vaadin-*` custom elements, rendered by a client that keeps
