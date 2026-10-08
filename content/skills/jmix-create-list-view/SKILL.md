@@ -11,7 +11,7 @@ Use this skill when creating a top-level list/search view for an entity.
 
 1. Create Java controller under `view/<entityname>/`.
 2. Extend `StandardListView<Entity>`.
-3. Add `@Route(value = "...", layout = MainView.class)`.
+3. Add `@Route(value = "...", layout = MainView.class)`. In a Jmix add-on module, which has no `MainView` and must not reference the application, use `layout = DefaultMainViewParent.class` (`io.jmix.flowui.view.DefaultMainViewParent`); the application's main view is used as the parent at runtime.
 4. Add `@ViewController(id = "Entity.list")`.
 5. Add `@ViewDescriptor(path = "entity-list-view.xml")`.
 6. Add `@LookupComponent("<entities>DataGrid")` when the view can be opened as a lookup — an entity-picker dialog via `@PrimaryLookupView` or an explicit lookup builder call. A pure management/browse screen that is never used as a picker can omit it; the annotation only backs `getLookupComponent()`/`findLookupComponent()` in the lookup flow.
