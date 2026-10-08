@@ -201,7 +201,10 @@ far from the cause).
 never destroys them ([jmix#5794](https://github.com/jmix-framework/jmix/issues/5794)).
 Vaadin 25.1 registers each service in a static signal-environment list and removes it
 only on `destroy()`, so every context the Spring context cache closes stays in memory
-until the JVM exits. Until the framework fixes it, add an `AfterEachCallback` and
+until the JVM exits. When the test environment sets `vaadin.productionMode=false`, every
+test also starts its own dev-mode handler, whose file-watcher threads pin the context the
+same way; the test servlet context never fires `contextDestroyed`, which would stop it.
+Until the framework fixes it, add an `AfterEachCallback` and
 register it BEFORE `@UiTest`: `afterEach` callbacks run in reverse registration order,
 so it then runs after `JmixUiTestExtension` has closed the test's dialogs and
 notifications.
@@ -214,6 +217,12 @@ public class VaadinServiceCleanupExtension implements AfterEachCallback {
         if (VaadinService.getCurrent() instanceof TestSpringVaadinServletService service) {
             try {
                 service.getServlet().destroy(); // also destroys the service
+                // what contextDestroyed would do; a no-op in production mode
+                Lookup lookup = service.getContext().getAttribute(Lookup.class);
+                DevModeHandlerManager devMode = lookup == null ? null : lookup.lookup(DevModeHandlerManager.class);
+                if (devMode != null) {
+                    devMode.stopDevModeHandler();
+                }
             } finally {
                 CurrentInstance.clearAll();
                 RequestContextHolder.resetRequestAttributes();
