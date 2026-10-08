@@ -239,6 +239,20 @@ DataGrid<Order> grid = (DataGrid<Order>) FragmentUtils.getComponent(fragment, "o
 `FragmentUtils.findComponent(fragment, id)` is the `Optional` form; both live in
 `io.jmix.flowui.fragment`.
 
+Items of a `dropdownButton` are not view components either, so
+`UiTestUtils.getComponent(view, itemId)` does not find them. Get the button by its
+component id and ask it for the item:
+
+```java
+DropdownButton createButton = UiTestUtils.getComponent(view, "createButton");
+assertThat(createButton.getItem("createFromTemplate")).isNull(); // null, not an exception
+
+ActionItem blankItem = (ActionItem) createButton.getItem("createBlank");
+blankItem.getAction().actionPerform(createButton);
+```
+
+`getItems()` lists the items and skips separators.
+
 ## Testing code that runs outside a user session
 
 A scheduler / `@Async` / application event listener path has no authenticated user, and a test that
