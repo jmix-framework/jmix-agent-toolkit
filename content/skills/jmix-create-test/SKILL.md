@@ -288,6 +288,7 @@ Before finishing, check:
     ```
 - Test data has unique values to avoid collisions.
 - Assertions verify persisted or visible behavior, not just absence of exceptions.
+- A test that compares a stored date-time with its in-memory original (equality, "same event", `isEqual`) creates the value at the column precision — e.g. `OffsetDateTime.now().truncatedTo(ChronoUnit.MICROS)` for a PostgreSQL `timestamp`. `now()` carries nanoseconds on Linux JDKs and microseconds on macOS, and the driver rounds the value to the column on write, so a reloaded value differs from the original about half the time: green on a developer Mac, red on Linux CI.
 - UI tests that depend on who is viewing the data authenticate as a real database user around navigation, interaction, and assertions.
 - UI tests select the containing `tabSheet` tab before calling `click()` on a component in that tab, unless they intentionally fire the server-side event directly and explain why.
 - The test command can run one class or method without running the full suite.
