@@ -159,7 +159,7 @@ listener work; there is no event to hang it on.
 
 `EntitySavingEvent` contains the entity instance before it is written to the data store. Use it for required defaults, value normalization, and transformations that must be persisted with the current save operation.
 
-It is published for created and updated instances only: `remove` publishes no `EntitySavingEvent`. To react to removals as well (cache invalidation, audit), listen to `EntityChangedEvent` and check `Type.DELETED` — in Jmix 3 it is published for every JPA entity, no opt-in annotation needed.
+It is published for created and updated instances only: `remove` publishes no `EntitySavingEvent`. To react to removals as well (cache invalidation, audit), listen to `EntityChangedEvent` and check `Type.DELETED`.
 
 `EntityLoadingEvent` contains the loaded entity instance after it is read from the data store. Use it to initialize non-persistent attributes from local persistent fields, for example decrypting a stored value into a transient UI-facing property.
 
