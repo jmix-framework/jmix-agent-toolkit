@@ -119,6 +119,22 @@ public interface OwnOrdersOnlyRole {
 }
 ```
 
+Gotcha: an UPDATE predicate is checked against two different states of the entity.
+`StandardDetailView` and the list `EditAction` check it against the entity as loaded,
+to decide whether the view (or the child dialog) opens read-only. The data store checks
+it against the entity as it is being saved, with the user's changes applied. So a
+predicate on a field that the same user changes in that save judges the NEW value: an
+`Order` predicate `status == DRAFT` lets the owner edit a draft, and then denies, with
+`AccessDeniedException`, the owner's own save that moves the order to SUBMITTED.
+
+- Put ownership in the predicate (the requester is the current user); it does not change
+  during the save.
+- Keep status rules for the entity itself in the service or the view.
+- A status rule fits on child entities that the transition does not touch, for example
+  `OrderLine` changes allowed only while the parent `Order` is a draft. Then save the
+  user's pending line edits BEFORE the status change, in a separate save: in one save the
+  changed lines are checked against the parent's new status and denied.
+
 ## Mechanical self-check before finishing
 
 A clean compile is NOT "done" — most role defects survive `compileJava` and surface
