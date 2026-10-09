@@ -266,6 +266,19 @@ The same class also provides `getOpenedDialogs()`, `getLastOpenedNotification()`
 `getOpenedNotifications()` and `validateView(detailView)` — assert dialogs,
 notifications and validation errors through these, never by traversing the tree.
 
+These helpers read static registries (`OpenedDialogs`, `OpenedNotifications`).
+`JmixUiTestExtension` empties them after each test, but within a test they still hold
+whatever was opened before the action under test — by the initial view or by setup
+steps. Before asserting "no dialog opened" or on the LAST notification, clear them
+right before the action:
+
+```java
+openedDialogs.closeOpenedDialogs();             // @Autowired OpenedDialogs
+openedNotifications.closeOpenedNotifications(); // @Autowired OpenedNotifications
+approveAction.actionPerform(ordersDataGrid);
+assertThat(UiTestUtils.getOpenedDialogs()).isEmpty();
+```
+
 Data containers are reached through `ViewControllerUtils`, because `View.getViewData()`
 is protected and the compiler does not point anywhere:
 
