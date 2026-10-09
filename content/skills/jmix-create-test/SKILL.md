@@ -275,6 +275,8 @@ CollectionContainer<Category> dc =
 assertThat(dc.getItems()).allMatch(Category::isApplicable);
 ```
 
+### Components inside a fragment
+
 Components inside a fragment are not found by id from the view. The fragment loader
 keeps a component's XML id as fragment-scoped data, not as the element id, so
 `UiTestUtils.getComponent(view, "ordersGrid")` and any walk comparing
@@ -288,6 +290,24 @@ DataGrid<Order> grid = (DataGrid<Order>) FragmentUtils.getComponent(fragment, "o
 
 `FragmentUtils.findComponent(fragment, id)` is the `Optional` form; both live in
 `io.jmix.flowui.fragment`.
+
+### dropdownButton items
+
+Items of a `dropdownButton` are not view components either, so
+`UiTestUtils.getComponent(view, itemId)` does not find them. Get the button by its
+component id and ask it for the item:
+
+```java
+DropdownButton createButton = UiTestUtils.getComponent(view, "createButton");
+assertThat(createButton.getItem("createFromTemplate")).isNull(); // null, not an exception
+
+ActionItem blankItem = (ActionItem) createButton.getItem("createBlank");
+blankItem.getAction().actionPerform(createButton);
+```
+
+`getItems()` lists the items and skips separators.
+
+## Hidden grid columns
 
 A grid column whose attribute the current role may not view is removed from the Vaadin
 grid, but `DataGrid` still keeps it by key: `getColumnByKey("discount")` returns the
