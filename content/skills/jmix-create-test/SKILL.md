@@ -108,6 +108,15 @@ class CustomerUiTest {
 
 Use the project's helper for component lookup if it exists. Otherwise keep a local typed helper small and explicit. A `@UiTest` that navigates to a view will fail to find it if the view's id or the component id is wrong — the test, not just `compileJava`, is what catches that.
 
+**Find components by id, not by localized text.** In a `@UiTest` the UI and session
+locale is the JVM default (`Locale.getDefault()`), while `Messages` takes the locale
+from `CurrentAuthentication`, which has no client locale there and falls back to the
+first entry of `jmix.core.available-locales`. Comparing a caption with
+`messages.getMessage(key)` passes only where the two happen to agree — on a developer
+machine, not on an `en_US` CI runner. Look components up by id; when the test must
+assert localized text, resolve it with the locale the component used, or pin the UI
+locale in the test setup.
+
 `UiTestUtils.getCurrentView()` works as the navigation origin even before the
 test navigates anywhere: `@UiTest` opens the initial view before each test, so a
 current view always exists.
