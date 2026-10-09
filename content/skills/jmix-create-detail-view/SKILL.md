@@ -75,7 +75,7 @@ audit timestamps).
 
 1. Create Java controller under `view/<entityname>/`.
 2. Extend `StandardDetailView<Entity>`.
-3. Add `@Route(value = ".../:id", layout = MainView.class)`.
+3. Add `@Route(value = ".../:id", layout = MainView.class)`. In a Jmix add-on module, which has no `MainView` and must not reference the application, use `layout = DefaultMainViewParent.class` (`io.jmix.flowui.view.DefaultMainViewParent`); the application's main view is used as the parent at runtime.
 4. Add `@ViewController(id = "Entity.detail")`.
 5. Add `@ViewDescriptor(path = "entity-detail-view.xml")`.
 6. Add `@EditedEntityContainer("<entity>Dc")`.
