@@ -182,9 +182,11 @@ gate. The numbered steps below are for when you start and own the process.
    never becomes ready, tail the log, skip Gate 3, and shut the process down.
 3. With your browser/UI-automation tool, navigate to each view you created, click
    each button/action, fill each field, and confirm no error overlay or server
-   exception. If the application accepts file uploads, select and upload a real
-   file through the browser, then confirm the UI reports success and the file can
-   be opened or otherwise read back.
+   exception. When you created roles, log in through the login form as one user of
+   each role, not only as `admin`: `admin` usually holds `system-full-access`, which
+   hides missing login, view and menu policies. If the application accepts file
+   uploads, select and upload a real file through the browser, then confirm the UI
+   reports success and the file can be opened or otherwise read back.
    A Jmix UI is a Vaadin web-component UI, so it does not respond to a browser
    tool the way a plain HTML page does — see the next section.
    Drive the walk **only through real input events** — a genuine click,

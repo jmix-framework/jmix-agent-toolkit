@@ -1,16 +1,24 @@
 ---
 name: jmix-create-resource-role
-description: Create or update Jmix resource roles with entity, attribute, view, and menu policies, including the CREATE-implies-MODIFY rule.
+description: Create or update Jmix resource and row-level roles and role assignments — entity, attribute, view, menu, and specific policies, UI login permission, "own records / only in status X" edit rules, and the CREATE-implies-MODIFY rule.
 ---
 
 # Create Resource Role
 
 Use this skill when adding or changing Jmix security access.
 
-The model is ADDITIVE / no-deny: if any assigned role grants access the user has
-it, and there is no deny-policy. A role interface may `extend` several role
+Resource roles are ADDITIVE / no-deny: if any assigned resource role grants access
+the user has it, and there is no deny-policy. Row-level roles only narrow (see
+"Row-Level roles"). A role interface may `extend` several role
 interfaces of the SAME kind to compose their policies (a role cannot mix
 `@ResourceRole` and `@RowLevelRole`).
+
+## Every UI user needs `ui.loginToUi`
+
+The login view refuses a user without the specific policy `ui.loginToUi`, whatever
+else their roles grant. Give every UI user the project's `UiMinimalRole` (`ui-minimal`:
+`ui.loginToUi`, `MainView`, `LoginView`) — the business role extends it, or the user
+gets a `ui-minimal` assignment, in seed changelogs too.
 
 ## TOP RULE — CREATE implies MODIFY
 
@@ -105,6 +113,11 @@ live in their own interface annotated with `@RowLevelRole` and never mix with
   the method returns a `RowLevelPredicate` / `RowLevelBiPredicate`. Use for logic
   that JPQL cannot express and for non-read operations.
 
+**Row-level policies are joined with AND** — JPQL conditions and predicates alike, across
+all the user's row-level roles. A user with both "own orders" and "department orders"
+sees only their own. Assign only the wider role, or write one role whose condition
+contains the `or`; check seed role assignments too.
+
 Gotcha: a JPQL policy only affects the root entity of a loaded graph. If the same
 entity is also loaded as a *collection* inside another entity's graph, define BOTH
 a `@JpqlRowLevelPolicy` and a `@PredicateRowLevelPolicy` for it to keep access
@@ -150,6 +163,9 @@ your own code:
    `<menu id="...">` GROUP id does NOT grant its items.
 3. **Every reachable view has a `@ViewPolicy` entry.** Include composition-dialog
    detail views opened from a parent grid even though they have no menu item.
+4. **Every UI user holds `ui.loginToUi`** (`ui-minimal`), seed assignments included.
+5. **No user holds two row-level roles narrowing the same entity** unless the
+   intersection is intended.
 
 To assert a permission in Java at runtime, inject `AccessManager` and call
 `applyRegisteredConstraints(...)` on a context (e.g. `EntityOperationContext`), then
