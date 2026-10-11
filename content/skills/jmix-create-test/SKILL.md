@@ -87,6 +87,9 @@ Optional<Customer> result = systemAuthenticator.withUser(
 
 Use this when the expected result depends on Jmix security policies.
 
+Test row-level rules by loading data as the user and asserting which rows come back;
+a permission API such as `SecureOperations` proves only that a policy exists.
+
 ## UI Integration Test Pattern
 
 ```java
