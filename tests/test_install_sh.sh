@@ -579,7 +579,10 @@ s.serve_forever()
 PY
         server_pid=$!
         disown "$server_pid"   # no job-status noise when it is killed below
-        for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "${WORK}/port" ] && break; sleep 0.5; done
+        # A cold python3 start on a CI macOS runner can take several seconds.
+        waited=0
+        while [ ! -s "${WORK}/port" ] && [ "$waited" -lt 60 ]; do sleep 0.5; waited=$((waited + 1)); done
+        [ -s "${WORK}/port" ] || fail "mcp-jetbrains(sse): the fake IDE server did not start within 30 s"
         port="$(cat "${WORK}/port")"
         rm -f .mcp.json opencode.json
         JMIX_IDE_MCP_PORT="$port" PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents claude,codex,opencode >/dev/null \
