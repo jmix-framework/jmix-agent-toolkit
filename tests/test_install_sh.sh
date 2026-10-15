@@ -641,8 +641,7 @@ PY
     fi
     pass "mcp-context7 registers every agent at user level without printing the key"
 
-    # 5h. Playwright MCP, local scope; links and store of the old playwright-cli
-    #     skill go away, foreign skills stay.
+    # 5h. A local MCP registration keeps the old global skills for other projects.
     mkdir -p "${HOME}/.agents/.playwright/skills/playwright-cli" "${HOME}/.claude/skills/my-skill"
     ln -s ../../.agents/.playwright/skills/playwright-cli "${HOME}/.claude/skills/playwright-cli"
     PATH="$BIN_PATH" bash "$INSTALL" playwright --agents claude,codex,opencode,junie --scope local >/dev/null \
@@ -654,10 +653,10 @@ PY
         || fail "playwright(local): OpenCode entry wrong"
     jq -e '.mcpServers.playwright.args == ["-y","@playwright/mcp@latest"]' .junie/mcp/mcp.json >/dev/null \
         || fail "playwright(local): Junie entry wrong"
-    [ ! -e "${HOME}/.claude/skills/playwright-cli" ] && [ ! -L "${HOME}/.claude/skills/playwright-cli" ] \
-        && [ ! -e "${HOME}/.agents/.playwright" ] || fail "playwright: old playwright-cli skill not removed"
+    [ -d "${HOME}/.claude/skills/playwright-cli" ] && [ -d "${HOME}/.agents/.playwright" ] \
+        || fail "playwright: local registration removed global skills"
     [ -d "${HOME}/.claude/skills/my-skill" ] || fail "playwright: removed a foreign skill"
-    pass "playwright registers the MCP server locally and removes the old CLI skill"
+    pass "playwright registers the MCP server locally and keeps global skills"
 
     PATH="$BIN_PATH" bash "$INSTALL" playwright --agents claude --scope global >/dev/null \
         || fail "playwright(global): non-zero exit"
@@ -770,7 +769,7 @@ PY
         touch "${HOME}/.agents/.playwright/skills/playwright-cli/SKILL.md"
         chmod 555 "${HOME}/.agents/.playwright/skills/playwright-cli"
     fi
-    PATH="$BIN_PATH" bash "$INSTALL" playwright --agents junie >/dev/null 2>&1 \
+    PATH="$BIN_PATH" bash "$INSTALL" playwright --agents claude,codex,opencode,junie --scope global >/dev/null 2>&1 \
         || fail "playwright: an unremovable old store stopped the step"
     [ -L "${HOME}/.claude/skills/mine" ] || fail "playwright: removed a link that is not into the old store"
     chmod -R u+w "${HOME}/.agents/.playwright" 2>/dev/null || true
@@ -788,6 +787,161 @@ PY
     out="$(PATH="$BIN_PATH" bash "$INSTALL" playwright --agents claude-desktop)"
     case "$out" in *"Quit Claude Desktop"*) fail "restart reminder printed for a skipped Claude Desktop" ;; esac
     pass "port validation, --source and the Claude Desktop reminder"
+    # 5q. Refuse unsupported TOML before changing either Codex layer.
+    SAVED_HOME="$HOME"
+    export HOME="${WORK}/safe-home" CODEX_HOME="${WORK}/safe-home/.codex"
+    SAFE_PROJ="${WORK}/safe-project"
+    mkdir -p "$CODEX_HOME" "$SAFE_PROJ/.codex"
+    cd "$SAFE_PROJ"
+    for quotes in '"""' "'''"; do
+        printf 'developer_instructions = %s\n[mcp_servers.playwright]\ncommand = "example"\n%s\nmodel = "keep-me"\n' "$quotes" "$quotes" > .codex/config.toml
+        printf '[mcp_servers.playwright]\nurl = "http://keep-me"\n' > "$CODEX_HOME/config.toml"
+        cp .codex/config.toml "${WORK}/safe-project-before"
+        cp "$CODEX_HOME/config.toml" "${WORK}/safe-user-before"
+        if bash "$INSTALL" playwright --agents codex >/dev/null 2>&1; then
+            fail "toml: multi-line instructions should be refused safely"
+        fi
+        if ! cmp -s .codex/config.toml "${WORK}/safe-project-before" || ! cmp -s "$CODEX_HOME/config.toml" "${WORK}/safe-user-before"; then
+            fail "toml: refusing multi-line instructions changed a Codex layer"
+        fi
+    done
+    pass "TOML with multi-line strings leaves both Codex layers untouched"
+
+    for entry in '[mcp_servers]
+jetbrains = { command = "java", args = [] }' 'mcp_servers.jetbrains.command = "java"
+mcp_servers.jetbrains.args = []'; do
+        printf '%s\n' "$entry" > "$CODEX_HOME/config.toml"
+        printf 'model = "keep-me"\n' > .codex/config.toml
+        cp "$CODEX_HOME/config.toml" "${WORK}/safe-user-before"
+        cp .codex/config.toml "${WORK}/safe-project-before"
+        if bash "$INSTALL" mcp-jetbrains --agents codex >/dev/null 2>&1; then
+            fail "toml: unsupported syntax in the other layer should fail"
+        fi
+        if ! cmp -s "$CODEX_HOME/config.toml" "${WORK}/safe-user-before" || ! cmp -s .codex/config.toml "${WORK}/safe-project-before"; then
+            fail "toml: unsupported other-layer syntax changed a Codex layer"
+        fi
+    done
+    printf '[mcp_servers.jetbrains]\n"command" = "java"\nargs = []\n' > "$CODEX_HOME/config.toml"
+    bash "$INSTALL" mcp-jetbrains --agents codex >/dev/null || fail "toml: quoted command key was not aligned"
+    ! grep -q java "$CODEX_HOME/config.toml" || fail "toml: quoted command key survived alignment"
+    pass "Codex layer preflight rejects inline/dotted entries and aligns quoted keys"
+
+    mkdir -p .git app
+    printf '[mcp_servers.jetbrains]\ncommand = "java"\n' > .codex/config.toml
+    printf 'model = "keep-me"\n' > "$CODEX_HOME/config.toml"
+    cp .codex/config.toml "${WORK}/safe-project-before"
+    cp "$CODEX_HOME/config.toml" "${WORK}/safe-user-before"
+    cd app
+    for scope in local global; do
+        if bash "$INSTALL" mcp-jetbrains --agents codex --scope "$scope" >/dev/null 2>&1; then
+            fail "toml: conflicting ancestor layer should fail ($scope)"
+        fi
+        if [ -e .codex/config.toml ] || ! cmp -s ../.codex/config.toml "${WORK}/safe-project-before" \
+            || ! cmp -s "$CODEX_HOME/config.toml" "${WORK}/safe-user-before"; then
+            fail "toml: ancestor refusal changed a layer"
+        fi
+    done
+    printf '[mcp_servers.jetbrains]\nurl = "http://ancestor"\n' > ../.codex/config.toml
+    bash "$INSTALL" mcp-jetbrains --agents codex >/dev/null || fail "toml: same-transport ancestor was rejected"
+    grep -q ancestor ../.codex/config.toml || fail "toml: ancestor was overwritten"
+    pass "Codex ancestor transport conflicts fail before any layer is written"
+
+    # 5r. Failed/skipped/local registrations preserve old global skills. Shared
+    #     skills are removed only when every agent using the directory migrated.
+    mkdir -p "$HOME/.agents/.playwright/skills/playwright-cli" "$HOME/.claude/skills" "$HOME/.agents/skills"
+    ln -s ../../.agents/.playwright/skills/playwright-cli "$HOME/.claude/skills/playwright-cli"
+    ln -s ../.playwright/skills/playwright-cli "$HOME/.agents/skills/playwright-cli"
+    out="$(PATH=/usr/bin:/bin /bin/bash "$INSTALL" playwright --agents claude --scope global)" \
+        || fail "playwright: missing CLI stopped the step"
+    [ -d "$HOME/.claude/skills/playwright-cli" ] && [ -d "$HOME/.agents/skills/playwright-cli" ] \
+        || fail "playwright: skipped registration deleted old skills"
+    PATH=/usr/bin:/bin /bin/bash "$INSTALL" playwright --agents claude,codex,opencode,junie --scope global >/dev/null \
+        || fail "playwright: missing Claude CLI stopped the other agents"
+    [ -d "$HOME/.claude/skills/playwright-cli" ] && [ -d "$HOME/.agents/skills/playwright-cli" ] \
+        || fail "playwright: a skipped agent was counted as migrated"
+    printf '{ broken json\n' > opencode.json
+    mkdir -p "$HOME/.config/opencode"
+    printf '{ broken json\n' > "$HOME/.config/opencode/opencode.json"
+    if PATH="$BIN_PATH" bash "$INSTALL" playwright --agents claude,codex,opencode,junie --scope global >/dev/null 2>&1; then
+        fail "playwright: malformed user config should fail"
+    fi
+    [ -d "$HOME/.claude/skills/playwright-cli" ] && [ -d "$HOME/.agents/skills/playwright-cli" ] \
+        || fail "playwright: failed registration deleted old skills"
+    rm -f opencode.json "$HOME/.config/opencode/opencode.json"
+    PATH="$BIN_PATH" bash "$INSTALL" playwright --agents claude --scope local >/dev/null || fail "playwright: local migration failed"
+    [ -d "$HOME/.claude/skills/playwright-cli" ] || fail "playwright: local registration removed global skills"
+    PATH="$BIN_PATH" bash "$INSTALL" playwright --agents claude,codex --scope global >/dev/null || fail "playwright: partial global migration failed"
+    [ -d "$HOME/.claude/skills/playwright-cli" ] && [ -d "$HOME/.agents/skills/playwright-cli" ] \
+        || fail "playwright: unselected agents lost their shared skill"
+    PATH="$BIN_PATH" bash "$INSTALL" playwright --agents claude,codex,opencode,junie --scope global >/dev/null || fail "playwright: shared global migration failed"
+    [ ! -L "$HOME/.agents/skills/playwright-cli" ] && [ ! -e "$HOME/.agents/.playwright" ] \
+        || fail "playwright: successfully migrated global skills were not cleaned up"
+    pass "Playwright migration preserves skipped, failed, local and shared installations"
+
+    # 5s. Check secret permissions at the write, including a symlink target.
+    mkdir -p "${WORK}/safe-bin" "$HOME/.config/opencode"
+    JMIX_REAL_MV="$(command -v mv)"
+    JMIX_REAL_CAT="$(command -v cat)"
+    export JMIX_REAL_MV JMIX_REAL_CAT
+    export JMIX_PRIVATE_TARGET="$HOME/.config/opencode/opencode.json"
+    cat > "${WORK}/safe-bin/mv" <<'SH'
+#!/bin/bash
+if grep -q ctx7sk-TESTKEY "$1"; then
+    mode="$(stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1")"
+    [ "$mode" = 600 ] || exit 88
+fi
+exec "$JMIX_REAL_MV" "$@"
+SH
+    cat > "${WORK}/safe-bin/cat" <<'SH'
+#!/bin/bash
+mode="$(stat -L -c '%a' "$JMIX_PRIVATE_TARGET" 2>/dev/null || stat -L -f '%Lp' "$JMIX_PRIVATE_TARGET")"
+[ "$mode" = 600 ] || exit 88
+exec "$JMIX_REAL_CAT" "$@"
+SH
+    chmod +x "${WORK}/safe-bin/mv" "${WORK}/safe-bin/cat"
+    printf '{}\n' > "$JMIX_PRIVATE_TARGET"
+    chmod 644 "$JMIX_PRIVATE_TARGET"
+    PATH="${WORK}/safe-bin:$PATH" bash "$INSTALL" mcp-context7 --agents opencode --context7-key ctx7sk-TESTKEY >/dev/null \
+        || fail "mcp-context7: staged key was not private before rename"
+    mv "$JMIX_PRIVATE_TARGET" "${WORK}/private-target.json"
+    ln -s "${WORK}/private-target.json" "$JMIX_PRIVATE_TARGET"
+    printf '{}\n' > "$JMIX_PRIVATE_TARGET"
+    chmod 644 "$JMIX_PRIVATE_TARGET"
+    PATH="${WORK}/safe-bin:$PATH" bash "$INSTALL" mcp-context7 --agents opencode --context7-key ctx7sk-TESTKEY >/dev/null \
+        || fail "mcp-context7: symlink target was not private before writing"
+    pass "Context7 key is private before rename and symlink writes"
+
+    # Checking another Codex layer never stages the key in the project, and
+    # needs no write permission when that layer already has the same transport.
+    JMIX_REAL_AWK="$(command -v awk)"
+    JMIX_PROJECT_CONFIG_DIR="$(pwd -P)/.codex"
+    export JMIX_REAL_AWK JMIX_PROJECT_CONFIG_DIR
+    cat > "${WORK}/safe-bin/awk" <<'SH'
+#!/bin/bash
+for file in "$JMIX_PROJECT_CONFIG_DIR"/.jmix-mcp.*; do
+    [ ! -e "$file" ] || exit 89
+done
+exec "$JMIX_REAL_AWK" "$@"
+SH
+    chmod +x "${WORK}/safe-bin/awk"
+    printf '[mcp_servers.context7]\nurl = "https://mcp.context7.com/mcp"\n' >> .codex/config.toml
+    chmod 555 .codex
+    if ! PATH="${WORK}/safe-bin:$PATH" bash "$INSTALL" mcp-context7 --agents codex --context7-key ctx7sk-TESTKEY >/dev/null; then
+        chmod 755 .codex
+        fail "mcp-context7: preflight tried to write in the project"
+    fi
+    chmod 755 .codex
+    ! grep -q TESTKEY .codex/config.toml || fail "mcp-context7: preflight copied the key into the project"
+    pass "Context7 preflight does not stage secrets in project directories"
+
+    mkdir opencode.json
+    if bash "$INSTALL" playwright --agents opencode >/dev/null 2>&1; then
+        fail "json: a directory at the config path should fail"
+    fi
+    [ -z "$(ls -A opencode.json)" ] || fail "json: staged data was moved into a config directory"
+    pass "A directory at the config path fails without writing into it"
+    export HOME="$SAVED_HOME"
+    unset CODEX_HOME JMIX_REAL_MV JMIX_REAL_CAT JMIX_PRIVATE_TARGET JMIX_REAL_AWK JMIX_PROJECT_CONFIG_DIR
     cd "$PROJECT"
 else
     echo "skip: jq not found, skipping MCP assertions"

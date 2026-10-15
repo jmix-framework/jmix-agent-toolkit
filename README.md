@@ -165,6 +165,8 @@ The following two MCP servers help AI agents to build Jmix apps:
 
 The installer writes them (and the [Playwright](#4-playwright-tests) server) into these files. Project files are used with `--scope local` (the default), user files with `--scope global`; Context7 always goes to the user file. Claude CLI at user level needs `claude` on PATH; without it the installer skips that agent.
 
+Codex configuration is checked before either layer is changed. The installer edits explicit `[mcp_servers.<name>]` tables; files containing triple-quoted strings or defining the server through inline tables or dotted assignments require manual configuration and are left untouched. A conflicting transport inherited from a parent project directory also requires a manual update. Normal user/project tables using different transports are aligned automatically, except that a Context7 key is never copied into a project file.
+
 | Agent          | Project file          | User file                                                        | Servers key            |
 |:---------------|:----------------------|:-----------------------------------------------------------------|:-----------------------|
 | Claude CLI     | `.mcp.json`           | `~/.claude.json`, through `claude mcp add --scope user`          | `mcpServers`           |
@@ -305,7 +307,9 @@ After a change, quit Claude Desktop completely (not just its window) and start i
 
 [Playwright](https://playwright.dev) integration provides AI agents with the ability to perform UI verification on a running application. This allows the agent to test navigation and complex UI behaviors directly in the browser.
 
-The toolkit registers the [Playwright MCP server](https://github.com/microsoft/playwright-mcp) (`@playwright/mcp`), started by the agent through `npx` (Node.js 20+). It replaces the `playwright-cli` skill installed by earlier versions: MCP servers run outside Codex's sandbox, where the CLI skill could not launch a browser or reach the app on `localhost`, and no global binary has to be installed. The installer removes the old `playwright-cli` skill links from `~/.claude/skills`, `~/.agents/skills` and `~/.junie/skills` and deletes its store `~/.agents/.playwright`.
+The toolkit registers the [Playwright MCP server](https://github.com/microsoft/playwright-mcp) (`@playwright/mcp`), started by the agent through `npx` (Node.js 20+). It replaces the `playwright-cli` skill installed by earlier versions: MCP servers run outside Codex's sandbox, where the CLI skill could not launch a browser or reach the app on `localhost`, and no global binary has to be installed.
+
+The old global skills and their shared store `~/.agents/.playwright` are removed only after a successful global registration for all four agents together (`--agents claude,codex,opencode,junie --scope global`, or the equivalent PowerShell arguments). Local, partial, failed or skipped registrations keep them: other agents and projects may still use those skills, and agent skill directories may be symlinked to each other.
 
 Add the server to the files listed in [MCP Servers](#3-mcp-servers), project or user level:
 

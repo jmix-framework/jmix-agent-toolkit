@@ -121,6 +121,8 @@ $script:PlaywrightMcpPkg = '@playwright/mcp@latest'
 $script:McpFailed = $false
 # True while writing entries that carry the Context7 key; see Save-McpConfig.
 $script:McpPrivate = $false
+$script:McpWritten = $false
+$script:McpWrittenAgents = @()
 
 $script:TarballReady     = $false
 $script:Staging          = $null
@@ -995,6 +997,9 @@ function Save-McpConfig {
 # file that cannot be read fails the step and is left unchanged, never replaced.
 function Read-McpConfigText {
     param([string]$File, [switch]$Raw)
+    if ((Test-Path -LiteralPath $File) -and -not (Test-Path -LiteralPath $File -PathType Leaf)) {
+        throw "cannot update ${File}: it exists but is not a regular file"
+    }
     if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { return $null }
     try {
         if ($Raw) { return (Get-FileTextRaw -Path $File) }
@@ -1066,9 +1071,7 @@ function Get-TomlHeaderKey {
     return (ConvertTo-TomlKey -Text (($Line -replace '^[ \t]*\[+', '') -replace '\].*$', ''))
 }
 
-# ponytail: line-based, not a TOML parser (the same edit as install.sh). Handles
-# the [table] headers Codex and the IDE write; a header inside a multi-line
-# string would fool it. Returns $Lines with table [$Table] (and its sub-tables)
+# Returns $Lines with table [$Table] (and its sub-tables)
 # replaced by $Body where it first stands, or appended when absent; $null when
 # $Table is also defined another way (dotted keys, or inline in itself or in a
 # parent), which this edit cannot replace. Comments and blank lines between the
@@ -1127,8 +1130,12 @@ function Get-TomlWithTable {
 # in the file's line-ending style. Fails, leaving the file alone, when $Table is
 # defined another way.
 function Set-McpTomlTable {
-    param([string]$File, [string]$Table, [string[]]$Body, [switch]$Private)
+    param([string]$File, [string]$Table, [string[]]$Body, [switch]$Private, [switch]$Check)
     $original = Read-McpConfigText -File $File -Raw
+    # shortcut: refuse triple-quoted content; use a TOML parser to edit it safely.
+    if ($original -match '"{3}|''{3}') {
+        throw "cannot update ${File}: multi-line TOML strings are not supported. Add [$Table] manually, see README."
+    }
     $newline = "`n"
     $lines = @()
     if ($original) {
@@ -1139,23 +1146,25 @@ function Set-McpTomlTable {
     if ($null -eq $result) {
         throw "cannot update ${File}: [$Table] is defined there in a form this installer does not edit. Change it manually, see README."
     }
+    if ($Check) { return }
     $text = ($result -join $newline) + $newline
     Save-McpConfig -File $File -Raw $text -Unchanged:($text -ceq $original) -Private:$Private
 }
 
 # Returns 'url' or 'command' -- the transport of table [$Table] in Codex config
-# $File -- or $null when the file (or a readable one) or the table is absent.
+# $File -- or $null when the file or the table is absent.
 function Get-CodexTransport {
     param([string]$File, [string]$Table)
-    try { $text = Read-McpConfigText -File $File -Raw } catch { return $null }
+    $text = Read-McpConfigText -File $File -Raw
     if (-not $text) { return $null }
     if ($text.StartsWith($script:RawBom, [System.StringComparison]::Ordinal)) { $text = $text.Substring($script:RawBom.Length) }
     $inTable = $false
     foreach ($line in $text -split "`n") {
         if ($line -match '^[ \t]*\[') {
             $inTable = ((Get-TomlHeaderKey -Line $line) -ceq $Table)
-        } elseif ($inTable -and $line -cmatch '^[ \t]*(url|command)[ \t]*=') {
-            return $Matches[1]
+        } elseif ($inTable -and $line.Contains('=')) {
+            $key = ConvertTo-TomlKey -Text ($line -replace '=.*$', '')
+            if ($key -cin @('url', 'command')) { return $key }
         }
     }
     return $null
@@ -1166,17 +1175,33 @@ function Get-CodexTransport {
 # command (stdio). When the other layer defines the server with the other
 # transport, it gets the same entry -- unless the entry carries the Context7
 # key, which never goes into a project file.
-# $Scope - the scope just written   $Body - the TOML table body written there
+# $Scope - the scope to write; -Check preflights without changing either layer.
 function Sync-CodexOtherLayer {
-    param([string]$Scope, [string]$Name, [string[]]$Body)
+    param([string]$Scope, [string]$Name, [string[]]$Body, [switch]$Check)
     $otherScope = if ($Scope -eq 'global') { 'local' } else { 'global' }
     $other  = Get-McpConfigFiles -Agent 'codex' -Scope $otherScope
-    $theirs = Get-CodexTransport -File $other -Table "mcp_servers.$Name"
+    $own = Get-McpConfigFiles -Agent 'codex' -Scope $Scope
+    Set-McpTomlTable -File $other -Table "mcp_servers.$Name" -Body $Body -Check
     $mine   = if ($Body[0] -clike 'url*') { 'url' } else { 'command' }
+    # Parent project configs are inherited too; never rewrite their settings.
+    $dir = (Get-Location).Path
+    while (-not (Test-Path -LiteralPath (Join-Path $dir '.git'))) {
+        $dir = Split-Path -Parent $dir
+        if (-not $dir) { break }
+        $inherited = [System.IO.Path]::Combine($dir, '.codex', 'config.toml')
+        if ($inherited -eq $own -or $inherited -eq $other) { continue }
+        Set-McpTomlTable -File $inherited -Table "mcp_servers.$Name" -Body $Body -Check
+        $theirs = Get-CodexTransport -File $inherited -Table "mcp_servers.$Name"
+        if ($theirs -and $theirs -ne $mine) {
+            throw "$inherited defines inherited [mcp_servers.$Name] with another transport; change it manually before re-running."
+        }
+    }
+    $theirs = Get-CodexTransport -File $other -Table "mcp_servers.$Name"
     if (-not $theirs -or $theirs -eq $mine) { return }
     if ($script:McpPrivate) {
         throw "$other defines [mcp_servers.$Name] with another transport, and Codex cannot merge the two: remove that table there."
     }
+    if ($Check) { return }
     Write-Info "  $other defines [mcp_servers.$Name] with another transport, which Codex cannot merge; updating it too."
     Set-McpTomlTable -File $other -Table "mcp_servers.$Name" -Body $Body -Private:($otherScope -eq 'global')
 }
@@ -1215,6 +1240,7 @@ function Add-ClaudeUserMcp {
     if ((Invoke-NativeQuiet -Command $claude -CliArgs (@('mcp', 'add') + $CliArgs)) -ne 0) {
         throw "claude mcp add $Name failed"
     }
+    $script:McpWritten = $true
     Write-Info "  Registered $Name in the Claude Code user config"
 }
 
@@ -1236,6 +1262,8 @@ function Write-McpServer {
     $isPrivate = ($Scope -eq 'global' -or $Agent -eq 'claude-desktop')
     foreach ($file in $files) {
         if ($Agent -eq 'codex') {
+            Set-McpTomlTable -File $file -Table "mcp_servers.$Name" -Body $Entry -Check
+            Sync-CodexOtherLayer -Scope $Scope -Name $Name -Body $Entry -Check
             Set-McpTomlTable -File $file -Table "mcp_servers.$Name" -Body $Entry -Private:$isPrivate
             Sync-CodexOtherLayer -Scope $Scope -Name $Name -Body $Entry
         } else {
@@ -1246,6 +1274,7 @@ function Write-McpServer {
     if ($Agent -eq 'claude-desktop') {
         Write-Info '  Quit Claude Desktop completely (not just its window) and start it again to load the change.'
     }
+    $script:McpWritten = $true
 }
 
 # Prints what the user still has to do for the configs just written.
@@ -1266,14 +1295,17 @@ function Write-McpFollowups {
 # after it still run.
 function Invoke-McpForAgents {
     param([string[]]$AgentList, [string]$Step, [hashtable]$StepParams)
+    $script:McpWrittenAgents = @()
     foreach ($agent in $AgentList) {
         Write-Info ''
+        $script:McpWritten = $false
         try {
             & $Step -Agent $agent @StepParams
         } catch {
             Write-Err $_.Exception.Message
             $script:McpFailed = $true
         }
+        if ($script:McpWritten) { $script:McpWrittenAgents += $agent }
     }
 }
 
@@ -1443,10 +1475,15 @@ function Invoke-CmdMcpContext7 {
 # Earlier toolkit versions installed the playwright-cli skill into a global
 # store and linked it into the agent skill dirs (on Windows as junctions or
 # symlinks with absolute targets). The step now registers the MCP server
-# instead, so those links and the store are removed.
+# instead. Remove the shared store only after all global replacements.
 function Remove-LegacyPlaywrightSkills {
+    param([string[]]$RegisteredAgents)
     $store = Join-Path $script:UserHome '.agents/.playwright'
     if (-not (Test-Path -LiteralPath $store -PathType Container)) { return }
+    # The global store and even agent directories may be shared by all agents.
+    foreach ($agent in $script:AllAgents) {
+        if ($RegisteredAgents -notcontains $agent) { return }
+    }
     foreach ($rel in '.claude/skills', '.agents/skills', '.junie/skills') {
         $dir = Join-Path $script:UserHome $rel
         if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
@@ -1499,13 +1536,15 @@ function Install-PlaywrightFor {
 
 function Install-McpPlaywright {
     param([string[]]$AgentList, [string]$McpScope)
-    # Cleanup of an old install never fails the step.
-    try {
-        Remove-LegacyPlaywrightSkills
-    } catch {
-        Write-Err "cannot remove the old playwright-cli skill: $($_.Exception.Message)"
-    }
     Invoke-McpForAgents -AgentList $AgentList -Step 'Install-PlaywrightFor' -StepParams @{ Scope = $McpScope }
+    # Cleanup of an old install never fails the step.
+    if ($McpScope -eq 'global' -and -not $script:McpFailed) {
+        try {
+            Remove-LegacyPlaywrightSkills -RegisteredAgents $script:McpWrittenAgents
+        } catch {
+            Write-Err "cannot remove the old playwright-cli skill: $($_.Exception.Message)"
+        }
+    }
     Write-NpxNote -What 'The Playwright MCP server'
     Write-Info ''
     Write-McpFollowups -AgentList $AgentList -McpScope $McpScope

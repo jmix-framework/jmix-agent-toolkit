@@ -857,8 +857,8 @@ Check ((Invoke-Installer @('mcp-context7', '-Agents', 'codex', '-Context7Key', '
 Check ((Invoke-Installer @('mcp-context7', '-Agents', 'codex', '-Context7Key', 'k', '-Scope', 'local')) -ne 0) `
     'mcp-context7: -Scope is rejected'
 
-# 3h. Playwright MCP, local scope; links and store of the old playwright-cli
-#     skill go away, foreign skills stay. Old install.ps1 links had absolute
+# 3h. A local registration keeps the global skills for other projects.
+#     Old install.ps1 links had absolute
 #     targets (junctions on Windows).
 $oldStore = Join-Path $homeDir '.agents/.playwright/skills/playwright-cli'
 $userSkills = Join-Path $homeDir '.claude/skills'
@@ -874,8 +874,8 @@ Check ([System.IO.File]::ReadAllText($codexCfg) -cmatch '(?m)^args = \["-y", "@p
 Check (Test-JsonEqual (Read-Json $ocJson).mcp.playwright.command '["npx","-y","@playwright/mcp@latest"]') 'playwright(local): OpenCode entry'
 Check (Test-JsonEqual (Read-Json (Join-Path $mcpProj '.junie/mcp/mcp.json')).mcpServers.playwright.args '["-y","@playwright/mcp@latest"]') `
     'playwright(local): Junie entry'
-Check ($null -eq (Get-Item -LiteralPath $oldLink -Force -ErrorAction SilentlyContinue) -and
-       -not (Test-Path (Join-Path $homeDir '.agents/.playwright'))) 'playwright: old playwright-cli skill removed'
+Check ((Test-Path $oldLink) -and (Test-Path (Join-Path $homeDir '.agents/.playwright'))) `
+    'playwright: local registration keeps global skills'
 Check (Test-Path (Join-Path $userSkills 'my-skill')) 'playwright: foreign skill kept'
 
 Check ((Invoke-Installer @('playwright', '-Agents', 'claude', '-Scope', 'global')) -eq 0) 'playwright(global) exits 0'
@@ -974,7 +974,7 @@ if ($isUnixUser) {
     [System.IO.File]::WriteAllText((Join-Path $oldStore 'SKILL.md'), '')
     & chmod 555 $oldStore
 }
-$r = Invoke-InstallerResult @('playwright', '-Agents', 'junie')
+$r = Invoke-InstallerResult @('playwright', '-Agents', 'claude,codex,opencode,junie', '-Scope', 'global')
 Check ($r.Code -eq 0) 'playwright: an old store that cannot be removed does not stop the step'
 Check ($null -ne (Get-Item -LiteralPath $otherLink -Force -ErrorAction SilentlyContinue)) `
     'playwright: a link that is not into the old store is kept'
@@ -993,6 +993,104 @@ foreach ($badPort in '9"x', '70000', '0') {
 }
 $env:JMIX_IDE_MCP_PORT = '9'
 Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex', '-Source', $Source)) -eq 0) 'mcp-jetbrains: -Source is accepted'
+
+# 3q. Refuse unsupported TOML before changing either Codex layer.
+$safeProj = Join-Path $work 'safe-project'
+$env:CODEX_HOME = Join-Path $work 'safe-codex'
+New-Item -ItemType Directory -Force -Path (Join-Path $safeProj '.codex'), $env:CODEX_HOME | Out-Null
+Set-Location $safeProj
+$safeUser = Join-Path $env:CODEX_HOME 'config.toml'
+$safeLocal = Join-Path $safeProj '.codex/config.toml'
+foreach ($quotes in '"""', ("'" * 3)) {
+    Set-TestFile $safeLocal "developer_instructions = $quotes`n[mcp_servers.playwright]`ncommand = `"example`"`n$quotes`nmodel = `"keep-me`"`n"
+    Set-TestFile $safeUser "[mcp_servers.playwright]`nurl = `"http://keep-me`"`n"
+    $localBefore = Get-Sha $safeLocal
+    $userBefore = Get-Sha $safeUser
+    Check ((Invoke-Installer @('playwright', '-Agents', 'codex')) -ne 0) 'toml: multi-line instructions refused'
+    Check ((Get-Sha $safeLocal) -eq $localBefore -and (Get-Sha $safeUser) -eq $userBefore) `
+        'toml: multi-line refusal leaves both layers untouched'
+}
+foreach ($entry in "[mcp_servers]`njetbrains = { command = `"java`", args = [] }`n",
+                   "mcp_servers.jetbrains.command = `"java`"`nmcp_servers.jetbrains.args = []`n") {
+    Set-TestFile $safeUser $entry
+    Set-TestFile $safeLocal "model = `"keep-me`"`n"
+    $localBefore = Get-Sha $safeLocal
+    $userBefore = Get-Sha $safeUser
+    Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -ne 0) 'toml: unsupported other-layer entry refused'
+    Check ((Get-Sha $safeLocal) -eq $localBefore -and (Get-Sha $safeUser) -eq $userBefore) `
+        'toml: unsupported other-layer entry leaves both layers untouched'
+}
+Set-TestFile $safeUser "[mcp_servers.jetbrains]`n`"command`" = `"java`"`nargs = []`n"
+Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -eq 0) 'toml: quoted command key aligned'
+Check (-not ([System.IO.File]::ReadAllText($safeUser).Contains('java'))) 'toml: quoted old command removed'
+
+# 3r. Ancestor transport conflicts fail before any layer is written.
+New-Item -ItemType Directory -Force -Path (Join-Path $safeProj '.git'), (Join-Path $safeProj 'app') | Out-Null
+Set-TestFile $safeLocal "[mcp_servers.jetbrains]`ncommand = `"java`"`n"
+Set-TestFile $safeUser "model = `"keep-me`"`n"
+$localBefore = Get-Sha $safeLocal
+$userBefore = Get-Sha $safeUser
+Set-Location (Join-Path $safeProj 'app')
+foreach ($scope in 'local', 'global') {
+    Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex', '-Scope', $scope)) -ne 0) `
+        "toml: conflicting ancestor refused ($scope)"
+    Check ((Get-Sha $safeLocal) -eq $localBefore -and (Get-Sha $safeUser) -eq $userBefore -and
+           -not (Test-Path '.codex/config.toml')) 'toml: ancestor refusal leaves all layers untouched'
+}
+Set-TestFile $safeLocal "[mcp_servers.jetbrains]`nurl = `"http://ancestor`"`n"
+Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -eq 0) 'toml: same-transport ancestor allowed'
+Check ([System.IO.File]::ReadAllText($safeLocal).Contains('ancestor')) 'toml: ancestor not overwritten'
+
+# 3s. Failed, skipped, local and partial global registrations retain old skills.
+$sharedSkills = Join-Path $homeDir '.agents/skills'
+$sharedOldLink = Join-Path $sharedSkills 'playwright-cli'
+New-Item -ItemType Directory -Force -Path $oldStore, $sharedSkills | Out-Null
+New-Item -ItemType $linkType -Path $oldLink -Target $oldStore | Out-Null
+New-Item -ItemType $linkType -Path $sharedOldLink -Target $oldStore | Out-Null
+$env:PATH = $barePath
+$r = Invoke-InstallerResult @('playwright', '-Agents', 'claude', '-Scope', 'global')
+$env:PATH = $binPath
+Check ($r.Code -eq 0 -and $r.Output -match "Skipped: 'claude'") 'playwright: missing CLI skipped'
+Check ((Test-Path $oldLink) -and (Test-Path $sharedOldLink)) 'playwright: skipped registration keeps old skills'
+$env:PATH = $barePath
+$r = Invoke-InstallerResult @('playwright', '-Agents', 'claude,codex,opencode,junie', '-Scope', 'global')
+$env:PATH = $binPath
+Check ($r.Code -eq 0) 'playwright: missing Claude CLI does not stop other agents'
+Check ((Test-Path $oldLink) -and (Test-Path $sharedOldLink)) 'playwright: skipped agent not counted as migrated'
+$savedOc = [System.IO.File]::ReadAllText($userOc)
+Set-TestFile $userOc '{ broken json'
+Check ((Invoke-Installer @('playwright', '-Agents', 'claude,codex,opencode,junie', '-Scope', 'global')) -ne 0) `
+    'playwright: failed global registration reported'
+Check ((Test-Path $oldLink) -and (Test-Path $sharedOldLink)) 'playwright: failed registration keeps old skills'
+Set-TestFile $userOc $savedOc
+Check ((Invoke-Installer @('playwright', '-Agents', 'claude', '-Scope', 'local')) -eq 0) 'playwright: local registration succeeds'
+Check ((Test-Path $oldLink) -and (Test-Path $sharedOldLink)) 'playwright: local registration keeps global skills'
+Check ((Invoke-Installer @('playwright', '-Agents', 'claude,codex', '-Scope', 'global')) -eq 0) `
+    'playwright: partial global registration succeeds'
+Check ((Test-Path $oldLink) -and (Test-Path $sharedOldLink)) 'playwright: shared skills kept for unselected agents'
+Check ((Invoke-Installer @('playwright', '-Agents', 'claude,codex,opencode,junie', '-Scope', 'global')) -eq 0) `
+    'playwright: complete global migration succeeds'
+Check (-not (Test-Path $oldLink) -and -not (Test-Path $sharedOldLink) -and
+       -not (Test-Path (Join-Path $homeDir '.agents/.playwright'))) 'playwright: fully migrated global skills cleaned up'
+
+# 3t. A directory at a config path fails without moving staged data into it.
+New-Item -ItemType Directory -Path 'opencode.json' | Out-Null
+$r = Invoke-InstallerResult @('playwright', '-Agents', 'opencode')
+Check ($r.Code -ne 0 -and $r.Output -match 'not a regular file') 'json: config directory refused'
+Check (-not (Get-ChildItem -LiteralPath 'opencode.json' -Force)) 'json: config directory left empty'
+
+# 3u. Checking a read-only project layer never stages the Context7 key there.
+$projectCodex = Join-Path (Get-Location).Path '.codex/config.toml'
+Set-TestFile $projectCodex ([System.IO.File]::ReadAllText($projectCodex) + "[mcp_servers.context7]`nurl = `"https://mcp.context7.com/mcp`"`n")
+$localBefore = Get-Sha $projectCodex
+if (-not $onWindows) { & chmod 555 (Split-Path -Parent $projectCodex) }
+$r = Invoke-InstallerResult @('mcp-context7', '-Agents', 'codex', '-Context7Key', 'ctx7sk-TESTKEY')
+if (-not $onWindows) { & chmod 755 (Split-Path -Parent $projectCodex) }
+Check ($r.Code -eq 0) 'mcp-context7: matching project layer needs no write permission'
+Check ((Get-Sha $projectCodex) -eq $localBefore) 'mcp-context7: project layer is unchanged'
+Check (-not (Get-ChildItem -LiteralPath (Get-Location).Path -Recurse -File -Force | Select-String -SimpleMatch 'TESTKEY' -List)) `
+    'mcp-context7: no key or staged file left in the project'
+Remove-Item Env:CODEX_HOME
 
 $env:PATH = $origPath
 Set-Location $proj

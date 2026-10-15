@@ -947,6 +947,10 @@ mcp_config_file() {
 # readable by its owner only, whatever mode it had.
 commit_config() {
     local tmp="$1" file="$2" mode="$3"
+    # Narrow the old mode before copying it or writing through a symlink.
+    if [ "$MCP_PRIVATE" = 1 ] && [ -e "$file" ]; then
+        chmod go-rwx "$file" || { rm -f "$tmp"; err "cannot restrict the permissions of ${file}"; return 1; }
+    fi
     if [ -f "$file" ] && cmp -s "$tmp" "$file"; then
         rm -f "$tmp"
         log "  Unchanged: ${file}"
@@ -961,9 +965,6 @@ commit_config() {
         fi
         log "  Created: ${file}"
         emit_change created file "$file"
-    fi
-    if [ "$MCP_PRIVATE" = 1 ]; then
-        chmod go-rwx "$file" || { err "cannot restrict the permissions of ${file}"; return 1; }
     fi
 }
 
@@ -994,6 +995,10 @@ json_merge() {
 # $5 - mode for a newly created file
 json_set_entry() {
     local file="$1" root="$2" name="$3" entry="$4" mode="$5" dir tmp
+    if { [ -e "$file" ] || [ -L "$file" ]; } && [ ! -f "$file" ]; then
+        err "cannot update ${file}: it exists but is not a regular file"
+        return 1
+    fi
     if [ -e "$file" ] && [ ! -r "$file" ]; then
         err "cannot read ${file}; it was left unchanged"
         return 1
@@ -1027,21 +1032,33 @@ json_set_entry() {
 # sub-tables) is replaced where it stands, otherwise the table is appended.
 # Fails, leaving the file alone, when $2 is defined another way (dotted keys,
 # or inline in a parent) that this line-based edit cannot replace.
-# $4 - mode for a newly created file
+# $4 - mode for a newly created file; $5=check validates without committing.
 toml_set_table() {
-    local file="$1" table="$2" body="$3" mode="$4" dir tmp rc=0
+    local file="$1" table="$2" body="$3" mode="$4" check="${5:-}" dir tmp rc=0
+    if { [ -e "$file" ] || [ -L "$file" ]; } && [ ! -f "$file" ]; then
+        err "cannot update ${file}: it exists but is not a regular file"
+        return 1
+    fi
     if [ -e "$file" ] && [ ! -r "$file" ]; then
         err "cannot read ${file}; it was left unchanged"
         return 1
     fi
-    dir="$(dirname "$file")"
-    mkdir -p "$dir" || { err "cannot create ${dir}"; return 1; }
-    tmp="$(mktemp "${dir}/.jmix-mcp.XXXXXX")" || { err "cannot create a temp file in ${dir}"; return 1; }
+    # shortcut: refuse triple-quoted content; use a TOML parser to edit it safely.
+    if [ -f "$file" ] && grep -Eq "\"\"\"|'''" "$file"; then
+        err "cannot update ${file}: multi-line TOML strings are not supported. Add [${table}] manually, see README."
+        return 1
+    fi
+    [ "$check" = check ] && [ ! -f "$file" ] && return 0
+    if [ "$check" = check ]; then
+        # In particular, never stage a Context7 key in a project directory.
+        tmp=/dev/null
+    else
+        dir="$(dirname "$file")"
+        mkdir -p "$dir" || { err "cannot create ${dir}"; return 1; }
+        tmp="$(mktemp "${dir}/.jmix-mcp.XXXXXX")" || { err "cannot create a temp file in ${dir}"; return 1; }
+    fi
     if [ -f "$file" ]; then
-        # ponytail: line-based, not a TOML parser. Handles the [table] headers
-        # Codex and the IDE write; a header inside a multi-line string would
-        # fool it. Comments and blank lines between the replaced table and the
-        # next header stay: they usually introduce that next table.
+        # Comments before the next table usually introduce that table.
         JMIX_TOML_BODY="$body" awk -v t="$table" '
             function norm(s) { gsub(/[ \t"]/, "", s); gsub(sprintf("%c", 39), "", s); return s }
             function emit(s) { out[++n] = s; if (s !~ /^[ \t\r]*$/) last = n }
@@ -1089,10 +1106,11 @@ toml_set_table() {
         printf '[%s]\n%s\n' "$table" "$body" > "$tmp"
     fi
     if [ "$rc" -ne 0 ]; then
-        rm -f "$tmp"
+        [ "$check" = check ] || rm -f "$tmp"
         err "cannot update ${file}: [${table}] is defined there in a form this installer does not edit. Change it manually, see README."
         return 1
     fi
+    [ "$check" = check ] && return 0
     commit_config "$tmp" "$file" "$mode"
 }
 
@@ -1105,7 +1123,7 @@ codex_transport() {
         BEGIN { bom = "\357\273\277"; blen = length(bom) }
         NR == 1 && index($0, bom) == 1 { $0 = substr($0, blen + 1) }
         /^[ \t]*\[/ { h = $0; sub(/^[ \t]*\[+/, "", h); sub(/\].*$/, "", h); in_t = (norm(h) == t); next }
-        in_t && /^[ \t]*(url|command)[ \t]*=/ { k = $0; sub(/=.*$/, "", k); print norm(k); exit }
+        in_t && index($0, "=") { k = $0; sub(/=.*$/, "", k); k = norm(k); if (k == "url" || k == "command") { print k; exit } }
     ' "$1"
 }
 
@@ -1114,18 +1132,35 @@ codex_transport() {
 # command (stdio). When the other layer defines the server with the other
 # transport, it gets the same entry -- unless the entry carries the Context7
 # key, which never goes into a project file.
-# $1 - scope just written   $2 - server name   $3 - TOML body written
+# $1 - scope to write   $2 - server name   $3 - TOML body; $4=check preflights.
 codex_align_other_layer() {
-    local other_scope=global other mine theirs mode=600
+    local other_scope=global other mine theirs mode=600 dir inherited own
     [ "$1" = global ] && { other_scope=local; mode=644; }
     other="$(mcp_config_file codex "$other_scope")"
-    theirs="$(codex_transport "$other" "mcp_servers.$2")" || theirs=""
+    own="$(mcp_config_file codex "$1")"
+    toml_set_table "$other" "mcp_servers.$2" "$3" "$mode" check || return 1
     case "$3" in url*) mine="url" ;; *) mine="command" ;; esac
+    # Parent project configs are inherited too; never rewrite their settings.
+    dir="$(pwd -P)"
+    while [ "$dir" != / ] && [ ! -e "$dir/.git" ]; do
+        dir="$(dirname "$dir")"
+        inherited="${dir}/.codex/config.toml"
+        if [ "$inherited" = "$own" ] || [ "$inherited" = "$other" ] \
+            || [ "$inherited" -ef "$own" ] || [ "$inherited" -ef "$other" ]; then continue; fi
+        toml_set_table "$inherited" "mcp_servers.$2" "$3" 644 check || return 1
+        theirs="$(codex_transport "$inherited" "mcp_servers.$2")" || return 1
+        if [ -n "$theirs" ] && [ "$theirs" != "$mine" ]; then
+            err "${inherited} defines inherited [mcp_servers.$2] with another transport; change it manually before re-running."
+            return 1
+        fi
+    done
+    theirs="$(codex_transport "$other" "mcp_servers.$2")" || return 1
     [ -n "$theirs" ] && [ "$theirs" != "$mine" ] || return 0
     if [ "$MCP_PRIVATE" = 1 ]; then
         err "${other} defines [mcp_servers.$2] with another transport, and Codex cannot merge the two: remove that table there."
         return 1
     fi
+    [ "${4:-}" = check ] && return 0
     log "  ${other} defines [mcp_servers.$2] with another transport, which Codex cannot merge; updating it too."
     toml_set_table "$other" "mcp_servers.$2" "$3" "$mode"
 }
@@ -1143,6 +1178,7 @@ mcp_claude_user() {
     fi
     claude mcp remove --scope user "$name" >/dev/null 2>&1 || true
     claude mcp add "$@" >/dev/null || { err "claude mcp add ${name} failed"; return 1; }
+    MCP_WRITTEN=1
     log "  Registered ${name} in the Claude Code user config"
 }
 
@@ -1164,7 +1200,9 @@ mcp_write() {
     fi
     case "$agent" in
         codex)
-            toml_set_table "$file" "mcp_servers.${name}" "$entry" "$mode" \
+            toml_set_table "$file" "mcp_servers.${name}" "$entry" "$mode" check \
+                && codex_align_other_layer "$scope" "$name" "$entry" check \
+                && toml_set_table "$file" "mcp_servers.${name}" "$entry" "$mode" \
                 && codex_align_other_layer "$scope" "$name" "$entry" ;;
         opencode)
             json_set_entry "$file" mcp "$name" "$entry" "$mode" ;;
@@ -1173,7 +1211,8 @@ mcp_write() {
             log "  Quit Claude Desktop completely (not just its window) and start it again to load the change." ;;
         *)
             json_set_entry "$file" mcpServers "$name" "$entry" "$mode" ;;
-    esac
+    esac || return 1
+    MCP_WRITTEN=1
 }
 
 # Prints what the user still has to do for the configs just written.
@@ -1194,10 +1233,13 @@ mcp_followups() {
 # $1 - per-agent function   $2 - agents   $3.. - extra arguments for $1
 mcp_for_agents() {
     local fn="$1" agents="$2" agent rc=0
+    MCP_WRITTEN_AGENTS=""
     shift 2
     for agent in $agents; do
         log ""
+        MCP_WRITTEN=0
         "$fn" "$agent" "$@" || rc=1
+        [ "$MCP_WRITTEN" = 0 ] || MCP_WRITTEN_AGENTS="${MCP_WRITTEN_AGENTS} ${agent}"
     done
     return $rc
 }
@@ -1368,10 +1410,14 @@ cmd_mcp_context7() {
 
 # Earlier toolkit versions installed the playwright-cli skill into a global
 # store and linked it into the agent skill dirs. The step now registers the
-# MCP server instead, so those links and the store are removed.
+# MCP server instead. Remove the shared store only after all global replacements.
 remove_legacy_playwright_skills() {
-    local store="${HOME}/.agents/.playwright" dir link
+    local store="${HOME}/.agents/.playwright" dir link agent
     [ -d "$store" ] || return 0
+    # The global store and even agent directories may be shared by all agents.
+    for agent in $ALL_AGENTS; do
+        case " $1 " in *" $agent "*) ;; *) return 0 ;; esac
+    done
     for dir in "${HOME}/.claude/skills" "${HOME}/.agents/skills" "${HOME}/.junie/skills"; do
         for link in "$dir"/*; do
             [ -L "$link" ] || continue
@@ -1409,9 +1455,11 @@ startup_timeout_sec = 60" ;;
 
 cmd_playwright() {
     parse_mcp_args playwright 1 "$@"
-    remove_legacy_playwright_skills
     local rc=0
     mcp_for_agents install_playwright_for "$MCP_AGENTS_SEL" "$MCP_SCOPE" || rc=1
+    if [ "$rc" = 0 ] && [ "$MCP_SCOPE" = global ]; then
+        remove_legacy_playwright_skills "$MCP_WRITTEN_AGENTS"
+    fi
     warn_if_no_npx "The Playwright MCP server"
     log ""
     mcp_followups "$MCP_AGENTS_SEL" "$MCP_SCOPE"
