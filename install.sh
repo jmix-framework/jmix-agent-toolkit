@@ -1046,19 +1046,20 @@ toml_set_table() {
             function norm(s) { gsub(/[ \t"]/, "", s); gsub(sprintf("%c", 39), "", s); return s }
             function emit(s) { out[++n] = s; if (s !~ /^[ \t\r]*$/) last = n }
             function flush(  i) { for (i = 1; i <= np; i++) emit(pend[i]); np = 0 }
-            # The BOM is measured with length(), never a literal 3: gawk in a
-            # UTF-8 locale counts it as one character (see has_guidelines_block).
+            # The BOM is found with index() and measured with length(): gawk in
+            # a UTF-8 locale counts it as one character, and BSD awk compares
+            # strings by collation, which ignores it ("\357\273\277x" == "x").
             BEGIN { body = ENVIRON["JMIX_TOML_BODY"]; bom = "\357\273\277"; blen = length(bom) }
             {
                 line = $0; probe = line
-                if (NR == 1 && substr(probe, 1, blen) == bom) probe = substr(probe, blen + 1)
+                if (NR == 1 && index(probe, bom) == 1) { probe = substr(probe, blen + 1); hasbom = 1 }
             }
             probe ~ /^[ \t]*\[/ {
                 h = probe; sub(/^[ \t]*\[+/, "", h); sub(/\].*$/, "", h); h = norm(h)
                 if (skip) flush()
                 skip = (h == t || index(h, t ".") == 1)
                 if (!skip) { cur = h; emit(line); next }
-                if (!done) { emit((line == probe ? "" : bom) "[" t "]"); emit(body); done = 1 }
+                if (!done) { emit((NR == 1 && hasbom ? bom : "") "[" t "]"); emit(body); done = 1 }
                 next
             }
             skip {
@@ -1102,7 +1103,7 @@ codex_transport() {
     awk -v t="$2" '
         function norm(s) { gsub(/[ \t"]/, "", s); gsub(sprintf("%c", 39), "", s); return s }
         BEGIN { bom = "\357\273\277"; blen = length(bom) }
-        NR == 1 && substr($0, 1, blen) == bom { $0 = substr($0, blen + 1) }
+        NR == 1 && index($0, bom) == 1 { $0 = substr($0, blen + 1) }
         /^[ \t]*\[/ { h = $0; sub(/^[ \t]*\[+/, "", h); sub(/\].*$/, "", h); in_t = (norm(h) == t); next }
         in_t && /^[ \t]*(url|command)[ \t]*=/ { k = $0; sub(/=.*$/, "", k); print norm(k); exit }
     ' "$1"
