@@ -31,10 +31,8 @@ BACKUP_EXISTING=0
 VERBOSE=0
 
 ALL_AGENTS="claude codex opencode junie"
-# MCP steps also configure Claude Desktop, which takes MCP servers but no skills.
-MCP_AGENTS="claude codex opencode junie claude-desktop"
 # Junie works inside the IDE and needs no JetBrains MCP; the wizard does not offer it.
-JETBRAINS_AGENTS="claude codex opencode claude-desktop"
+JETBRAINS_AGENTS="claude codex opencode"
 
 # IntelliJ IDEA's MCP server listens on 127.0.0.1 only. Its default port is
 # 64342; another JetBrains IDE started first moves it, hence the override.
@@ -44,6 +42,8 @@ JB_TRANSPORT="stream"
 CONTEXT7_URL="https://mcp.context7.com/mcp"
 # 1 while writing entries that carry the Context7 key; see commit_config.
 MCP_PRIVATE=0
+# 1 when the last commit_config created or updated its file.
+CONFIG_CHANGED=0
 PLAYWRIGHT_MCP_PKG="@playwright/mcp@latest"
 
 # =================================================================
@@ -236,9 +236,9 @@ Common options:
   --agents CSV               Comma-separated agent list. Accepts a single value
                              too (e.g. "claude" or "claude,codex"). Required by
                              every subcommand. Valid values:
-                             claude, codex, opencode, junie; the MCP
-                             subcommands (mcp-jetbrains, mcp-context7,
-                             playwright) also accept claude-desktop.
+                             claude, codex, opencode, junie. In the MCP
+                             subcommands, claude also sets up Claude Desktop
+                             when it is installed here.
   --backup-existing-files    Rename overwritten files/dirs to <name>.bak
                              (deduped: .bak, .bak1, .bak2, ...) instead of
                              deleting them. Off by default. Project guidelines
@@ -265,8 +265,8 @@ mcp-jetbrains / playwright options:
                          writes the project files in the current directory
                          (.mcp.json, .codex/config.toml, opencode.json,
                          .junie/mcp/mcp.json); "global" writes the user-level
-                         config of each agent. Claude Desktop has only a
-                         user-level config and ignores the scope.
+                         config of each agent. Claude Desktop, set up with
+                         claude, has only a user-level config.
 
 mcp-context7 options:
   --context7-key K   Context7 API key. Prompted interactively when missing.
@@ -501,7 +501,6 @@ agent_label() {
         codex)          printf 'Codex' ;;
         opencode)       printf 'OpenCode' ;;
         junie)          printf 'Junie' ;;
-        claude-desktop) printf 'Claude Desktop' ;;
         *) printf '%s' "$1" ;;
     esac
 }
@@ -903,7 +902,9 @@ cmd_agents_md() {
 #   codex           .codex/config.toml     ${CODEX_HOME:-~/.codex}/config.toml
 #   opencode        opencode.json          ${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json
 #   junie           .junie/mcp/mcp.json    ${JUNIE_HOME:-~/.junie}/mcp/mcp.json
-#   claude-desktop  (user level only)      claude_desktop_config.json
+#
+# With claude, Claude Desktop is set up too when it is installed (see
+# mcp_desktop): claude_desktop_config.json, user level only.
 #
 # ~/.claude.json is Claude Code's own state file, so it is changed only through
 # the claude CLI. Every other file is merged in place: other servers and keys
@@ -935,7 +936,6 @@ mcp_config_file() {
         opencode:global)  printf '%s/opencode/opencode.json' "${XDG_CONFIG_HOME:-${HOME}/.config}" ;;
         junie:local)      printf '%s/.junie/mcp/mcp.json' "$proj" ;;
         junie:global)     printf '%s/mcp/mcp.json' "${JUNIE_HOME:-${HOME}/.junie}" ;;
-        claude-desktop:*) claude_desktop_config ;;
         *) return 1 ;;
     esac
 }
@@ -954,17 +954,20 @@ commit_config() {
     if [ -f "$file" ] && cmp -s "$tmp" "$file"; then
         rm -f "$tmp"
         log "  Unchanged: ${file}"
+        CONFIG_CHANGED=0
     elif [ -e "$file" ]; then
         preserve_dest_mode "$tmp" "$file"
         commit_staged "$tmp" "$file" || { rm -f "$tmp"; err "cannot write ${file}"; return 1; }
         log "  Updated: ${file}"
         emit_change updated file "$file"
+        CONFIG_CHANGED=1
     else
         if ! { chmod "$mode" "$tmp" && mv "$tmp" "$file"; }; then
             rm -f "$tmp"; err "cannot write ${file}"; return 1
         fi
         log "  Created: ${file}"
         emit_change created file "$file"
+        CONFIG_CHANGED=1
     fi
 }
 
@@ -1194,10 +1197,7 @@ mcp_write() {
     fi
     # User-level files may hold the Context7 key.
     [ "$scope" = global ] && mode=600
-    if ! file="$(mcp_config_file "$agent" "$scope")"; then
-        log "  Skipped: Claude Desktop has no config folder here. Install and start it once, then re-run."
-        return 0
-    fi
+    file="$(mcp_config_file "$agent" "$scope")" || { err "no MCP config file for ${agent}"; return 1; }
     case "$agent" in
         codex)
             toml_set_table "$file" "mcp_servers.${name}" "$entry" "$mode" check \
@@ -1206,13 +1206,29 @@ mcp_write() {
                 && codex_align_other_layer "$scope" "$name" "$entry" ;;
         opencode)
             json_set_entry "$file" mcp "$name" "$entry" "$mode" ;;
-        claude-desktop)
-            json_set_entry "$file" mcpServers "$name" "$entry" 600 || return 1
-            log "  Quit Claude Desktop completely (not just its window) and start it again to load the change." ;;
         *)
             json_set_entry "$file" mcpServers "$name" "$entry" "$mode" ;;
     esac || return 1
     MCP_WRITTEN=1
+}
+
+# Claude Desktop takes stdio servers only and has no project scope. It is set
+# up together with claude whenever it is installed here, i.e. its config
+# folder exists; otherwise nothing is written.
+# $1 - server name   $2 - stdio entry (compact JSON)
+mcp_desktop() {
+    local file
+    file="$(claude_desktop_config)" || return 0
+    CONFIG_CHANGED=0
+    json_set_entry "$file" mcpServers "$1" "$2" 600 || return 1
+    if [ "$CONFIG_CHANGED" = 1 ]; then
+        log "  Quit Claude Desktop completely (not just its window) and start it again to load the change."
+    fi
+}
+
+# Succeeds when claude is among the selected agents and Claude Desktop is installed.
+desktop_selected() {
+    case " $MCP_AGENTS_SEL " in *" claude "*) claude_desktop_config >/dev/null ;; *) return 1 ;; esac
 }
 
 # Prints what the user still has to do for the configs just written.
@@ -1277,7 +1293,7 @@ parse_mcp_args() {
             *) die "unknown argument: $1" ;;
         esac
     done
-    MCP_AGENTS_SEL="$(parse_agents_csv "$agents_csv" "$sub" "$MCP_AGENTS")"
+    MCP_AGENTS_SEL="$(parse_agents_csv "$agents_csv" "$sub")"
     MCP_SCOPE="$(parse_scope "$scope" "$sub")"
 }
 
@@ -1314,21 +1330,18 @@ install_jetbrains_for() {
     # A stdio-to-SSE bridge for clients without an HTTP transport the IDE has.
     local bridge_json="{\"command\":\"npx\",\"args\":[\"-y\",\"mcp-remote\",\"${base}/sse\",\"--transport\",\"sse-only\"]}"
     log "[JetBrains MCP] $(agent_label "$agent")"
-    case "$agent" in
-        junie)
-            log "  Junie runs inside IntelliJ IDEA and already has native IDE access. No JetBrains MCP needed."
-            return 0 ;;
-        claude-desktop)
-            mcp_write claude-desktop "$scope" jetbrains "$bridge_json"
-            return ;;
-    esac
+    if [ "$agent" = junie ]; then
+        log "  Junie runs inside IntelliJ IDEA and already has native IDE access. No JetBrains MCP needed."
+        return 0
+    fi
+    local rc=0
     if [ "$JB_TRANSPORT" = stream ]; then
         case "$agent" in
             claude)   mcp_write claude "$scope" jetbrains "{\"type\":\"http\",\"url\":\"${base}/stream\"}" \
                           --scope user --transport http jetbrains "${base}/stream" ;;
             codex)    mcp_write codex "$scope" jetbrains "url = \"${base}/stream\"" ;;
             opencode) mcp_write opencode "$scope" jetbrains "{\"type\":\"remote\",\"url\":\"${base}/stream\",\"enabled\":true}" ;;
-        esac
+        esac || rc=1
     else
         case "$agent" in
             claude)   mcp_write claude "$scope" jetbrains "{\"type\":\"sse\",\"url\":\"${base}/sse\"}" \
@@ -1338,8 +1351,13 @@ install_jetbrains_for() {
 args = [\"-y\", \"mcp-remote\", \"${base}/sse\", \"--transport\", \"sse-only\"]
 startup_timeout_sec = 60" ;;
             opencode) mcp_write opencode "$scope" jetbrains "{\"type\":\"remote\",\"url\":\"${base}/sse\",\"enabled\":true}" ;;
-        esac
+        esac || rc=1
     fi
+    # Claude Desktop has no HTTP transport for local servers: always the bridge.
+    if [ "$agent" = claude ]; then
+        mcp_desktop jetbrains "$bridge_json" || rc=1
+    fi
+    return $rc
 }
 
 cmd_mcp_jetbrains() {
@@ -1347,10 +1365,11 @@ cmd_mcp_jetbrains() {
     detect_jetbrains_transport
     local rc=0
     mcp_for_agents install_jetbrains_for "$MCP_AGENTS_SEL" "$MCP_SCOPE" || rc=1
-    case " $MCP_AGENTS_SEL " in
-        *" claude-desktop "*) warn_if_no_npx "Claude Desktop's JetBrains MCP bridge" ;;
-        *" codex "*) [ "$JB_TRANSPORT" = sse ] && warn_if_no_npx "Codex's JetBrains MCP bridge" ;;
-    esac
+    if desktop_selected; then
+        warn_if_no_npx "Claude Desktop's JetBrains MCP bridge"
+    elif [ "$JB_TRANSPORT" = sse ]; then
+        case " $MCP_AGENTS_SEL " in *" codex "*) warn_if_no_npx "Codex's JetBrains MCP bridge" ;; esac
+    fi
     log ""
     mcp_followups "$MCP_AGENTS_SEL" "$MCP_SCOPE"
     return $rc
@@ -1374,12 +1393,16 @@ install_context7_for() {
     local stdio_json="{\"command\":\"npx\",\"args\":[\"-y\",\"@upstash/context7-mcp\"],\"env\":{\"CONTEXT7_API_KEY\":\"${key}\"}}"
     log "[Context7 MCP] $(agent_label "$agent")"
     case "$agent" in
-        claude)   mcp_write claude global context7 "" \
-                      --scope user --transport http context7 "$CONTEXT7_URL" --header "Authorization: Bearer ${key}" ;;
+        claude)
+            local rc=0
+            mcp_write claude global context7 "" \
+                --scope user --transport http context7 "$CONTEXT7_URL" --header "Authorization: Bearer ${key}" || rc=1
+            mcp_desktop context7 "$stdio_json" || rc=1
+            return $rc ;;
         codex)    mcp_write codex global context7 "url = \"${CONTEXT7_URL}\"
 http_headers = { Authorization = \"Bearer ${key}\" }" ;;
         opencode) mcp_write opencode global context7 "{\"type\":\"remote\",\"url\":\"${CONTEXT7_URL}\",\"headers\":{\"Authorization\":\"Bearer ${key}\"},\"enabled\":true}" ;;
-        # Junie and Claude Desktop: stdio, the key in the environment, not in argv.
+        # Junie (and Claude Desktop above): stdio, the key in the environment, not in argv.
         *)        mcp_write "$agent" global context7 "$stdio_json" ;;
     esac
 }
@@ -1397,7 +1420,8 @@ cmd_mcp_context7() {
     mcp_for_agents install_context7_for "$MCP_AGENTS_SEL" "$key" || rc=1
     MCP_PRIVATE=0
     case " $MCP_AGENTS_SEL " in
-        *" junie "*|*" claude-desktop "*) warn_if_no_npx "Context7 for Junie and Claude Desktop" ;;
+        *" junie "*) warn_if_no_npx "Context7 for Junie" ;;
+        *) desktop_selected && warn_if_no_npx "Context7 for Claude Desktop" ;;
     esac
     log ""
     mcp_followups "$MCP_AGENTS_SEL" global
@@ -1441,15 +1465,20 @@ remove_legacy_playwright_skills() {
 install_playwright_for() {
     local agent="$1" scope="$2"
     log "[Playwright MCP] $(agent_label "$agent")"
+    local stdio_json="{\"command\":\"npx\",\"args\":[\"-y\",\"${PLAYWRIGHT_MCP_PKG}\"]}"
     case "$agent" in
-        claude)   mcp_write claude "$scope" playwright "{\"type\":\"stdio\",\"command\":\"npx\",\"args\":[\"-y\",\"${PLAYWRIGHT_MCP_PKG}\"]}" \
-                      --scope user playwright -- npx -y "$PLAYWRIGHT_MCP_PKG" ;;
+        claude)
+            local rc=0
+            mcp_write claude "$scope" playwright "{\"type\":\"stdio\",\"command\":\"npx\",\"args\":[\"-y\",\"${PLAYWRIGHT_MCP_PKG}\"]}" \
+                --scope user playwright -- npx -y "$PLAYWRIGHT_MCP_PKG" || rc=1
+            mcp_desktop playwright "$stdio_json" || rc=1
+            return $rc ;;
         # The first npx download can outlast Codex's default startup timeout.
         codex)    mcp_write codex "$scope" playwright "command = \"npx\"
 args = [\"-y\", \"${PLAYWRIGHT_MCP_PKG}\"]
 startup_timeout_sec = 60" ;;
         opencode) mcp_write opencode "$scope" playwright "{\"type\":\"local\",\"command\":[\"npx\",\"-y\",\"${PLAYWRIGHT_MCP_PKG}\"],\"enabled\":true}" ;;
-        *)        mcp_write "$agent" "$scope" playwright "{\"command\":\"npx\",\"args\":[\"-y\",\"${PLAYWRIGHT_MCP_PKG}\"]}" ;;
+        *)        mcp_write "$agent" "$scope" playwright "$stdio_json" ;;
     esac
 }
 
@@ -1590,7 +1619,7 @@ cmd_wizard() {
     fi
 
     # Step 4: Context7 MCP
-    sel="$(wizard_pick_agent skip '[4/5] Connect agent to library docs via Context7 MCP?' "$MCP_AGENTS")"
+    sel="$(wizard_pick_agent skip '[4/5] Connect agent to library docs via Context7 MCP?' "$ALL_AGENTS")"
     if [ "$sel" != "skip" ]; then
         local key
         key="$(prompt 'Context7 API key' '')"
@@ -1604,7 +1633,7 @@ cmd_wizard() {
     fi
 
     # Step 5: Playwright MCP
-    sel="$(wizard_pick_agent skip '[5/5] Connect agent to a browser via Playwright MCP?' "$MCP_AGENTS")"
+    sel="$(wizard_pick_agent skip '[5/5] Connect agent to a browser via Playwright MCP?' "$ALL_AGENTS")"
     if [ "$sel" != "skip" ]; then
         scope_mcp="$(wizard_mcp_scope)"
         cmd_playwright --agents "$(printf '%s' "$sel" | tr ' ' ',')" --scope "$scope_mcp" || true

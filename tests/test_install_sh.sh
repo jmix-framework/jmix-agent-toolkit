@@ -603,23 +603,31 @@ PY
         echo "skip: python3 not found, skipping the SSE fallback test"
     fi
 
-    # 5f. Claude Desktop: skipped while it has no config folder, otherwise its
-    #     own settings are kept.
-    out="$(PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents claude-desktop 2>&1)" \
-        || fail "mcp-jetbrains: missing Claude Desktop should be a skip, not a failure"
-    case "$out" in *"Skipped: Claude Desktop"*) ;; *) fail "mcp-jetbrains: no skip message for Claude Desktop" ;; esac
+    # 5f. Claude Desktop is set up together with claude, and only when it is
+    #     installed (its config folder exists); its own settings are kept and
+    #     the restart reminder appears only when its file changed.
+    out="$(PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents claude 2>&1)" \
+        || fail "mcp-jetbrains: a missing Claude Desktop should not fail the step"
+    [ ! -e "$DESKTOP_DIR" ] || fail "mcp-jetbrains: created a Claude Desktop config folder"
+    case "$out" in *"Claude Desktop"*) fail "mcp-jetbrains: mentioned a Claude Desktop that is not installed" ;; esac
     mkdir -p "$DESKTOP_DIR"
     printf '{"preferences": {"keep": true}}' > "${DESKTOP_DIR}/claude_desktop_config.json"
-    PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents claude-desktop >/dev/null \
+    out="$(PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents claude)" \
         || fail "mcp-jetbrains(desktop): non-zero exit"
     jq -e '.preferences.keep == true and .mcpServers.jetbrains.command == "npx"
            and (.mcpServers.jetbrains.args | index("mcp-remote"))' "${DESKTOP_DIR}/claude_desktop_config.json" >/dev/null \
         || fail "mcp-jetbrains(desktop): bridge entry missing or preferences lost"
-    pass "mcp-jetbrains configures Claude Desktop through a stdio bridge"
+    case "$out" in *"Quit Claude Desktop"*) ;; *) fail "mcp-jetbrains(desktop): no restart reminder after a change" ;; esac
+    out="$(PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents claude)"
+    case "$out" in *"Quit Claude Desktop"*) fail "mcp-jetbrains(desktop): restart reminder for an unchanged file" ;; esac
+    if bash "$INSTALL" mcp-jetbrains --agents claude-desktop >/dev/null 2>&1; then
+        fail "mcp-jetbrains: claude-desktop is no longer a separate agent"
+    fi
+    pass "claude also sets up an installed Claude Desktop, through a stdio bridge"
 
     # 5g. Context7 is always user level; the key never reaches the output or
     #     the project, and the user files holding it are private.
-    out="$(PATH="$BIN_PATH" bash "$INSTALL" mcp-context7 --agents claude,codex,opencode,junie,claude-desktop \
+    out="$(PATH="$BIN_PATH" bash "$INSTALL" mcp-context7 --agents claude,codex,opencode,junie \
         --context7-key ctx7sk-TESTKEY 2>&1)" || fail "mcp-context7: non-zero exit"
     case "$out" in *TESTKEY*) fail "mcp-context7: the API key was printed" ;; esac
     grep -qF -- '--scope user --transport http context7 https://mcp.context7.com/mcp --header Authorization: Bearer ctx7sk-TESTKEY' \
@@ -744,11 +752,11 @@ PY
         p="$(command -v "$tool" 2>/dev/null)" && ln -sf "$p" "${WORK}/minbin/${tool}"
     done
     mkdir -p "${WORK}/nojq" && cd "${WORK}/nojq"
-    PATH="${WORK}/minbin" /bin/bash "$INSTALL" mcp-jetbrains --agents claude,opencode >/dev/null \
+    HOME="${WORK}/nojq" PATH="${WORK}/minbin" /bin/bash "$INSTALL" mcp-jetbrains --agents claude,opencode >/dev/null \
         || fail "json: creating configs without jq/node failed"
     jq -e '.mcpServers.jetbrains.url == "http://127.0.0.1:9/stream"' .mcp.json >/dev/null \
         && jq -e '.mcp.jetbrains.type == "remote"' opencode.json >/dev/null || fail "json: configs created without jq/node are wrong"
-    out="$(PATH="${WORK}/minbin" /bin/bash "$INSTALL" mcp-jetbrains --agents claude,opencode)" \
+    out="$(HOME="${WORK}/nojq" PATH="${WORK}/minbin" /bin/bash "$INSTALL" mcp-jetbrains --agents claude,opencode)" \
         || fail "json: re-run without jq/node failed"
     case "$out" in *"Updated: "*|*"Created: "*) fail "json: re-run without jq/node rewrote a config" ;; esac
     cd "$MCP_PROJ"
@@ -784,8 +792,8 @@ PY
     PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents codex --source "$SOURCE" >/dev/null \
         || fail "mcp-jetbrains: --source should be accepted"
     rm -rf "$DESKTOP_DIR"
-    out="$(PATH="$BIN_PATH" bash "$INSTALL" playwright --agents claude-desktop)"
-    case "$out" in *"Quit Claude Desktop"*) fail "restart reminder printed for a skipped Claude Desktop" ;; esac
+    out="$(PATH="$BIN_PATH" bash "$INSTALL" playwright --agents claude)"
+    case "$out" in *"Quit Claude Desktop"*) fail "restart reminder printed without Claude Desktop" ;; esac
     pass "port validation, --source and the Claude Desktop reminder"
     # 5q. Refuse unsupported TOML before changing either Codex layer.
     SAVED_HOME="$HOME"

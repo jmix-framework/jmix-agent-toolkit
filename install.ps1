@@ -46,8 +46,8 @@
 .PARAMETER Agents
     Comma-separated list of agents (e.g. "claude,codex"). Single value is also
     accepted (e.g. "claude"). Required by every subcommand. Valid values:
-    claude, codex, opencode, junie; the MCP subcommands (mcp-jetbrains,
-    mcp-context7, playwright) also accept claude-desktop.
+    claude, codex, opencode, junie. In the MCP subcommands, claude also sets
+    up Claude Desktop when it is installed here.
 
 .PARAMETER Scope
     skills: "global" (default) writes to the per-agent user-home dir; "local"
@@ -56,7 +56,7 @@
     mcp-jetbrains / playwright: "local" (default) writes the project files in
     the current directory (.mcp.json, .codex\config.toml, opencode.json,
     .junie\mcp\mcp.json); "global" writes the user-level config of each agent.
-    Claude Desktop has only a user-level config and ignores the scope.
+    Claude Desktop, set up with claude, has only a user-level config.
     Not accepted by mcp-context7.
 
 .PARAMETER Context7Key
@@ -107,8 +107,6 @@ $script:RepoOwner = 'jmix-framework'
 $script:RepoName  = 'jmix-agent-toolkit'
 
 $script:AllAgents = @('claude', 'codex', 'opencode', 'junie')
-# MCP steps also configure Claude Desktop, which takes MCP servers but no skills.
-$script:McpAgents = @('claude', 'codex', 'opencode', 'junie', 'claude-desktop')
 
 # IntelliJ IDEA's MCP server listens on 127.0.0.1 only. Its default port is
 # 64342; another JetBrains IDE started first moves it, hence the override.
@@ -123,6 +121,8 @@ $script:McpFailed = $false
 $script:McpPrivate = $false
 $script:McpWritten = $false
 $script:McpWrittenAgents = @()
+# Set when Save-McpConfig created or updated its file.
+$script:ConfigChanged = $false
 
 $script:TarballReady     = $false
 $script:Staging          = $null
@@ -220,7 +220,6 @@ function Get-AgentLabel {
         'codex'    { 'Codex' }
         'opencode' { 'OpenCode' }
         'junie'    { 'Junie' }
-        'claude-desktop' { 'Claude Desktop' }
         default    { $Agent }
     }
 }
@@ -898,7 +897,9 @@ function Invoke-CmdAgentsMd {
 #   codex           .codex\config.toml     $env:CODEX_HOME (default ~\.codex)\config.toml
 #   opencode        opencode.json          $env:XDG_CONFIG_HOME (default ~\.config)\opencode\opencode.json
 #   junie           .junie\mcp\mcp.json    $env:JUNIE_HOME (default ~\.junie)\mcp\mcp.json
-#   claude-desktop  (user level only)      claude_desktop_config.json
+#
+# With claude, Claude Desktop is set up too when it is installed (see
+# Write-ClaudeDesktopServer): claude_desktop_config.json, user level only.
 #
 # ~\.claude.json is Claude Code's own state file, so it is changed only through
 # the claude CLI. Every other file is merged in place: other servers and keys
@@ -943,7 +944,6 @@ function Get-ClaudeDesktopConfigFiles {
 # Returns the MCP config file(s) of $Agent for $Scope (see the table above).
 function Get-McpConfigFiles {
     param([string]$Agent, [string]$Scope)
-    if ($Agent -eq 'claude-desktop') { return (Get-ClaudeDesktopConfigFiles) }
     if ($Scope -eq 'local') {
         $proj = (Get-Location).Path
         switch ($Agent) {
@@ -988,6 +988,7 @@ function Save-McpConfig {
             Write-Info "  Created: $File"
             Write-ChangeMarker -Action 'created' -Type 'file' -Path $File
         }
+        $script:ConfigChanged = $true
     }
     if ($script:McpPrivate) { Protect-OwnerOnly -Path $File }
 }
@@ -1254,12 +1255,8 @@ function Write-McpServer {
         return
     }
     $files = @(Get-McpConfigFiles -Agent $Agent -Scope $Scope)
-    if ($files.Count -eq 0) {
-        Write-Info '  Skipped: Claude Desktop has no config folder here. Install and start it once, then re-run.'
-        return
-    }
     # User-level files may hold the Context7 key.
-    $isPrivate = ($Scope -eq 'global' -or $Agent -eq 'claude-desktop')
+    $isPrivate = ($Scope -eq 'global')
     foreach ($file in $files) {
         if ($Agent -eq 'codex') {
             Set-McpTomlTable -File $file -Table "mcp_servers.$Name" -Body $Entry -Check
@@ -1271,10 +1268,27 @@ function Write-McpServer {
             Set-McpJsonEntry -File $file -Root $root -Name $Name -Entry $Entry -Private:$isPrivate
         }
     }
-    if ($Agent -eq 'claude-desktop') {
+    $script:McpWritten = $true
+}
+
+# Claude Desktop takes stdio servers only and has no project scope. It is set
+# up together with claude whenever it is installed here, i.e. a config folder
+# exists (see Get-ClaudeDesktopConfigFiles); otherwise nothing is written.
+function Write-ClaudeDesktopServer {
+    param([string]$Name, [object]$Entry)
+    $script:ConfigChanged = $false
+    foreach ($file in @(Get-ClaudeDesktopConfigFiles)) {
+        Set-McpJsonEntry -File $file -Root 'mcpServers' -Name $Name -Entry $Entry -Private
+    }
+    if ($script:ConfigChanged) {
         Write-Info '  Quit Claude Desktop completely (not just its window) and start it again to load the change.'
     }
-    $script:McpWritten = $true
+}
+
+# True when claude is among $AgentList and Claude Desktop is installed here.
+function Test-DesktopSelected {
+    param([string[]]$AgentList)
+    return (($AgentList -contains 'claude') -and (@(Get-ClaudeDesktopConfigFiles).Count -gt 0))
 }
 
 # Prints what the user still has to do for the configs just written.
@@ -1357,19 +1371,19 @@ function Install-JetbrainsFor {
         Write-Info '  Junie runs inside IntelliJ IDEA and already has native IDE access. No JetBrains MCP needed.'
         return
     }
-    if ($Agent -eq 'claude-desktop') {
-        # Claude Desktop takes stdio servers only: a stdio-to-SSE bridge.
-        Write-McpServer -Agent $Agent -Scope $Scope -Name 'jetbrains' -Entry ([PSCustomObject][ordered]@{
-            command = 'npx'; args = @('-y', 'mcp-remote', "$base/sse", '--transport', 'sse-only') })
-        return
-    }
     $isSse = ($script:JbTransport -eq 'sse')
     $url = if ($isSse) { "$base/sse" } else { "$base/stream" }
     switch ($Agent) {
         'claude' {
             $type = if ($isSse) { 'sse' } else { 'http' }
-            Write-McpServer -Agent $Agent -Scope $Scope -Name 'jetbrains' -Entry ([PSCustomObject][ordered]@{ type = $type; url = $url }) `
-                -CliArgs @('--scope', 'user', '--transport', $type, 'jetbrains', $url)
+            try {
+                Write-McpServer -Agent $Agent -Scope $Scope -Name 'jetbrains' -Entry ([PSCustomObject][ordered]@{ type = $type; url = $url }) `
+                    -CliArgs @('--scope', 'user', '--transport', $type, 'jetbrains', $url)
+            } finally {
+                # Claude Desktop has no HTTP transport for local servers: always the bridge.
+                Write-ClaudeDesktopServer -Name 'jetbrains' -Entry ([PSCustomObject][ordered]@{
+                    command = 'npx'; args = @('-y', 'mcp-remote', "$base/sse", '--transport', 'sse-only') })
+            }
         }
         'codex' {
             # Codex has no SSE transport: the same stdio bridge on 2025.x.
@@ -1387,7 +1401,7 @@ function Install-McpJetbrains {
     param([string[]]$AgentList, [string]$McpScope)
     Resolve-JetbrainsTransport
     Invoke-McpForAgents -AgentList $AgentList -Step 'Install-JetbrainsFor' -StepParams @{ Scope = $McpScope }
-    if ($AgentList -contains 'claude-desktop') {
+    if (Test-DesktopSelected -AgentList $AgentList) {
         Write-NpxNote -What "Claude Desktop's JetBrains MCP bridge"
     } elseif ($AgentList -contains 'codex' -and $script:JbTransport -eq 'sse') {
         Write-NpxNote -What "Codex's JetBrains MCP bridge"
@@ -1397,7 +1411,7 @@ function Install-McpJetbrains {
 }
 
 function Invoke-CmdMcpJetbrains {
-    $agentList = Resolve-AgentsCsv -Csv $Agents -Subcommand 'mcp-jetbrains' -Valid $script:McpAgents
+    $agentList = Resolve-AgentsCsv -Csv $Agents -Subcommand 'mcp-jetbrains'
     $mcpScope = Resolve-Scope -Scope $Scope -Default 'local' -Subcommand 'mcp-jetbrains'
     Install-McpJetbrains -AgentList $agentList -McpScope $mcpScope
 }
@@ -1419,8 +1433,12 @@ function Install-Context7For {
     Write-Info "[Context7 MCP] $(Get-AgentLabel -Agent $Agent)"
     switch ($Agent) {
         'claude' {
-            Write-McpServer -Agent $Agent -Scope 'global' -Name 'context7' -Entry $null `
-                -CliArgs @('--scope', 'user', '--transport', 'http', 'context7', $url, '--header', "Authorization: Bearer $Key")
+            try {
+                Write-McpServer -Agent $Agent -Scope 'global' -Name 'context7' -Entry $null `
+                    -CliArgs @('--scope', 'user', '--transport', 'http', 'context7', $url, '--header', "Authorization: Bearer $Key")
+            } finally {
+                Write-ClaudeDesktopServer -Name 'context7' -Entry (New-Context7StdioEntry -Key $Key)
+            }
         }
         'codex' {
             Write-McpServer -Agent $Agent -Scope 'global' -Name 'context7' `
@@ -1431,11 +1449,16 @@ function Install-Context7For {
                 type = 'remote'; url = $url; headers = [PSCustomObject]@{ Authorization = "Bearer $Key" }; enabled = $true })
         }
         default {
-            # Junie and Claude Desktop: stdio, the key in the environment, not in argv.
-            Write-McpServer -Agent $Agent -Scope 'global' -Name 'context7' -Entry ([PSCustomObject][ordered]@{
-                command = 'npx'; args = @('-y', '@upstash/context7-mcp'); env = [PSCustomObject]@{ CONTEXT7_API_KEY = $Key } })
+            Write-McpServer -Agent $Agent -Scope 'global' -Name 'context7' -Entry (New-Context7StdioEntry -Key $Key)
         }
     }
+}
+
+# Context7 for Junie and Claude Desktop: stdio, the key in the environment, not in argv.
+function New-Context7StdioEntry {
+    param([string]$Key)
+    return [PSCustomObject][ordered]@{
+        command = 'npx'; args = @('-y', '@upstash/context7-mcp'); env = [PSCustomObject]@{ CONTEXT7_API_KEY = $Key } }
 }
 
 function Install-McpContext7 {
@@ -1447,8 +1470,10 @@ function Install-McpContext7 {
     } finally {
         $script:McpPrivate = $false
     }
-    if ($AgentList -contains 'junie' -or $AgentList -contains 'claude-desktop') {
-        Write-NpxNote -What 'Context7 for Junie and Claude Desktop'
+    if ($AgentList -contains 'junie') {
+        Write-NpxNote -What 'Context7 for Junie'
+    } elseif (Test-DesktopSelected -AgentList $AgentList) {
+        Write-NpxNote -What 'Context7 for Claude Desktop'
     }
     Write-Info ''
     Write-McpFollowups -AgentList $AgentList -McpScope 'global'
@@ -1456,7 +1481,7 @@ function Install-McpContext7 {
 
 function Invoke-CmdMcpContext7 {
     if ($Scope) { Write-ErrAndExit 'mcp-context7: unknown argument: -Scope (Context7 is always registered at user level)' }
-    $agentList = Resolve-AgentsCsv -Csv $Agents -Subcommand 'mcp-context7' -Valid $script:McpAgents
+    $agentList = Resolve-AgentsCsv -Csv $Agents -Subcommand 'mcp-context7'
     $apiKey = $Context7Key
     if (-not $apiKey) {
         $apiKey = Read-Prompt -Message 'Context7 API key' -Default ''
@@ -1514,9 +1539,13 @@ function Install-PlaywrightFor {
     Write-Info "[Playwright MCP] $(Get-AgentLabel -Agent $Agent)"
     switch ($Agent) {
         'claude' {
-            Write-McpServer -Agent $Agent -Scope $Scope -Name 'playwright' `
-                -Entry ([PSCustomObject][ordered]@{ type = 'stdio'; command = 'npx'; args = @('-y', $pkg) }) `
-                -CliArgs @('--scope', 'user', 'playwright', '--', 'npx', '-y', $pkg)
+            try {
+                Write-McpServer -Agent $Agent -Scope $Scope -Name 'playwright' `
+                    -Entry ([PSCustomObject][ordered]@{ type = 'stdio'; command = 'npx'; args = @('-y', $pkg) }) `
+                    -CliArgs @('--scope', 'user', 'playwright', '--', 'npx', '-y', $pkg)
+            } finally {
+                Write-ClaudeDesktopServer -Name 'playwright' -Entry ([PSCustomObject][ordered]@{ command = 'npx'; args = @('-y', $pkg) })
+            }
         }
         'codex' {
             # The first npx download can outlast Codex's default startup timeout.
@@ -1551,7 +1580,7 @@ function Install-McpPlaywright {
 }
 
 function Invoke-CmdPlaywright {
-    $agentList = Resolve-AgentsCsv -Csv $Agents -Subcommand 'playwright' -Valid $script:McpAgents
+    $agentList = Resolve-AgentsCsv -Csv $Agents -Subcommand 'playwright'
     $mcpScope = Resolve-Scope -Scope $Scope -Default 'local' -Subcommand 'playwright'
     Install-McpPlaywright -AgentList $agentList -McpScope $mcpScope
 }
@@ -1661,7 +1690,7 @@ function Invoke-Wizard {
     # and the wizard moves on.
 
     # Step 3: JetBrains MCP
-    $sel = @(Read-AgentChoice -Label '[3/5] Connect agent to IntelliJ IDEA via JetBrains MCP?' -Options @($script:McpAgents | Where-Object { $_ -ne 'junie' }))
+    $sel = @(Read-AgentChoice -Label '[3/5] Connect agent to IntelliJ IDEA via JetBrains MCP?' -Options @($script:AllAgents | Where-Object { $_ -ne 'junie' }))
     if ($sel[0] -ne 'skip') {
         $mcpScope = Read-McpScope
         Install-McpJetbrains -AgentList $sel -McpScope $mcpScope
@@ -1669,7 +1698,7 @@ function Invoke-Wizard {
     }
 
     # Step 4: Context7 MCP
-    $sel = @(Read-AgentChoice -Label '[4/5] Connect agent to library docs via Context7 MCP?' -Options $script:McpAgents)
+    $sel = @(Read-AgentChoice -Label '[4/5] Connect agent to library docs via Context7 MCP?' -Options $script:AllAgents)
     if ($sel[0] -ne 'skip') {
         $apiKey = Read-Prompt -Message 'Context7 API key' -Default ''
         if (Test-Context7Key -Key $apiKey) {
@@ -1682,7 +1711,7 @@ function Invoke-Wizard {
     }
 
     # Step 5: Playwright MCP
-    $sel = @(Read-AgentChoice -Label '[5/5] Connect agent to a browser via Playwright MCP?' -Options $script:McpAgents)
+    $sel = @(Read-AgentChoice -Label '[5/5] Connect agent to a browser via Playwright MCP?' -Options $script:AllAgents)
     if ($sel[0] -ne 'skip') {
         $mcpScope = Read-McpScope
         Install-McpPlaywright -AgentList $sel -McpScope $mcpScope

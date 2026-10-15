@@ -795,22 +795,27 @@ if ($port) {
 Stop-Job $server
 Remove-Job $server -Force
 
-# 3f. Claude Desktop: skipped while it has no config folder, otherwise its
-#     own settings are kept.
-$r = Invoke-InstallerResult @('mcp-jetbrains', '-Agents', 'claude-desktop')
-Check ($r.Code -eq 0) 'mcp-jetbrains: missing Claude Desktop is a skip, not a failure'
-Check ($r.Output -match 'Skipped: Claude Desktop') 'mcp-jetbrains: skip message for Claude Desktop'
-Check ($r.Output -notmatch 'Quit Claude Desktop') 'mcp-jetbrains: no restart reminder for a skipped Claude Desktop'
+# 3f. Claude Desktop is set up together with claude, and only when it is
+#     installed (its config folder exists); its own settings are kept and the
+#     restart reminder appears only when its file changed.
+$r = Invoke-InstallerResult @('mcp-jetbrains', '-Agents', 'claude')
+Check ($r.Code -eq 0) 'mcp-jetbrains: a missing Claude Desktop does not fail the step'
+Check (-not (Test-Path $desktopDir)) 'mcp-jetbrains: no Claude Desktop config folder created'
+Check ($r.Output -notmatch 'Claude Desktop') 'mcp-jetbrains: a Claude Desktop that is not installed is not mentioned'
 $desktopCfg = Join-Path $desktopDir 'claude_desktop_config.json'
 New-Item -ItemType Directory -Force -Path $desktopDir | Out-Null
 Set-TestFile $desktopCfg '{"preferences": {"keep": true}}'
-$r = Invoke-InstallerResult @('mcp-jetbrains', '-Agents', 'claude-desktop')
+$r = Invoke-InstallerResult @('mcp-jetbrains', '-Agents', 'claude')
 Check ($r.Code -eq 0) 'mcp-jetbrains(desktop) exits 0'
 Check ($r.Output -match 'Quit Claude Desktop') 'mcp-jetbrains(desktop): restart reminder after writing its config'
 $json = Read-Json $desktopCfg
 Check ($json.preferences.keep -eq $true -and
        (Test-JsonEqual $json.mcpServers.jetbrains '{"command":"npx","args":["-y","mcp-remote","http://127.0.0.1:9/sse","--transport","sse-only"]}')) `
     'mcp-jetbrains(desktop): stdio bridge added, preferences kept'
+$r = Invoke-InstallerResult @('mcp-jetbrains', '-Agents', 'claude')
+Check ($r.Output -notmatch 'Quit Claude Desktop') 'mcp-jetbrains(desktop): no restart reminder for an unchanged file'
+Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'claude-desktop')) -ne 0) `
+    'mcp-jetbrains: claude-desktop is no longer a separate agent'
 
 # Windows: the Store build of Claude Desktop reads a per-package copy. A package
 # folder without a config must not get one while %APPDATA%\Claude has it (it
@@ -819,17 +824,17 @@ if ($onWindows) {
     $pkgDir = Join-Path $env:LOCALAPPDATA 'Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude'
     $pkgCfg = Join-Path $pkgDir 'claude_desktop_config.json'
     New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
-    $null = Invoke-Installer @('mcp-jetbrains', '-Agents', 'claude-desktop')
+    $null = Invoke-Installer @('mcp-jetbrains', '-Agents', 'claude')
     Check (-not (Test-Path $pkgCfg)) 'mcp-jetbrains(desktop): no shadowing config created in the package folder'
     Set-TestFile $pkgCfg '{}'
-    $null = Invoke-Installer @('mcp-jetbrains', '-Agents', 'claude-desktop')
+    $null = Invoke-Installer @('mcp-jetbrains', '-Agents', 'claude')
     Check ((Read-Json $pkgCfg).mcpServers.jetbrains.command -eq 'npx') 'mcp-jetbrains(desktop): package config updated too'
     Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'Packages') -Recurse -Force
 }
 
 # 3g. Context7 is always user level; the key never reaches the output or the
 #     project, and the user files holding it are private.
-$r = Invoke-InstallerResult @('mcp-context7', '-Agents', 'claude,codex,opencode,junie,claude-desktop', '-Context7Key', 'ctx7sk-TESTKEY')
+$r = Invoke-InstallerResult @('mcp-context7', '-Agents', 'claude,codex,opencode,junie', '-Context7Key', 'ctx7sk-TESTKEY')
 Check ($r.Code -eq 0) 'mcp-context7 exits 0'
 Check (-not ($r.Output -match 'TESTKEY')) 'mcp-context7: the API key is not printed'
 $claudeCalls = if (Test-Path $claudeLog) { [System.IO.File]::ReadAllText($claudeLog) -replace '"', '' } else { '' }
@@ -1103,7 +1108,7 @@ Check ((Invoke-Installer @('agents-md', '-Source', $Source)) -ne 0) `
 Check ((Invoke-Installer @('skills', '-Agents', 'bogus', '-Scope', 'local', '-Source', $Source)) -ne 0) `
     'negative: unknown agent fails'
 Check ((Invoke-Installer @('skills', '-Agents', 'claude-desktop', '-Scope', 'local', '-Source', $Source)) -ne 0) `
-    'negative: skills rejects claude-desktop (MCP steps only)'
+    'negative: skills rejects claude-desktop'
 Check ((Invoke-Installer @('agents-md', '-Agents', 'claude-desktop', '-Source', $Source)) -ne 0) `
     'negative: agents-md rejects claude-desktop'
 Check ((Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', (Join-Path $work 'does-not-exist'))) -ne 0) `
