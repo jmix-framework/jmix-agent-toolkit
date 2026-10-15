@@ -43,11 +43,6 @@
                 "value": "opencode",
                 "label": "OpenCode",
                 "default": true
-              },
-              {
-                "value": "junie",
-                "label": "Junie",
-                "default": true
               }
             ]
           }
@@ -82,11 +77,6 @@
               {
                 "value": "opencode",
                 "label": "OpenCode",
-                "default": true
-              },
-              {
-                "value": "junie",
-                "label": "Junie",
                 "default": true
               }
             ]
