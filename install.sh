@@ -1046,10 +1046,12 @@ toml_set_table() {
             function norm(s) { gsub(/[ \t"]/, "", s); gsub(sprintf("%c", 39), "", s); return s }
             function emit(s) { out[++n] = s; if (s !~ /^[ \t\r]*$/) last = n }
             function flush(  i) { for (i = 1; i <= np; i++) emit(pend[i]); np = 0 }
-            BEGIN { body = ENVIRON["JMIX_TOML_BODY"]; bom = "\357\273\277" }
+            # The BOM is measured with length(), never a literal 3: gawk in a
+            # UTF-8 locale counts it as one character (see has_guidelines_block).
+            BEGIN { body = ENVIRON["JMIX_TOML_BODY"]; bom = "\357\273\277"; blen = length(bom) }
             {
                 line = $0; probe = line
-                if (NR == 1 && substr(probe, 1, 3) == bom) probe = substr(probe, 4)
+                if (NR == 1 && substr(probe, 1, blen) == bom) probe = substr(probe, blen + 1)
             }
             probe ~ /^[ \t]*\[/ {
                 h = probe; sub(/^[ \t]*\[+/, "", h); sub(/\].*$/, "", h); h = norm(h)
@@ -1099,7 +1101,8 @@ codex_transport() {
     [ -r "$1" ] || return 0
     awk -v t="$2" '
         function norm(s) { gsub(/[ \t"]/, "", s); gsub(sprintf("%c", 39), "", s); return s }
-        NR == 1 && substr($0, 1, 3) == "\357\273\277" { $0 = substr($0, 4) }
+        BEGIN { bom = "\357\273\277"; blen = length(bom) }
+        NR == 1 && substr($0, 1, blen) == bom { $0 = substr($0, blen + 1) }
         /^[ \t]*\[/ { h = $0; sub(/^[ \t]*\[+/, "", h); sub(/\].*$/, "", h); in_t = (norm(h) == t); next }
         in_t && /^[ \t]*(url|command)[ \t]*=/ { k = $0; sub(/=.*$/, "", k); print norm(k); exit }
     ' "$1"
