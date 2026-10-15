@@ -22,6 +22,9 @@ trap 'rm -rf "$WORK"' EXIT
 
 # Isolate the global scope: install.sh writes global skills under $HOME.
 export HOME="${WORK}/home"
+unset CODEX_HOME XDG_CONFIG_HOME JUNIE_HOME
+# Nothing listens on port 9: the IDE MCP server probe sees no IDE.
+export JMIX_IDE_MCP_PORT=9
 PROJECT="${WORK}/project"
 mkdir -p "$HOME" "$PROJECT"
 cd "$PROJECT"
@@ -44,8 +47,10 @@ END_MARK='<!-- END jmix-agent-toolkit -->'
 bash "$INSTALL" agents-md --agents claude,codex,opencode,junie --source "$SOURCE" >/dev/null
 [ -f "${PROJECT}/CLAUDE.md" ]            || fail "agents-md: CLAUDE.md missing"
 [ -f "${PROJECT}/AGENTS.md" ]            || fail "agents-md: AGENTS.md missing"
-[ -f "${PROJECT}/.junie/guidelines.md" ] || fail "agents-md: .junie/guidelines.md missing"
 cmp -s "${PROJECT}/CLAUDE.md" "$BLOCK"   || fail "agents-md: fresh CLAUDE.md is not exactly the block"
+cmp -s "${PROJECT}/AGENTS.md" "$BLOCK"   || fail "agents-md: AGENTS.md shared by codex/opencode/junie is not exactly the block"
+# Junie reads AGENTS.md; the deprecated .junie/guidelines.md is not created.
+[ ! -e "${PROJECT}/.junie/guidelines.md" ] || fail "agents-md: Junie got a .junie/guidelines.md it would not read"
 pass "agents-md creates a guidelines file holding exactly the block"
 
 # 1b. An up-to-date file is left completely alone: no rewrite, no backup (issue #22).
@@ -352,6 +357,56 @@ fi
 rmdir "${PROJECT}/CLAUDE.md"
 pass "agents-md fails cleanly when the destination is a directory"
 
+# 1t. Codex reads only the first 32 KiB of AGENTS.md, so an unmarked AGENTS.md
+#     gets the block on top; a leading BOM stays first. Other files (CLAUDE.md,
+#     see 1d) still get it at the end.
+rm -rf "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak* "${PROJECT}/AGENTS.md" "${PROJECT}"/AGENTS.md.bak* "${PROJECT}/.junie"
+printf '\357\273\277# Shared\n\nNever push to main.\n' > "${PROJECT}/AGENTS.md"
+bash "$INSTALL" agents-md --agents codex --source "$SOURCE" >/dev/null
+[ "$(head -c 3 "${PROJECT}/AGENTS.md")" = $'\xef\xbb\xbf' ] || fail "agents-md: AGENTS.md lost its leading BOM"
+[ "$(tail -c +4 "${PROJECT}/AGENTS.md" | head -n 1)" = "$BEGIN_MARK" ] \
+    || fail "agents-md: the block is not on top of an unmarked AGENTS.md"
+[ "$(tail -n 3 "${PROJECT}/AGENTS.md")" = "$(printf '# Shared\n\nNever push to main.')" ] \
+    || fail "agents-md: developer content of AGENTS.md lost"
+[ -f "${PROJECT}/AGENTS.md.bak" ] || fail "agents-md: AGENTS.md not backed up"
+pass "agents-md puts the block on top of an unmarked AGENTS.md"
+
+# 1u. Codex: a block past 32 KiB and an AGENTS.override.md are reported.
+rm -f "${PROJECT}/AGENTS.md" "${PROJECT}"/AGENTS.md.bak*
+awk 'BEGIN { for (i = 0; i < 700; i++) print "Rule " i ": keep the build green and the tests fast." }' > "${PROJECT}/AGENTS.md"
+cat "$BLOCK" >> "${PROJECT}/AGENTS.md"
+printf 'local rules\n' > "${PROJECT}/AGENTS.override.md"
+out="$(bash "$INSTALL" agents-md --agents codex --source "$SOURCE")"
+case "$out" in *"first 32 KiB"*) ;; *) fail "agents-md: no warning for a block past Codex's 32 KiB" ;; esac
+case "$out" in *"AGENTS.override.md"*) ;; *) fail "agents-md: no warning for AGENTS.override.md" ;; esac
+rm -f "${PROJECT}/AGENTS.md" "${PROJECT}/AGENTS.override.md"
+pass "agents-md warns when Codex would not see the block"
+
+# 1v. Junie follows the shared convention: its block goes into the root
+#     AGENTS.md like codex/opencode, and .junie/AGENTS.md / .junie/guidelines.md
+#     are not touched.
+rm -f "${PROJECT}/AGENTS.md" "${PROJECT}"/AGENTS.md.bak*
+mkdir -p "${PROJECT}/.junie"
+printf '# Junie rules\n' > "${PROJECT}/.junie/AGENTS.md"
+printf '# Old Junie rules\n' > "${PROJECT}/.junie/guidelines.md"
+cp "${PROJECT}/.junie/AGENTS.md" "${WORK}/ja"; cp "${PROJECT}/.junie/guidelines.md" "${WORK}/jg"
+bash "$INSTALL" agents-md --agents junie --source "$SOURCE" >/dev/null
+cmp -s "${PROJECT}/AGENTS.md" "$BLOCK" || fail "agents-md: Junie's block not written to the root AGENTS.md"
+cmp -s "${PROJECT}/.junie/AGENTS.md" "${WORK}/ja" && cmp -s "${PROJECT}/.junie/guidelines.md" "${WORK}/jg" \
+    || fail "agents-md: a .junie guidelines file was modified"
+rm -rf "${PROJECT}/AGENTS.md" "${PROJECT}/.junie"
+pass "agents-md writes Junie's block into the shared AGENTS.md"
+
+# 1za. A NUL byte in AGENTS.md (grep calls it binary) does not stop the agents
+#      after codex.
+rm -f "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak* "${PROJECT}"/AGENTS.md.bak*
+printf '# Rules\nx\000y\n' > "${PROJECT}/AGENTS.md"
+bash "$INSTALL" agents-md --agents codex,claude --source "$SOURCE" >/dev/null 2>&1 \
+    || fail "agents-md: a NUL byte in AGENTS.md failed the step"
+[ -f "${PROJECT}/CLAUDE.md" ] || fail "agents-md: claude skipped after a binary-looking AGENTS.md"
+rm -f "${PROJECT}/AGENTS.md" "${PROJECT}"/AGENTS.md.bak* "${PROJECT}/CLAUDE.md"
+pass "agents-md handles an AGENTS.md that grep calls binary"
+
 # Reset so later sections start from a clean project guidelines state.
 rm -f "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak* "${PROJECT}/AGENTS.md" "${PROJECT}"/AGENTS.md.bak*
 
@@ -362,19 +417,33 @@ bash "$INSTALL" skills --agents claude,codex,opencode,junie --scope local --sour
 [ -d "${PROJECT}/.skills" ] || fail "skills(local): .skills store missing"
 find "${PROJECT}/.skills" -maxdepth 1 -mindepth 1 -name 'jmix-*' -type d | grep -q . \
     || fail "skills(local): store has no jmix-* folders"
-for rel in ".claude/skills" ".agents/skills" ".junie/skills"; do
+for rel in ".claude/skills" ".agents/skills"; do
     [ -e "${PROJECT}/${rel}/${SKILL}/SKILL.md" ] \
         || fail "skills(local): ${rel}/${SKILL} does not resolve"
 done
+[ ! -e "${PROJECT}/.junie/skills" ] || fail "skills(local): Junie got a .junie/skills dir; it reads .agents/skills"
 pass "skills(local) builds store and resolving symlinks for all agents"
 
-for rel in ".claude/skills" ".agents/skills" ".junie/skills"; do
+for rel in ".claude/skills" ".agents/skills"; do
     tgt="$(readlink "${PROJECT}/${rel}/${SKILL}")"
     case "$tgt" in
         /*) fail "skills(local): ${rel}/${SKILL} target is absolute (${tgt}); must be relative" ;;
     esac
 done
 pass "skills(local) symlink targets are relative (portable across clones)"
+
+# Links an earlier version put into .junie/skills are removed (Junie's CLI
+# reads that dir first, so they would shadow newer skills); other skills stay.
+mkdir -p "${PROJECT}/.junie/skills/my-skill"
+ln -s ../../.skills/jmix "${PROJECT}/.junie/skills/jmix"
+ln -s ../../.skills/jmix-create-entity "${PROJECT}/.junie/skills/jmix-create-entity"
+out="$(bash "$INSTALL" skills --agents codex --scope local --source "$SOURCE")"
+[ ! -e "${PROJECT}/.junie/skills/jmix" ] && [ ! -L "${PROJECT}/.junie/skills/jmix-create-entity" ] \
+    || fail "skills(local): old toolkit links in .junie/skills not removed"
+[ -d "${PROJECT}/.junie/skills/my-skill" ] || fail "skills(local): removed a foreign skill from .junie/skills"
+case "$out" in *"Removed old Junie skill link"*) ;; *) fail "skills(local): removal of old Junie links not reported" ;; esac
+rm -rf "${PROJECT}/.junie"
+pass "skills removes the old .junie/skills links and keeps foreign skills"
 
 # ---------------------------------------------------------------------------
 # 3. skills, global scope (under $HOME) -- store keyed by the branch (CONTENT_REF)
@@ -383,6 +452,23 @@ bash "$INSTALL" skills --agents claude --scope global --source "$SOURCE" >/dev/n
 [ -d "${HOME}/.agents/.jmix/skills/v3" ]                  || fail "skills(global): v3 store missing"
 [ -e "${HOME}/.claude/skills/${SKILL}/SKILL.md" ]         || fail "skills(global): symlink does not resolve"
 pass "skills(global) builds v3 store under HOME and resolving symlink"
+
+# An agent skills dir that is itself a symlink to another agent's dir (a common
+# way to share skills, here ~/.agents/skills -> ~/.claude/skills) gets links
+# relative to where they physically live, so every link still resolves.
+mkdir -p "${HOME}/.agents"
+ln -s ../.claude/skills "${HOME}/.agents/skills"
+bash "$INSTALL" skills --agents claude,codex --scope global --source "$SOURCE" >/dev/null
+for link in "${HOME}/.claude/skills"/jmix*; do
+    [ -e "${link}/SKILL.md" ] || fail "skills(global): $(basename "$link") broken through a symlinked ~/.agents/skills"
+done
+rm -f "${HOME}/.agents/skills"
+pass "skills(global) links resolve when ~/.agents/skills is a symlink to ~/.claude/skills"
+
+if bash "$INSTALL" skills --agents claude-desktop --scope global --source "$SOURCE" >/dev/null 2>&1; then
+    fail "skills: claude-desktop takes no skills and should be rejected"
+fi
+pass "skills rejects claude-desktop"
 
 # Studio can pin a feature branch independently of the release default. The
 # resolved ref keys the global store and is accepted by every subcommand via
@@ -402,23 +488,303 @@ pass "skills(global) honours --content-ref"
 pass "Studio commands pass the resolved content ref"
 
 # ---------------------------------------------------------------------------
-# 5. OpenCode MCP entries (no agent CLI needed; requires jq)
+# 5. MCP servers. Files are merged in place, no agent CLI needed (the
+#    assertions use jq).
 # ---------------------------------------------------------------------------
 if command -v jq >/dev/null 2>&1; then
-    cfg="${HOME}/.config/opencode/opencode.json"
-    bash "$INSTALL" mcp-jetbrains --agents opencode >/dev/null
-    jq -e '.mcp.jetbrains.url == "http://localhost:64342/sse"' "$cfg" >/dev/null \
-        || fail "mcp-jetbrains: opencode jetbrains entry missing/wrong"
-    # Re-running an already-configured step must stay idempotent (exit 0) -- the
-    # same guarantee the Claude path gets from its remove-then-add helper.
-    bash "$INSTALL" mcp-jetbrains --agents opencode >/dev/null \
-        || fail "mcp-jetbrains: re-run not idempotent (non-zero exit)"
-    bash "$INSTALL" mcp-context7 --agents opencode --context7-key TESTKEY >/dev/null
-    jq -e '.mcp.context7.command | index("TESTKEY")' "$cfg" >/dev/null \
-        || fail "mcp-context7: opencode context7 key not written"
-    pass "opencode MCP entries (jetbrains + context7) written to opencode.json"
+    MCP_PROJ="${WORK}/mcp-project"
+    mkdir -p "$MCP_PROJ" "${WORK}/bin"
+    cd "$MCP_PROJ"
+    # Fake agent CLIs. Local scope must not call them; Claude at user scope goes
+    # through `claude mcp add`, whose arguments the fake records (and echoes,
+    # like the real one does).
+    printf '#!/bin/sh\necho "$*" >> "%s/claude.log"\necho "added: $*"\n' "$WORK" > "${WORK}/bin/claude"
+    printf '#!/bin/sh\necho called >> "%s/codex.log"\nexit 99\n' "$WORK" > "${WORK}/bin/codex"
+    chmod +x "${WORK}/bin/claude" "${WORK}/bin/codex"
+    BIN_PATH="${WORK}/bin:${PATH}"
+    case "$(uname -s)" in
+        Darwin) DESKTOP_DIR="${HOME}/Library/Application Support/Claude" ;;
+        *)      DESKTOP_DIR="${HOME}/.config/Claude" ;;
+    esac
+
+    # 5a. Local scope, IDE MCP server not reachable -> Streamable HTTP (/stream).
+    #     Foreign servers and keys survive; an old [mcp_servers.jetbrains] table
+    #     and its sub-table are replaced.
+    printf '{\n  "$schema": "keep-me",\n  "mcpServers": {"mine": {"type": "http", "url": "http://mine"}}\n}\n' > .mcp.json
+    mkdir -p .codex
+    printf 'model = "o3"\n\n[mcp_servers.jetbrains]\ncommand = "java"\n\n[mcp_servers.jetbrains.env]\nIJ_MCP_SERVER_PORT = "64342"\n\n[mcp_servers.mine]\nurl = "http://mine"\n' \
+        > .codex/config.toml
+    PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents claude,codex,opencode,junie --scope local >/dev/null \
+        || fail "mcp-jetbrains(local): non-zero exit"
+    [ ! -e "${WORK}/claude.log" ] && [ ! -e "${WORK}/codex.log" ] || fail "mcp-jetbrains(local): called an agent CLI"
+    jq -e '.mcpServers.jetbrains == {"type":"http","url":"http://127.0.0.1:9/stream"}
+           and .mcpServers.mine.url == "http://mine" and ."$schema" == "keep-me"' .mcp.json >/dev/null \
+        || fail "mcp-jetbrains(local): .mcp.json entry wrong or other content lost"
+    grep -q '^model = "o3"$' .codex/config.toml && grep -q '^\[mcp_servers.mine\]$' .codex/config.toml \
+        || fail "mcp-jetbrains(local): other Codex config lost"
+    [ "$(grep -c '^\[mcp_servers.jetbrains' .codex/config.toml)" -eq 1 ] \
+        && ! grep -q 'IJ_MCP_SERVER_PORT' .codex/config.toml \
+        || fail "mcp-jetbrains(local): old Codex jetbrains table not replaced"
+    grep -q '^url = "http://127.0.0.1:9/stream"$' .codex/config.toml || fail "mcp-jetbrains(local): Codex url missing"
+    jq -e '.mcp.jetbrains == {"type":"remote","url":"http://127.0.0.1:9/stream","enabled":true}' opencode.json >/dev/null \
+        || fail "mcp-jetbrains(local): opencode entry wrong"
+    [ ! -e .junie/mcp/mcp.json ] || fail "mcp-jetbrains(local): Junie got a JetBrains MCP entry it does not need"
+    pass "mcp-jetbrains(local) merges the project files without any agent CLI"
+
+    # 5b. A re-run changes nothing.
+    cp .mcp.json "${WORK}/m1"; cp .codex/config.toml "${WORK}/c1"; cp opencode.json "${WORK}/o1"
+    PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents claude,codex,opencode --scope local >/dev/null \
+        || fail "mcp-jetbrains(local): re-run non-zero exit"
+    cmp -s .mcp.json "${WORK}/m1" && cmp -s .codex/config.toml "${WORK}/c1" && cmp -s opencode.json "${WORK}/o1" \
+        || fail "mcp-jetbrains(local): re-run changed a file"
+    pass "mcp-jetbrains(local) re-run leaves the files unchanged"
+
+    # 5c. A file the merge cannot parse (JSONC) is left alone and the step fails;
+    #     the other agents are still configured.
+    printf '{\n  // mine\n  "theme": "dark"\n}\n' > opencode.json
+    cp opencode.json "${WORK}/o2"
+    rm -f .mcp.json
+    if PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents opencode,claude >/dev/null 2>&1; then
+        fail "mcp-jetbrains: a JSONC opencode.json should fail the step"
+    fi
+    cmp -s opencode.json "${WORK}/o2" || fail "mcp-jetbrains: JSONC opencode.json was modified"
+    [ -f .mcp.json ] || fail "mcp-jetbrains: a failed agent stopped the agents after it"
+    rm -f opencode.json
+    pass "mcp-jetbrains leaves an unparsable opencode.json untouched, fails, and continues"
+
+    # 5d. A server defined inline (not as a [table]) is refused, not duplicated.
+    printf '[mcp_servers]\njetbrains = { url = "http://mine" }\n' > .codex/config.toml
+    cp .codex/config.toml "${WORK}/c2"
+    if PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents codex >/dev/null 2>&1; then
+        fail "mcp-jetbrains: an inline Codex jetbrains entry should fail the step"
+    fi
+    cmp -s .codex/config.toml "${WORK}/c2" || fail "mcp-jetbrains: inline Codex entry was modified"
+    rm -rf .codex
+    pass "mcp-jetbrains refuses to touch an inline Codex jetbrains entry"
+
+    # 5e. IntelliJ IDEA before 2026.1 answers 404 on /stream: SSE for Claude and
+    #     OpenCode, a stdio bridge for Codex (no SSE transport there).
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "${WORK}/port" <<'PY' &
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_HEAD(self):
+        self.send_response(404); self.end_headers()
+    do_GET = do_HEAD
+    def log_message(self, *args):
+        pass
+s = http.server.HTTPServer(("127.0.0.1", 0), H)
+open(sys.argv[1], "w").write(str(s.server_port))
+s.serve_forever()
+PY
+        server_pid=$!
+        disown "$server_pid"   # no job-status noise when it is killed below
+        for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "${WORK}/port" ] && break; sleep 0.5; done
+        port="$(cat "${WORK}/port")"
+        rm -f .mcp.json opencode.json
+        JMIX_IDE_MCP_PORT="$port" PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents claude,codex,opencode >/dev/null \
+            || fail "mcp-jetbrains(sse): non-zero exit"
+        kill "$server_pid" 2>/dev/null || true
+        jq -e --arg u "http://127.0.0.1:${port}/sse" '.mcpServers.jetbrains == {"type":"sse","url":$u}' .mcp.json >/dev/null \
+            || fail "mcp-jetbrains(sse): Claude entry is not SSE"
+        grep -q "^args = \[\"-y\", \"mcp-remote\", \"http://127.0.0.1:${port}/sse\", \"--transport\", \"sse-only\"\]$" .codex/config.toml \
+            || fail "mcp-jetbrains(sse): Codex has no mcp-remote bridge"
+        jq -e --arg u "http://127.0.0.1:${port}/sse" '.mcp.jetbrains.url == $u' opencode.json >/dev/null \
+            || fail "mcp-jetbrains(sse): OpenCode entry is not SSE"
+        rm -rf .mcp.json opencode.json .codex
+        pass "mcp-jetbrains falls back to SSE (and a Codex bridge) on IntelliJ IDEA before 2026.1"
+    else
+        echo "skip: python3 not found, skipping the SSE fallback test"
+    fi
+
+    # 5f. Claude Desktop: skipped while it has no config folder, otherwise its
+    #     own settings are kept.
+    out="$(PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents claude-desktop 2>&1)" \
+        || fail "mcp-jetbrains: missing Claude Desktop should be a skip, not a failure"
+    case "$out" in *"Skipped: Claude Desktop"*) ;; *) fail "mcp-jetbrains: no skip message for Claude Desktop" ;; esac
+    mkdir -p "$DESKTOP_DIR"
+    printf '{"preferences": {"keep": true}}' > "${DESKTOP_DIR}/claude_desktop_config.json"
+    PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents claude-desktop >/dev/null \
+        || fail "mcp-jetbrains(desktop): non-zero exit"
+    jq -e '.preferences.keep == true and .mcpServers.jetbrains.command == "npx"
+           and (.mcpServers.jetbrains.args | index("mcp-remote"))' "${DESKTOP_DIR}/claude_desktop_config.json" >/dev/null \
+        || fail "mcp-jetbrains(desktop): bridge entry missing or preferences lost"
+    pass "mcp-jetbrains configures Claude Desktop through a stdio bridge"
+
+    # 5g. Context7 is always user level; the key never reaches the output or
+    #     the project, and the user files holding it are private.
+    out="$(PATH="$BIN_PATH" bash "$INSTALL" mcp-context7 --agents claude,codex,opencode,junie,claude-desktop \
+        --context7-key ctx7sk-TESTKEY 2>&1)" || fail "mcp-context7: non-zero exit"
+    case "$out" in *TESTKEY*) fail "mcp-context7: the API key was printed" ;; esac
+    grep -qF -- '--scope user --transport http context7 https://mcp.context7.com/mcp --header Authorization: Bearer ctx7sk-TESTKEY' \
+        "${WORK}/claude.log" || fail "mcp-context7: wrong claude mcp add arguments"
+    grep -qF 'http_headers = { Authorization = "Bearer ctx7sk-TESTKEY" }' "${HOME}/.codex/config.toml" \
+        || fail "mcp-context7: Codex user config entry wrong"
+    jq -e '.mcp.context7.headers.Authorization == "Bearer ctx7sk-TESTKEY"' "${HOME}/.config/opencode/opencode.json" >/dev/null \
+        || fail "mcp-context7: OpenCode user config entry wrong"
+    jq -e '.mcpServers.context7.env.CONTEXT7_API_KEY == "ctx7sk-TESTKEY"' "${HOME}/.junie/mcp/mcp.json" >/dev/null \
+        || fail "mcp-context7: Junie user config entry wrong"
+    jq -e '.mcpServers.context7.env.CONTEXT7_API_KEY == "ctx7sk-TESTKEY" and .preferences.keep == true' \
+        "${DESKTOP_DIR}/claude_desktop_config.json" >/dev/null || fail "mcp-context7: Claude Desktop entry wrong"
+    ! grep -rq TESTKEY "$MCP_PROJ" || fail "mcp-context7: the API key landed in the project"
+    for f in "${HOME}/.codex/config.toml" "${HOME}/.config/opencode/opencode.json" "${HOME}/.junie/mcp/mcp.json"; do
+        [ "$(file_mode "$f")" = 600 ] || fail "mcp-context7: ${f} holds the key but is not 0600"
+    done
+    if bash "$INSTALL" mcp-context7 --agents codex --context7-key 'bad"key' >/dev/null 2>&1; then
+        fail "mcp-context7: a key with a quote should be rejected"
+    fi
+    pass "mcp-context7 registers every agent at user level without printing the key"
+
+    # 5h. Playwright MCP, local scope; links and store of the old playwright-cli
+    #     skill go away, foreign skills stay.
+    mkdir -p "${HOME}/.agents/.playwright/skills/playwright-cli" "${HOME}/.claude/skills/my-skill"
+    ln -s ../../.agents/.playwright/skills/playwright-cli "${HOME}/.claude/skills/playwright-cli"
+    PATH="$BIN_PATH" bash "$INSTALL" playwright --agents claude,codex,opencode,junie --scope local >/dev/null \
+        || fail "playwright(local): non-zero exit"
+    jq -e '.mcpServers.playwright == {"type":"stdio","command":"npx","args":["-y","@playwright/mcp@latest"]}' .mcp.json >/dev/null \
+        || fail "playwright(local): Claude entry wrong"
+    grep -q '^args = \["-y", "@playwright/mcp@latest"\]$' .codex/config.toml || fail "playwright(local): Codex entry wrong"
+    jq -e '.mcp.playwright.command == ["npx","-y","@playwright/mcp@latest"]' opencode.json >/dev/null \
+        || fail "playwright(local): OpenCode entry wrong"
+    jq -e '.mcpServers.playwright.args == ["-y","@playwright/mcp@latest"]' .junie/mcp/mcp.json >/dev/null \
+        || fail "playwright(local): Junie entry wrong"
+    [ ! -e "${HOME}/.claude/skills/playwright-cli" ] && [ ! -L "${HOME}/.claude/skills/playwright-cli" ] \
+        && [ ! -e "${HOME}/.agents/.playwright" ] || fail "playwright: old playwright-cli skill not removed"
+    [ -d "${HOME}/.claude/skills/my-skill" ] || fail "playwright: removed a foreign skill"
+    pass "playwright registers the MCP server locally and removes the old CLI skill"
+
+    PATH="$BIN_PATH" bash "$INSTALL" playwright --agents claude --scope global >/dev/null \
+        || fail "playwright(global): non-zero exit"
+    grep -qF -- '--scope user playwright -- npx -y @playwright/mcp@latest' "${WORK}/claude.log" \
+        || fail "playwright(global): wrong claude mcp add arguments"
+    out="$(PATH=/usr/bin:/bin bash "$INSTALL" playwright --agents claude --scope global 2>&1)" \
+        || fail "playwright(global): a missing claude CLI should be a skip, not a failure"
+    case "$out" in *"Skipped: 'claude' CLI not found"*) ;; *) fail "playwright(global): no skip message" ;; esac
+    pass "playwright(global) goes through the claude CLI and skips without it"
+
+    if bash "$INSTALL" playwright --agents codex --scope nowhere >/dev/null 2>&1; then
+        fail "playwright: an invalid --scope should fail"
+    fi
+    pass "playwright rejects an invalid --scope"
+
+    # 5i. Codex merges the user and project tables key by key and refuses a
+    #     url+command mix: the other layer is brought to the same transport.
+    rm -rf .codex
+    printf '[mcp_servers.jetbrains]\ncommand = "java"\nargs = ["-cp", "x"]\n' > "${HOME}/.codex/config.toml.jb"
+    cat "${HOME}/.codex/config.toml" >> "${HOME}/.codex/config.toml.jb"
+    mv "${HOME}/.codex/config.toml.jb" "${HOME}/.codex/config.toml"
+    PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents codex --scope local >/dev/null \
+        || fail "mcp-jetbrains: non-zero exit with a stdio jetbrains entry at user level"
+    awk '/^\[mcp_servers.jetbrains\]/{f=1;next} /^\[/{f=0} f' "${HOME}/.codex/config.toml" > "${WORK}/jb-user"
+    grep -q '^url = "http://127.0.0.1:9/stream"$' "${WORK}/jb-user" && ! grep -q '^command' "${WORK}/jb-user" \
+        || fail "mcp-jetbrains: user-level Codex jetbrains not aligned with the project's transport"
+    grep -q 'Authorization = "Bearer ctx7sk-TESTKEY"' "${HOME}/.codex/config.toml" \
+        || fail "mcp-jetbrains: aligning the user layer lost its other servers"
+    pass "mcp-jetbrains aligns the transport of the other Codex layer"
+
+    printf '[mcp_servers.context7]\ncommand = "npx"\n' > .codex/config.toml
+    if bash "$INSTALL" mcp-context7 --agents codex --context7-key ctx7sk-TESTKEY >/dev/null 2>&1; then
+        fail "mcp-context7: a project stdio context7 next to the user url entry should fail the step"
+    fi
+    ! grep -q TESTKEY .codex/config.toml || fail "mcp-context7: the key was written into the project"
+    rm -rf .codex
+    pass "mcp-context7 refuses to align a project table with the key"
+
+    # 5j. A table is replaced where it stands: the order and the comment that
+    #     introduces the next table stay, and alternating steps converge.
+    mkdir -p .codex
+    printf '[mcp_servers.jetbrains]\nurl = "old"\n\n# my own server\n[mcp_servers.mine]\nurl = "http://mine"\n' > .codex/config.toml
+    PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents codex >/dev/null || fail "toml: non-zero exit"
+    [ "$(sed -n 1p .codex/config.toml)" = '[mcp_servers.jetbrains]' ] || fail "toml: replaced table moved"
+    grep -q '^# my own server$' .codex/config.toml || fail "toml: comment before the next table lost"
+    PATH="$BIN_PATH" bash "$INSTALL" playwright --agents codex >/dev/null || fail "toml: playwright non-zero exit"
+    cp .codex/config.toml "${WORK}/c3"
+    out="$(PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents codex; PATH="$BIN_PATH" bash "$INSTALL" playwright --agents codex)"
+    cmp -s .codex/config.toml "${WORK}/c3" || fail "toml: alternating steps keep rewriting config.toml"
+    case "$out" in *"Updated: "*) fail "toml: an unchanged config.toml was reported as updated" ;; esac
+    pass "toml tables are replaced in place and re-runs converge"
+
+    # 5k. A root inline mcp_servers table is refused; a BOM before the first
+    #     header does not duplicate the table.
+    printf 'mcp_servers = { jetbrains = { url = "x" } }\n' > .codex/config.toml
+    cp .codex/config.toml "${WORK}/c4"
+    if PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents codex >/dev/null 2>&1; then
+        fail "toml: a root inline mcp_servers table should fail the step"
+    fi
+    cmp -s .codex/config.toml "${WORK}/c4" || fail "toml: root inline table was modified"
+    printf '\357\273\277[mcp_servers.jetbrains]\nurl = "old"\n' > .codex/config.toml
+    PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents codex >/dev/null || fail "toml: BOM file non-zero exit"
+    [ "$(grep -c 'mcp_servers.jetbrains' .codex/config.toml)" -eq 1 ] || fail "toml: BOM header duplicated the table"
+    [ "$(head -c 3 .codex/config.toml)" = $'\xef\xbb\xbf' ] || fail "toml: leading BOM lost"
+    rm -rf .codex
+    pass "toml refuses inline definitions and handles a leading BOM"
+
+    # 5l. An unreadable config is reported and kept, never replaced.
+    if [ "$(id -u)" != 0 ]; then
+        printf '{"mcpServers": {"mine": {"command": "keep-me"}}}' > .mcp.json
+        chmod 000 .mcp.json
+        if PATH="$BIN_PATH" bash "$INSTALL" playwright --agents claude >/dev/null 2>&1; then
+            fail "json: an unreadable .mcp.json should fail the step"
+        fi
+        chmod 644 .mcp.json
+        grep -q keep-me .mcp.json || fail "json: an unreadable .mcp.json was replaced"
+        rm -f .mcp.json
+        pass "an unreadable config is kept and fails the step"
+    fi
+
+    # 5m. Without jq and node a new JSON config is still created (no merge
+    #     needed), and a re-run finds it unchanged.
+    mkdir -p "${WORK}/minbin"
+    for tool in awk sed grep mktemp cmp chmod mv cat dirname basename head tail tr rm mkdir uname cut stat cp ln readlink id; do
+        p="$(command -v "$tool" 2>/dev/null)" && ln -sf "$p" "${WORK}/minbin/${tool}"
+    done
+    mkdir -p "${WORK}/nojq" && cd "${WORK}/nojq"
+    PATH="${WORK}/minbin" /bin/bash "$INSTALL" mcp-jetbrains --agents claude,opencode >/dev/null \
+        || fail "json: creating configs without jq/node failed"
+    jq -e '.mcpServers.jetbrains.url == "http://127.0.0.1:9/stream"' .mcp.json >/dev/null \
+        && jq -e '.mcp.jetbrains.type == "remote"' opencode.json >/dev/null || fail "json: configs created without jq/node are wrong"
+    out="$(PATH="${WORK}/minbin" /bin/bash "$INSTALL" mcp-jetbrains --agents claude,opencode)" \
+        || fail "json: re-run without jq/node failed"
+    case "$out" in *"Updated: "*|*"Created: "*) fail "json: re-run without jq/node rewrote a config" ;; esac
+    cd "$MCP_PROJ"
+    pass "JSON configs are created and re-checked without jq or node"
+
+    # 5n. An existing user config that gets the Context7 key ends up private.
+    chmod 644 "${HOME}/.config/opencode/opencode.json"
+    bash "$INSTALL" mcp-context7 --agents opencode --context7-key ctx7sk-TESTKEY >/dev/null || fail "mcp-context7: re-run failed"
+    [ "$(file_mode "${HOME}/.config/opencode/opencode.json")" = 600 ] \
+        || fail "mcp-context7: a 0644 opencode.json kept its mode after getting the key"
+    pass "mcp-context7 makes an existing user config private"
+
+    # 5o. The old-store cleanup leaves other links alone and does not stop
+    #     the step when the store cannot be removed.
+    mkdir -p "${HOME}/.agents/.playwright/skills/playwright-cli" "${WORK}/x.playwright/skills/mine"
+    ln -s "${WORK}/x.playwright/skills/mine" "${HOME}/.claude/skills/mine"
+    if [ "$(id -u)" != 0 ]; then
+        touch "${HOME}/.agents/.playwright/skills/playwright-cli/SKILL.md"
+        chmod 555 "${HOME}/.agents/.playwright/skills/playwright-cli"
+    fi
+    PATH="$BIN_PATH" bash "$INSTALL" playwright --agents junie >/dev/null 2>&1 \
+        || fail "playwright: an unremovable old store stopped the step"
+    [ -L "${HOME}/.claude/skills/mine" ] || fail "playwright: removed a link that is not into the old store"
+    chmod -R u+w "${HOME}/.agents/.playwright" 2>/dev/null || true
+    rm -rf "${HOME}/.agents/.playwright" "${HOME}/.claude/skills/mine"
+    pass "playwright cleanup touches only links into the old store and never blocks"
+
+    # 5p. Misc: a bad port is refused up front, --source is accepted, and the
+    #     Claude Desktop restart reminder appears only when it was written.
+    if JMIX_IDE_MCP_PORT='9"x' bash "$INSTALL" mcp-jetbrains --agents codex >/dev/null 2>&1; then
+        fail "a JMIX_IDE_MCP_PORT that is not a number should fail"
+    fi
+    PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents codex --source "$SOURCE" >/dev/null \
+        || fail "mcp-jetbrains: --source should be accepted"
+    rm -rf "$DESKTOP_DIR"
+    out="$(PATH="$BIN_PATH" bash "$INSTALL" playwright --agents claude-desktop)"
+    case "$out" in *"Quit Claude Desktop"*) fail "restart reminder printed for a skipped Claude Desktop" ;; esac
+    pass "port validation, --source and the Claude Desktop reminder"
+    cd "$PROJECT"
 else
-    echo "skip: jq not found, skipping OpenCode MCP assertions"
+    echo "skip: jq not found, skipping MCP assertions"
 fi
 
 # ---------------------------------------------------------------------------

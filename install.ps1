@@ -6,28 +6,31 @@
     Default invocation (no subcommand) launches an interactive wizard that
     guides through:
       1. Installing Jmix skills (globally or into the project) for one or all agents.
-      2. Adding project-level guidelines (CLAUDE.md / AGENTS.md / .junie\guidelines.md).
+      2. Adding project-level guidelines (CLAUDE.md / AGENTS.md).
       3. Registering the JetBrains MCP server with the agent.
       4. Registering the Context7 MCP server with the agent.
-      5. Installing Playwright testing skills (requires npx).
+      5. Registering the Playwright MCP server with the agent.
 
     Subcommands are available for non-interactive use:
       install.ps1 skills        -Agents CSV [-Scope global|local]
                                 Installs skills into a canonical store once, then symlinks each
                                 selected agent's skills dir to that store.
       install.ps1 agents-md     -Agents CSV
-      install.ps1 mcp-jetbrains -Agents CSV
-      install.ps1 mcp-context7  -Agents CSV [-Context7Key KEY]
-      install.ps1 playwright    -Agents CSV   # requires npx (Node.js) on PATH
+      install.ps1 mcp-jetbrains -Agents CSV [-Scope local|global]
+      install.ps1 mcp-context7  -Agents CSV [-Context7Key KEY]   # always user level
+      install.ps1 playwright    -Agents CSV [-Scope local|global]
+
+    MCP servers are written straight into each agent's config file; no agent
+    CLI is needed except for Claude CLI at user level (`claude mcp add`).
 
     Add -BackupExistingFiles to any subcommand to rename overwritten files/dirs
     to <name>.bak (deduped: .bak, .bak1, .bak2, ...) instead of deleting them.
-    Project guidelines (CLAUDE.md / AGENTS.md / guidelines.md) are merged
-    rather than overwritten and are not covered by this switch: a backup is
-    made only when the toolkit rewrites content it does not own -- replacing a
-    guidelines file an older toolkit version installed, or appending to your
-    own file. Replacing only the marked region never makes a backup, and a
-    file that is already up to date is left untouched.
+    Project guidelines (CLAUDE.md / AGENTS.md) are merged rather than
+    overwritten and are not covered by this switch: a backup is made only when
+    the toolkit rewrites content it does not own -- replacing a guidelines file
+    an older toolkit version installed, or adding the block to your own file.
+    Replacing only the marked region never makes a backup, and a file that is
+    already up to date is left untouched.
 
 .PARAMETER Subcommand
     Optional subcommand. When omitted, the interactive wizard is started.
@@ -43,15 +46,23 @@
 .PARAMETER Agents
     Comma-separated list of agents (e.g. "claude,codex"). Single value is also
     accepted (e.g. "claude"). Required by every subcommand. Valid values:
-    claude, codex, opencode, junie.
+    claude, codex, opencode, junie; the MCP subcommands (mcp-jetbrains,
+    mcp-context7, playwright) also accept claude-desktop.
 
 .PARAMETER Scope
-    Skills install scope: "global" (default) writes to the per-agent user-home
-    dir; "local" writes to the matching dir under the current project (e.g.
-    .\.claude\skills). Applies to the `skills` subcommand.
+    skills: "global" (default) writes to the per-agent user-home dir; "local"
+    writes to the matching dir under the current project (e.g.
+    .\.claude\skills).
+    mcp-jetbrains / playwright: "local" (default) writes the project files in
+    the current directory (.mcp.json, .codex\config.toml, opencode.json,
+    .junie\mcp\mcp.json); "global" writes the user-level config of each agent.
+    Claude Desktop has only a user-level config and ignores the scope.
+    Not accepted by mcp-context7.
 
 .PARAMETER Context7Key
     Context7 API key (mcp-context7). Prompted interactively when missing.
+    Context7 is always registered at user level, so the key never lands in
+    project files. Letters, digits, '.', '_' and '-' only.
 
 .PARAMETER BackupExistingFiles
     When set, an existing destination file or folder is renamed to a deduped
@@ -60,8 +71,13 @@
     guidelines are merged rather than overwritten and are not covered by this
     switch: a backup is made only when the toolkit rewrites content it does
     not own -- replacing a guidelines file an older toolkit version installed,
-    or appending to your own file. Replacing only the marked region never
-    makes a backup, and a file that is already up to date is left untouched.
+    or adding the block to your own file. Replacing only the marked region
+    never makes a backup, and a file that is already up to date is left
+    untouched.
+
+.NOTES
+    Environment: JMIX_IDE_MCP_PORT sets the port of the IntelliJ IDEA MCP
+    server (default 64342).
 
 .EXAMPLE
     Invoke-RestMethod https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/HEAD/install.ps1 | Invoke-Expression
@@ -90,9 +106,21 @@ Set-StrictMode -Version Latest
 $script:RepoOwner = 'jmix-framework'
 $script:RepoName  = 'jmix-agent-toolkit'
 
-$script:AllAgents       = @('claude', 'codex', 'opencode', 'junie')
-$script:JetbrainsAgents = @('claude', 'codex', 'opencode', 'junie')
-$script:Context7Agents  = @('claude', 'codex', 'opencode', 'junie')
+$script:AllAgents = @('claude', 'codex', 'opencode', 'junie')
+# MCP steps also configure Claude Desktop, which takes MCP servers but no skills.
+$script:McpAgents = @('claude', 'codex', 'opencode', 'junie', 'claude-desktop')
+
+# IntelliJ IDEA's MCP server listens on 127.0.0.1 only. Its default port is
+# 64342; another JetBrains IDE started first moves it, hence the override.
+$script:JbPort = if ($env:JMIX_IDE_MCP_PORT) { $env:JMIX_IDE_MCP_PORT } else { '64342' }
+# 'stream' (IntelliJ 2026.1+) or 'sse' (2025.2/2025.3); see Resolve-JetbrainsTransport.
+$script:JbTransport = 'stream'
+$script:Context7Url = 'https://mcp.context7.com/mcp'
+$script:PlaywrightMcpPkg = '@playwright/mcp@latest'
+# Set by any MCP agent step that fails; the MCP subcommands then exit 1.
+$script:McpFailed = $false
+# True while writing entries that carry the Context7 key; see Save-McpConfig.
+$script:McpPrivate = $false
 
 $script:TarballReady     = $false
 $script:Staging          = $null
@@ -101,6 +129,12 @@ $script:SourceSkillsDir  = $null
 $script:SourceGuidelinesBlock = $null
 $script:ResolvedVersionDir = $null
 $script:IsWindowsHost    = ($env:OS -eq 'Windows_NT')
+# The profile folder the agents keep their user configs in. Windows PowerShell
+# 5.1's $HOME is HOMEDRIVE+HOMEPATH, a mapped drive on some domain machines.
+# USERPROFILE (what Node-based agents read) comes first, so it can be redirected.
+$script:UserHome = if ($script:IsWindowsHost -and $env:USERPROFILE) { $env:USERPROFILE }
+                   else { [Environment]::GetFolderPath('UserProfile') }
+if (-not $script:UserHome) { $script:UserHome = $HOME }
 
 # =================================================================
 # Helpers
@@ -125,6 +159,7 @@ function Write-EnvDiagnostics {
     Write-Verbose "os: $([System.Environment]::OSVersion.VersionString)"
     Write-Verbose "pwd: $((Get-Location).Path)"
     Write-Verbose "HOME: $HOME"
+    Write-Verbose "profile: $($script:UserHome)"
     Write-Verbose "PSVersion: $($PSVersionTable.PSVersion)"
     foreach ($tool in 'git', 'node', 'npx') {
         $cmd = Get-Command $tool -ErrorAction SilentlyContinue
@@ -132,32 +167,24 @@ function Write-EnvDiagnostics {
     }
 }
 
-function Write-ErrAndExit {
+function Write-Err {
     param([string]$Message)
     [Console]::Error.WriteLine("error: $Message")
+}
+
+function Write-ErrAndExit {
+    param([string]$Message)
+    Write-Err $Message
     exit 1
 }
 
-# Returns $true when the agent's CLI is on PATH. Otherwise prints a skip notice and
-# returns $false so the caller can move on without aborting the run -- other selected
-# agents (and other wizard steps) still proceed. Use for optional, per-agent CLIs.
-function Test-AgentCli {
-    param([string]$Tool, [string]$Label)
-    if (Get-Command $Tool -ErrorAction SilentlyContinue) { return $true }
-    # Write-Host (not Write-Info/Write-Output): the caller consumes the return value in a
-    # boolean test, so success-stream output would be captured into it and flip the result.
-    Write-Host "  Skipping ${Label}: '$Tool' CLI not found on PATH. Install it and re-run."
-    return $false
-}
-
-# Ensures npx (Node.js) is on PATH. When missing, prints install guidance and
-# exits (no automatic runtime install).
-function Assert-Npx {
+# MCP servers started through npx need Node.js on the machine the agent runs
+# on, not at install time, so a missing npx is only a note.
+function Write-NpxNote {
+    param([string]$What)
     if (Get-Command npx -ErrorAction SilentlyContinue) { return }
-    Write-Info 'npx (Node.js) is required for the Playwright step but was not found on PATH.'
-    Write-Info 'Install Node.js (includes npx), then re-run:'
-    Write-Info '  Windows: winget install OpenJS.NodeJS   (or download from https://nodejs.org)'
-    Write-ErrAndExit 'npx not available on PATH'
+    Write-Info ''
+    Write-Info "Note: $What starts through npx, which is not on PATH here. Install Node.js 20+ (https://nodejs.org) before using it."
 }
 
 function Read-Prompt {
@@ -191,6 +218,7 @@ function Get-AgentLabel {
         'codex'    { 'Codex' }
         'opencode' { 'OpenCode' }
         'junie'    { 'Junie' }
+        'claude-desktop' { 'Claude Desktop' }
         default    { $Agent }
     }
 }
@@ -236,20 +264,21 @@ function Write-Dest {
     }
 }
 
+# $Valid - the agents the subcommand accepts (defaults to $script:AllAgents).
 function Resolve-AgentsCsv {
     param(
         [string]$Csv,
-        [string]$Subcommand
+        [string]$Subcommand,
+        [string[]]$Valid = $script:AllAgents
     )
     if ([string]::IsNullOrWhiteSpace($Csv)) {
         Write-ErrAndExit "${Subcommand}: -Agents is required (e.g. -Agents claude,codex)"
     }
-    $known = @('claude', 'codex', 'opencode', 'junie')
     $tokens = $Csv -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
     $resolved = @()
     foreach ($t in $tokens) {
-        if ($known -notcontains $t) {
-            Write-ErrAndExit "unknown agent in -Agents: '$t'"
+        if ($Valid -notcontains $t) {
+            Write-ErrAndExit "${Subcommand}: unknown agent in -Agents: '$t' (valid: $($Valid -join ','))"
         }
         $resolved += $t
     }
@@ -338,13 +367,15 @@ function Initialize-Tarball {
 # skills install (global, per agent)
 # =================================================================
 
+# Validates -Scope. $Default applies when it is empty: 'global' for skills,
+# 'local' for mcp-jetbrains and playwright.
 function Resolve-Scope {
-    param([string]$Scope)
-    if ([string]::IsNullOrWhiteSpace($Scope)) { return 'global' }
+    param([string]$Scope, [string]$Default = 'global', [string]$Subcommand = 'skills')
+    if ([string]::IsNullOrWhiteSpace($Scope)) { return $Default }
     switch ($Scope) {
         'global' { return 'global' }
         'local'  { return 'local' }
-        default  { Write-ErrAndExit "skills: -Scope must be 'global' or 'local' (got '$Scope')" }
+        default  { Write-ErrAndExit "${Subcommand}: -Scope must be 'global' or 'local' (got '$Scope')" }
     }
 }
 
@@ -354,9 +385,27 @@ function Get-AgentSymlinkRel {
         'claude'   { '.claude/skills' }
         'codex'    { '.agents/skills' }
         'opencode' { '.agents/skills' }
-        'junie'    { '.junie/skills' }
+        'junie'    { '.agents/skills' }
         default    { throw "unknown agent '$Agent'" }
     }
+}
+
+# Earlier versions also linked the skills into .junie/skills. Junie reads
+# .agents/skills now, and its CLI reads ~/.junie/skills first, so links left
+# there would shadow newer skills: the toolkit's own links are removed.
+function Remove-OldJunieSkillLinks {
+    param([string]$Root)
+    $dir = Join-Path $Root '.junie/skills'
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return }
+    foreach ($item in Get-ChildItem -LiteralPath $dir -Force) {
+        if (-not $item.LinkType -or $item.Name -notmatch '^jmix(-|$)') { continue }
+        # Only links into a toolkit store: ~/.agents/.jmix/skills/... or <project>/.skills/...
+        $target = [string](@($item.Target) | Select-Object -First 1)
+        if ($target -notmatch '(?:^|[\\/])(?:\.agents[\\/]\.jmix[\\/]skills|\.skills)[\\/].') { continue }
+        Remove-Link -Item $item
+        Write-Info "  Removed old Junie skill link $($item.FullName)"
+    }
+    if (-not (Get-ChildItem -LiteralPath $dir -Force)) { [System.IO.Directory]::Delete($dir, $false) }
 }
 
 # Prints remediation guidance for enabling symbolic-link creation.
@@ -432,13 +481,27 @@ function Clear-DanglingSymlink {
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
     if ($null -eq $item -or -not $item.LinkType) { return }
     $target = @($item.Target) | Select-Object -First 1
-    if ($target -and (Test-Path -LiteralPath $target)) { return }
+    if ($target -and (Test-Path -LiteralPath (Resolve-LinkTarget -Link $item.FullName -Target $target))) { return }
     if ($BackupExistingFiles) {
         Rename-Item -LiteralPath $Path -NewName (Get-DedupBackupName -Path $Path) -ErrorAction SilentlyContinue
     }
-    if (Test-Path -LiteralPath $Path) {
-        Remove-Item -LiteralPath $Path -Force -Recurse -ErrorAction SilentlyContinue
-    }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($item) { Remove-Link -Item $item }
+}
+
+# The full path link $Link's target $Target names: a relative target is
+# relative to the link's own folder; an absolute one is kept as is.
+function Resolve-LinkTarget {
+    param([string]$Link, [string]$Target)
+    return [System.IO.Path]::GetFullPath([System.IO.Path]::Combine((Split-Path -Parent $Link), $Target))
+}
+
+# Deletes link $Item itself, never what it points to: Remove-Item -Recurse
+# could reach through it.
+function Remove-Link {
+    param([System.IO.FileSystemInfo]$Item)
+    if ($Item.PSIsContainer) { [System.IO.Directory]::Delete($Item.FullName, $false) }
+    else { [System.IO.File]::Delete($Item.FullName) }
 }
 
 # Per-skill symlinks: link each store skill folder into the agent skills dir,
@@ -486,6 +549,7 @@ function Invoke-CmdSkills {
         Write-ChangeMarker -Action $(if ($agentDirExisted) { 'updated' } else { 'created' }) -Type 'dir' -Path $agentDir
         Write-Info "  Linked skills into $agentDir"
     }
+    Remove-OldJunieSkillLinks -Root $root
 
     Write-Info ''
     Write-Info "Done. Installed $resolvedScope skills store at $storeDir and linked: $($agents -join ', ')"
@@ -502,8 +566,24 @@ function Get-AgentsMdDest {
         'claude'   { Join-Path $proj 'CLAUDE.md' }
         'codex'    { Join-Path $proj 'AGENTS.md' }
         'opencode' { Join-Path $proj 'AGENTS.md' }
-        'junie'    { Join-Path $proj '.junie/guidelines.md' }
+        'junie'    { Join-Path $proj 'AGENTS.md' }
         default    { throw "unknown agent '$Agent'" }
+    }
+}
+
+# Codex reads AGENTS.override.md instead of AGENTS.md in the same dir, and only
+# the first 32 KiB (project_doc_max_bytes) of its project docs. Notes when
+# either keeps the block in AGENTS.md $AgentsMd from Codex.
+function Write-CodexBlockNotes {
+    param([string]$AgentsMd)
+    $dir = Split-Path -Parent $AgentsMd
+    if (Test-Path -LiteralPath (Join-Path $dir 'AGENTS.override.md')) {
+        Write-Info "  Note: Codex reads $(Join-Path $dir 'AGENTS.override.md') instead of AGENTS.md there, so it does not see the Jmix block. Copy the block into it."
+    }
+    # Byte-preserving text: a char index is a byte offset.
+    $end = (Get-FileTextRaw -Path $AgentsMd).LastIndexOf($script:BlockEnd, [System.StringComparison]::Ordinal)
+    if ($end -ge 0 -and $end + $script:BlockEnd.Length -gt 32768) {
+        Write-Info '  Note: Codex reads only the first 32 KiB of AGENTS.md, and the Jmix block ends past that. Move the block (with its markers) to the top.'
     }
 }
 
@@ -516,10 +596,14 @@ $script:BlockEnd   = '<!-- END jmix-agent-toolkit -->'
 # to one code point and back, so marker splicing never decodes or re-encodes the
 # developer's file. The UTF-8 bytes of guidelines-block.md also pass unchanged.
 $script:BytePreservingEncoding = [System.Text.Encoding]::GetEncoding(28591)
+# A UTF-8 BOM as Get-FileTextRaw represents it.
+$script:RawBom = [char]0x00EF + [char]0x00BB + [char]0x00BF
 
+# Reads bytes, not text: File.ReadAllText would honour a BOM, drop it and
+# decode the rest as UTF-8, which Set-FileTextRaw could not write back.
 function Get-FileTextRaw {
     param([string]$Path)
-    return [System.IO.File]::ReadAllText($Path, $script:BytePreservingEncoding)
+    return $script:BytePreservingEncoding.GetString([System.IO.File]::ReadAllBytes($Path))
 }
 
 # Writes the exact bytes represented by Get-FileTextRaw.
@@ -535,22 +619,61 @@ function Set-FileTextRaw {
 # failed run never leaves a stray temp file in the developer's project.
 # A symlinked $Dest (e.g. CLAUDE.md -> AGENTS.md) is written through instead, so
 # the link itself survives -- Move-Item would replace it with a plain file.
+# On Unix an existing $Dest keeps its permission bits, and a new one is 0600
+# with -Private (it may hold an API key); Windows keeps the folder's ACL.
 function Set-FileTextAtomic {
-    param([string]$Dest, [string]$Text)
+    param([string]$Dest, [string]$Text, [string]$TempPrefix = '.jmix-guidelines.', [switch]$Private)
     $destItem = Get-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
     if ($destItem -and $destItem.LinkType) {
+        if ($script:McpPrivate) { Protect-OwnerOnly -Path $Dest }
         Set-FileTextRaw -Path $Dest -Text $Text
         return
     }
     $destDir = Split-Path -Parent $Dest
-    $tmp = Join-Path $destDir (".jmix-guidelines." + [guid]::NewGuid().ToString('N'))
+    $tmp = Join-Path $destDir ($TempPrefix + [guid]::NewGuid().ToString('N'))
     try {
+        # The temp file gets its final mode while still empty: the text may
+        # hold an API key.
+        [System.IO.File]::WriteAllBytes($tmp, [byte[]]@())
+        $modeFrom = if ($destItem) { $Dest } else { '' }
+        Copy-UnixFileMode -From $modeFrom -To $tmp -Private:$Private
         Set-FileTextRaw -Path $tmp -Text $Text
         Move-Item -LiteralPath $tmp -Destination $Dest -Force -ErrorAction Stop
     } catch {
         Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
         throw
     }
+}
+
+# Unix file modes need .NET 7+ (pwsh 7.3+); elsewhere files keep the default
+# mode, and Windows keeps the folder's ACL.
+function Test-UnixFileModeApi {
+    return (-not $script:IsWindowsHost -and
+            $null -ne [System.IO.File].GetMethod('GetUnixFileMode', [type[]]@([string])))
+}
+
+# rwx for the owner, nothing for group and others (0700), and rw- (0600).
+$script:OwnerBits = 448
+$script:OwnerReadWrite = 384
+
+# Gives $To (a temp file, which starts with the umask's mode) the mode of
+# $From, or 0600 when there is no $From and -Private is set. While
+# $script:McpPrivate is set the result is narrowed to the owner.
+function Copy-UnixFileMode {
+    param([string]$From, [string]$To, [switch]$Private)
+    if (-not (Test-UnixFileModeApi)) { return }
+    if ($From) { $mode = [int][System.IO.File]::GetUnixFileMode($From) }
+    elseif ($Private) { $mode = $script:OwnerReadWrite }
+    else { return }
+    if ($script:McpPrivate) { $mode = $mode -band $script:OwnerBits }
+    [System.IO.File]::SetUnixFileMode($To, $mode)
+}
+
+# chmod go-rwx: leaves $Path (or what it links to) usable by its owner only.
+function Protect-OwnerOnly {
+    param([string]$Path)
+    if (-not (Test-UnixFileModeApi)) { return }
+    [System.IO.File]::SetUnixFileMode($Path, [int][System.IO.File]::GetUnixFileMode($Path) -band $script:OwnerBits)
 }
 
 # Returns @{ Start; End } for a well-formed toolkit region in $Text, or $null.
@@ -606,7 +729,8 @@ $script:LegacySkillNamesRe = 'jmix-(add-dialog-detail-flow|add-entity-event-list
 # toolkit's section headings or skill names.
 function Test-LegacyGuidelines {
     param([string]$Text)
-    $first = ($Text -split "`r?`n" | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1)
+    $body  = if ($Text.StartsWith($script:RawBom, [System.StringComparison]::Ordinal)) { $Text.Substring($script:RawBom.Length) } else { $Text }
+    $first = ($body -split "`r?`n" | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1)
     if ($first -cne '# Agent Instructions' -and $first -cne '# Coding Guidelines' -and $first -cne '# Jmix Coding Guidelines') { return $false }
     # -cmatch (case-sensitive): install.sh's grep is case-sensitive by default too,
     # so this stays in step with it for mixed-case content.
@@ -627,28 +751,34 @@ function Test-ClaudeMdCoveredByAgentsMd {
     if ($null -eq (Get-BlockRange -Text (Get-FileTextRaw -Path $agentsMd))) { return $false }
     $item = Get-Item -LiteralPath $ClaudeMd -Force
     if ($item.LinkType -and $item.Target) {
-        # A link target is relative to the link's directory or absolute; Combine
-        # keeps an absolute second argument as is.
-        $target   = @($item.Target)[0]
-        $resolved = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $target))
+        $resolved = Resolve-LinkTarget -Link $ClaudeMd -Target @($item.Target)[0]
         if ($resolved -eq [System.IO.Path]::GetFullPath($agentsMd)) { return $true }
     }
     return ((Get-FileTextRaw -Path $ClaudeMd) -cmatch '(?m)(^|\s)@(\./)?AGENTS\.md(\s|$)')
 }
 
-# Installs the toolkit-managed block into the agent's project guidelines file.
+# Installs the block for agent $Agent, then checks what could still hide it
+# from the agent (see the helpers above).
+function Install-GuidelinesBlockFor {
+    param([string]$Agent)
+    $dest = Get-AgentsMdDest -Agent $Agent
+    Write-GuidelinesBlock -Agent $Agent -Dest $dest
+    if ($Agent -eq 'codex') { Write-CodexBlockNotes -AgentsMd $dest }
+}
+
+# Writes the toolkit-managed block for $Agent into project guidelines file $Dest.
 # Four branches, in order, plus an early exit for a destination path that exists
 # but is not a file (e.g. CLAUDE.md is a directory) -- there is nothing to merge
 # into, so this reports an error and exits rather than attempting anything else:
 #   1. no file             -> write the block alone
 #   2. markers present     -> replace only that region, no backup
 #   3. legacy toolkit file -> back up, replace whole file
-#   4. anything else       -> back up, append the block, keep everything they wrote
+#   4. anything else       -> back up, add the block, keep everything they wrote
+#                             (see Get-GuidelinesWithBlockAdded)
 # Before 2-4, a CLAUDE.md that already gets the block through AGENTS.md (see
 # Test-ClaudeMdCoveredByAgentsMd) is skipped.
-function Install-GuidelinesBlockFor {
-    param([string]$Agent)
-    $dest  = Get-AgentsMdDest -Agent $Agent
+function Write-GuidelinesBlock {
+    param([string]$Agent, [string]$Dest)
     $label = Get-AgentLabel -Agent $Agent
 
     if (-not (Test-Path -LiteralPath $script:SourceGuidelinesBlock)) {
@@ -656,28 +786,28 @@ function Install-GuidelinesBlockFor {
     }
     $block = Get-FileTextRaw -Path $script:SourceGuidelinesBlock
 
-    $destDir = Split-Path -Parent $dest
+    $destDir = Split-Path -Parent $Dest
     if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
 
-    if (-not (Test-Path -LiteralPath $dest)) {
-        Set-FileTextRaw -Path $dest -Text $block
-        Write-Info "  Installed: $dest"
-        Write-ChangeMarker -Action 'created' -Type 'file' -Path $dest
+    if (-not (Test-Path -LiteralPath $Dest)) {
+        Set-FileTextRaw -Path $Dest -Text $block
+        Write-Info "  Installed: $Dest"
+        Write-ChangeMarker -Action 'created' -Type 'file' -Path $Dest
         Write-Info "  Project guidelines installed for $label"
         return
     }
 
-    if (-not (Test-Path -LiteralPath $dest -PathType Leaf)) {
-        Write-ErrAndExit "cannot merge guidelines into $dest`: it exists but is not a file"
+    if (-not (Test-Path -LiteralPath $Dest -PathType Leaf)) {
+        Write-ErrAndExit "cannot merge guidelines into $Dest`: it exists but is not a file"
     }
 
-    if ($Agent -eq 'claude' -and (Test-ClaudeMdCoveredByAgentsMd -ClaudeMd $dest)) {
-        Write-Info "  Skipped: $dest (imports AGENTS.md, which already carries the block)"
+    if ($Agent -eq 'claude' -and (Test-ClaudeMdCoveredByAgentsMd -ClaudeMd $Dest)) {
+        Write-Info "  Skipped: $Dest (imports AGENTS.md, which already carries the block)"
         Write-Info "  Project guidelines reach $label through AGENTS.md"
         return
     }
 
-    $text  = Get-FileTextRaw -Path $dest
+    $text  = Get-FileTextRaw -Path $Dest
     $range = Get-BlockRange -Text $text
 
     if ($null -ne $range) {
@@ -685,35 +815,49 @@ function Install-GuidelinesBlockFor {
                   $block.TrimEnd("`r", "`n") +
                   $text.Substring($range.End)
         if ($merged -ceq $text) {
-            Write-Info "  Unchanged: $dest"
+            Write-Info "  Unchanged: $Dest"
             Write-Info "  Project guidelines already up to date for $label"
             return
         }
-        Set-FileTextAtomic -Dest $dest -Text $merged
-        Write-Info "  Updated: $dest"
-        Write-ChangeMarker -Action 'updated' -Type 'file' -Path $dest
+        Set-FileTextAtomic -Dest $Dest -Text $merged
+        Write-Info "  Updated: $Dest"
+        Write-ChangeMarker -Action 'updated' -Type 'file' -Path $Dest
         Write-Info "  Project guidelines installed for $label"
         return
     }
 
     # Branches 3 and 4 rewrite content the toolkit does not own, so they always
     # back up, regardless of -BackupExistingFiles (issue #17).
-    $backupName = Get-DedupBackupName -Path $dest
+    $backupName = Get-DedupBackupName -Path $Dest
     $backupPath = Join-Path $destDir $backupName
-    Copy-Item -LiteralPath $dest -Destination $backupPath -ErrorAction Stop
+    Copy-Item -LiteralPath $Dest -Destination $backupPath -ErrorAction Stop
     Write-ChangeMarker -Action 'backed-up' -Type 'file' -Path $backupPath
 
     if (Test-LegacyGuidelines -Text $text) {
-        Set-FileTextAtomic -Dest $dest -Text $block
+        Set-FileTextAtomic -Dest $Dest -Text $block
     } else {
-        $prefix = $text
-        if ($prefix.Length -gt 0 -and -not $prefix.EndsWith("`n")) { $prefix += "`n" }
-        Set-FileTextAtomic -Dest $dest -Text ($prefix + "`n" + $block)
+        Set-FileTextAtomic -Dest $Dest -Text (Get-GuidelinesWithBlockAdded -Dest $Dest -Text $text -Block $block)
     }
 
-    Write-Info "  Updated: $dest (backup: $backupName)"
-    Write-ChangeMarker -Action 'updated' -Type 'file' -Path $dest
+    Write-Info "  Updated: $Dest (backup: $backupName)"
+    Write-ChangeMarker -Action 'updated' -Type 'file' -Path $Dest
     Write-Info "  Project guidelines installed for $label"
+}
+
+# Branch 4: $Text of $Dest with $Block added, everything they wrote kept. An
+# AGENTS.md gets it on top (Codex reads only its first 32 KiB), after a leading
+# UTF-8 BOM that stays the first bytes; any other file gets it at the end.
+function Get-GuidelinesWithBlockAdded {
+    param([string]$Dest, [string]$Text, [string]$Block)
+    if ([System.IO.Path]::GetFileName($Dest) -ceq 'AGENTS.md') {
+        if ($Text.StartsWith($script:RawBom, [System.StringComparison]::Ordinal)) {
+            return $script:RawBom + $Block + "`n" + $Text.Substring($script:RawBom.Length)
+        }
+        return $Block + "`n" + $Text
+    }
+    $prefix = $Text
+    if ($prefix.Length -gt 0 -and -not $prefix.EndsWith("`n")) { $prefix += "`n" }
+    return $prefix + "`n" + $Block
 }
 
 # Installs the block for every agent in $Agents, AGENTS.md agents before claude
@@ -722,8 +866,7 @@ function Install-GuidelinesBlockFor {
 # (wizard).
 function Install-GuidelinesBlocks {
     param([string[]]$Agents, [switch]$Lenient)
-    $ordered = @($Agents | Where-Object { $_ -ne 'claude' })
-    if ($Agents -contains 'claude') { $ordered += 'claude' }
+    $ordered = @('codex', 'opencode', 'junie', 'claude') | Where-Object { $Agents -contains $_ }
     foreach ($a in $ordered) {
         if ($Lenient) {
             try { Install-GuidelinesBlockFor -Agent $a } catch { Write-Info "error: $($_.Exception.Message)" }
@@ -741,246 +884,637 @@ function Invoke-CmdAgentsMd {
 }
 
 # =================================================================
+# MCP registration (shared by mcp-jetbrains, mcp-context7, playwright)
+# =================================================================
+#
+# Servers are written straight into each agent's config file, so no agent CLI
+# has to be on PATH (Studio runs this from the IDE process). Local scope writes
+# the project files, global scope the user files:
+#
+#   agent           local                  global
+#   claude          .mcp.json              ~\.claude.json via `claude mcp add`
+#   codex           .codex\config.toml     $env:CODEX_HOME (default ~\.codex)\config.toml
+#   opencode        opencode.json          $env:XDG_CONFIG_HOME (default ~\.config)\opencode\opencode.json
+#   junie           .junie\mcp\mcp.json    $env:JUNIE_HOME (default ~\.junie)\mcp\mcp.json
+#   claude-desktop  (user level only)      claude_desktop_config.json
+#
+# ~\.claude.json is Claude Code's own state file, so it is changed only through
+# the claude CLI. Every other file is merged in place: other servers and keys
+# are kept, an unchanged file is not rewritten, and a file that cannot be
+# parsed is left alone and the step fails.
+
+function Get-UserConfigHome {
+    if ($env:XDG_CONFIG_HOME) { return $env:XDG_CONFIG_HOME }
+    return (Join-Path $script:UserHome '.config')
+}
+
+# Returns the Claude Desktop config files to write, none when Claude Desktop
+# has no config folder here (not installed, or never started). On Windows the
+# Store (MSIX) build reads its own copy of %APPDATA%\Claude under its package
+# folder, so every existing config is updated; without one, the file is created
+# in the first existing folder, package folders first. A package folder never
+# gets a new file while %APPDATA%\Claude has one: it would shadow that file.
+function Get-ClaudeDesktopConfigFiles {
+    $name = 'claude_desktop_config.json'
+    if (-not $script:IsWindowsHost) {
+        $dir = if (Get-Variable -Name IsMacOS -ValueOnly -ErrorAction SilentlyContinue) {
+            Join-Path $script:UserHome 'Library/Application Support/Claude'
+        } else {
+            Join-Path (Get-UserConfigHome) 'Claude'
+        }
+        if (Test-Path -LiteralPath $dir -PathType Container) { return (Join-Path $dir $name) }
+        return
+    }
+    $dirs = @()
+    if ($env:LOCALAPPDATA) {
+        foreach ($pkg in 'Claude_pzs8sxrjxfjjc', 'AnthropicPBC.Claude_fnn82j28hfe8t') {
+            $dirs += [System.IO.Path]::Combine($env:LOCALAPPDATA, 'Packages', $pkg, 'LocalCache', 'Roaming', 'Claude')
+        }
+    }
+    if ($env:APPDATA) { $dirs += Join-Path $env:APPDATA 'Claude' }
+    $existing = @($dirs | ForEach-Object { Join-Path $_ $name } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+    if ($existing.Count -gt 0) { return $existing }
+    $dir = $dirs | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -First 1
+    if ($dir) { return (Join-Path $dir $name) }
+}
+
+# Returns the MCP config file(s) of $Agent for $Scope (see the table above).
+function Get-McpConfigFiles {
+    param([string]$Agent, [string]$Scope)
+    if ($Agent -eq 'claude-desktop') { return (Get-ClaudeDesktopConfigFiles) }
+    if ($Scope -eq 'local') {
+        $proj = (Get-Location).Path
+        switch ($Agent) {
+            'claude'   { return (Join-Path $proj '.mcp.json') }
+            'codex'    { return [System.IO.Path]::Combine($proj, '.codex', 'config.toml') }
+            'opencode' { return (Join-Path $proj 'opencode.json') }
+            'junie'    { return [System.IO.Path]::Combine($proj, '.junie', 'mcp', 'mcp.json') }
+        }
+    }
+    switch ($Agent) {
+        'codex' {
+            $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $script:UserHome '.codex' }
+            return (Join-Path $codexHome 'config.toml')
+        }
+        'opencode' { return [System.IO.Path]::Combine((Get-UserConfigHome), 'opencode', 'opencode.json') }
+        'junie' {
+            $junieHome = if ($env:JUNIE_HOME) { $env:JUNIE_HOME } else { Join-Path $script:UserHome '.junie' }
+            return [System.IO.Path]::Combine($junieHome, 'mcp', 'mcp.json')
+        }
+    }
+    throw "no MCP config file for agent '$Agent' at scope '$Scope'"
+}
+
+# Writes config $Raw (Get-FileTextRaw representation) to $File through a temp
+# file and logs whether it was created or updated; with -Unchanged it only
+# says so. A new file is 0600 on Unix with -Private; see Set-FileTextAtomic for
+# existing files and links. While $script:McpPrivate is set (the entry carries
+# the Context7 key) the file ends up usable by its owner only, whatever mode
+# it had.
+function Save-McpConfig {
+    param([string]$File, [string]$Raw, [switch]$Unchanged, [switch]$Private)
+    if ($Unchanged) {
+        Write-Info "  Unchanged: $File"
+    } else {
+        $existed = Test-Path -LiteralPath $File
+        [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($File))
+        Set-FileTextAtomic -Dest $File -Text $Raw -TempPrefix '.jmix-mcp.' -Private:$Private
+        if ($existed) {
+            Write-Info "  Updated: $File"
+            Write-ChangeMarker -Action 'updated' -Type 'file' -Path $File
+        } else {
+            Write-Info "  Created: $File"
+            Write-ChangeMarker -Action 'created' -Type 'file' -Path $File
+        }
+    }
+    if ($script:McpPrivate) { Protect-OwnerOnly -Path $File }
+}
+
+# The text of config $File, $null when there is no such file: decoded as
+# UTF-8 (a BOM honoured and dropped), or with -Raw as Get-FileTextRaw does. A
+# file that cannot be read fails the step and is left unchanged, never replaced.
+function Read-McpConfigText {
+    param([string]$File, [switch]$Raw)
+    if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { return $null }
+    try {
+        if ($Raw) { return (Get-FileTextRaw -Path $File) }
+        return [System.IO.File]::ReadAllText($File, [System.Text.Encoding]::UTF8)
+    } catch { throw "cannot read ${File}; it was left unchanged" }
+}
+
+# Parses $Text as a JSON object; $null when it is anything else. Comments are
+# refused too: pwsh's parser skips them, so a rewrite would silently drop them.
+function ConvertFrom-JsonObject {
+    param([string]$Text)
+    if (($Text -replace '"(?:[^"\\]|\\.)*"', '""') -match '//|/\*') { return $null }
+    if ($Text -notmatch '^\s*\{') { return $null }
+    $options = @{}
+    # pwsh 7.5+ would otherwise turn date-like strings into dates.
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $options['DateKind'] = 'String' }
+    try { $value = ConvertFrom-Json -InputObject $Text @options } catch { return $null }
+    if ($value -is [System.Management.Automation.PSCustomObject]) { return $value }
+    return $null
+}
+
+# Sets server $Name = $Entry under the $Root object of JSON file $File. A
+# missing or blank file starts as {}; a UTF-8 BOM is tolerated, and the result
+# is UTF-8 without one. The file is not rewritten when the result serializes
+# the same as what it holds.
+function Set-McpJsonEntry {
+    param([string]$File, [string]$Root, [string]$Name, [object]$Entry, [switch]$Private)
+    $refusal = "cannot update ${File}: it is not plain JSON (comments are not supported). Add the `"$Name`" server to it manually, see README."
+    $text = Read-McpConfigText -File $File
+    $config = [PSCustomObject]@{}
+    $before = $null
+    if (-not [string]::IsNullOrWhiteSpace($text)) {
+        $config = ConvertFrom-JsonObject -Text $text
+        if ($null -eq $config) { throw $refusal }
+        $before = ConvertTo-Json -InputObject $config -Depth 100
+    }
+    $servers = $config.PSObject.Properties[$Root]
+    if ($null -eq $servers) {
+        Add-Member -InputObject $config -NotePropertyName $Root -NotePropertyValue ([PSCustomObject]@{})
+        $servers = $config.PSObject.Properties[$Root]
+    } elseif ($null -eq $servers.Value) {
+        $servers.Value = [PSCustomObject]@{}
+    }
+    if ($servers.Value -isnot [System.Management.Automation.PSCustomObject]) { throw $refusal }
+    # Assigning in place keeps the server's position among the others.
+    $current = $servers.Value.PSObject.Properties[$Name]
+    if ($current) { $current.Value = $Entry }
+    else { Add-Member -InputObject $servers.Value -NotePropertyName $Name -NotePropertyValue $Entry }
+    $after = ConvertTo-Json -InputObject $config -Depth 100
+    $json = ($after -replace '\r\n', "`n") + "`n"
+    Save-McpConfig -File $File -Raw $script:BytePreservingEncoding.GetString([System.Text.Encoding]::UTF8.GetBytes($json)) `
+        -Unchanged:($after -ceq $before) -Private:$Private
+}
+
+function Test-TomlKeyWithin {
+    param([string]$Key, [string]$Table)
+    return ($Key -ceq $Table -or $Key.StartsWith("$Table.", [System.StringComparison]::Ordinal))
+}
+
+# A TOML key or header without blanks and quotes: [ "a" . 'b' ] -> a.b
+function ConvertTo-TomlKey {
+    param([string]$Text)
+    return ($Text -replace '[ \t"'']', '')
+}
+
+# The key of TOML header line $Line: [a.b] or [[a.b]] -> a.b
+function Get-TomlHeaderKey {
+    param([string]$Line)
+    return (ConvertTo-TomlKey -Text (($Line -replace '^[ \t]*\[+', '') -replace '\].*$', ''))
+}
+
+# ponytail: line-based, not a TOML parser (the same edit as install.sh). Handles
+# the [table] headers Codex and the IDE write; a header inside a multi-line
+# string would fool it. Returns $Lines with table [$Table] (and its sub-tables)
+# replaced by $Body where it first stands, or appended when absent; $null when
+# $Table is also defined another way (dotted keys, or inline in itself or in a
+# parent), which this edit cannot replace. Comments and blank lines between the
+# replaced table and the next header stay: they usually introduce that table.
+function Get-TomlWithTable {
+    param([string[]]$Lines, [string]$Table, [string[]]$Body)
+    $out     = New-Object System.Collections.Generic.List[string]
+    $pending = New-Object System.Collections.Generic.List[string]
+    $skip    = $false
+    $done    = $false
+    $current = ''
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        $line  = $Lines[$i]
+        $probe = $line
+        if ($i -eq 0 -and $line.StartsWith($script:RawBom, [System.StringComparison]::Ordinal)) {
+            $probe = $line.Substring($script:RawBom.Length)
+        }
+        if ($probe -match '^[ \t]*\[') {
+            $header = Get-TomlHeaderKey -Line $probe
+            if ($skip) { $out.AddRange($pending); $pending.Clear() }
+            $skip = Test-TomlKeyWithin -Key $header -Table $Table
+            if (-not $skip) { $current = $header; $out.Add($line); continue }
+            if (-not $done) {
+                # A BOM before the replaced first header stays the first bytes.
+                $out.Add($line.Substring(0, $line.Length - $probe.Length) + "[$Table]")
+                $out.AddRange($Body)
+                $done = $true
+            }
+            continue
+        }
+        if ($skip) {
+            if ($probe -match '^[ \t]*(#.*)?$') { $pending.Add($line) } else { $pending.Clear() }
+            continue
+        }
+        if ($probe.Contains('=')) {
+            $key  = ConvertTo-TomlKey -Text ($probe -replace '=.*$', '')
+            $full = if ($current) { "$current.$key" } else { $key }
+            if ((Test-TomlKeyWithin -Key $full -Table $Table) -or (Test-TomlKeyWithin -Key $Table -Table $full)) { return $null }
+        }
+        $out.Add($line)
+    }
+    if ($skip) { $out.AddRange($pending) }
+    # Trailing blank lines go.
+    $last = $out.Count
+    while ($last -gt 0 -and $out[$last - 1] -match '^[ \t]*$') { $last-- }
+    $result = @($out.GetRange(0, $last))
+    if (-not $done) {
+        if ($last -gt 0) { $result += '' }
+        $result += "[$Table]"
+        $result += $Body
+    }
+    return , [string[]]$result
+}
+
+# Sets table [$Table] of TOML file $File to $Body lines (see Get-TomlWithTable),
+# in the file's line-ending style. Fails, leaving the file alone, when $Table is
+# defined another way.
+function Set-McpTomlTable {
+    param([string]$File, [string]$Table, [string[]]$Body, [switch]$Private)
+    $original = Read-McpConfigText -File $File -Raw
+    $newline = "`n"
+    $lines = @()
+    if ($original) {
+        if ($original.Contains("`r`n")) { $newline = "`r`n" }
+        $lines = @(($original -replace '\n\z', '') -split "`n" | ForEach-Object { $_.TrimEnd("`r") })
+    }
+    $result = Get-TomlWithTable -Lines $lines -Table $Table -Body $Body
+    if ($null -eq $result) {
+        throw "cannot update ${File}: [$Table] is defined there in a form this installer does not edit. Change it manually, see README."
+    }
+    $text = ($result -join $newline) + $newline
+    Save-McpConfig -File $File -Raw $text -Unchanged:($text -ceq $original) -Private:$Private
+}
+
+# Returns 'url' or 'command' -- the transport of table [$Table] in Codex config
+# $File -- or $null when the file (or a readable one) or the table is absent.
+function Get-CodexTransport {
+    param([string]$File, [string]$Table)
+    try { $text = Read-McpConfigText -File $File -Raw } catch { return $null }
+    if (-not $text) { return $null }
+    if ($text.StartsWith($script:RawBom, [System.StringComparison]::Ordinal)) { $text = $text.Substring($script:RawBom.Length) }
+    $inTable = $false
+    foreach ($line in $text -split "`n") {
+        if ($line -match '^[ \t]*\[') {
+            $inTable = ((Get-TomlHeaderKey -Line $line) -ceq $Table)
+        } elseif ($inTable -and $line -cmatch '^[ \t]*(url|command)[ \t]*=') {
+            return $Matches[1]
+        }
+    }
+    return $null
+}
+
+# Codex merges [mcp_servers.X] of the user and the project config key by key,
+# and refuses its whole configuration when the result mixes url (HTTP) and
+# command (stdio). When the other layer defines the server with the other
+# transport, it gets the same entry -- unless the entry carries the Context7
+# key, which never goes into a project file.
+# $Scope - the scope just written   $Body - the TOML table body written there
+function Sync-CodexOtherLayer {
+    param([string]$Scope, [string]$Name, [string[]]$Body)
+    $otherScope = if ($Scope -eq 'global') { 'local' } else { 'global' }
+    $other  = Get-McpConfigFiles -Agent 'codex' -Scope $otherScope
+    $theirs = Get-CodexTransport -File $other -Table "mcp_servers.$Name"
+    $mine   = if ($Body[0] -clike 'url*') { 'url' } else { 'command' }
+    if (-not $theirs -or $theirs -eq $mine) { return }
+    if ($script:McpPrivate) {
+        throw "$other defines [mcp_servers.$Name] with another transport, and Codex cannot merge the two: remove that table there."
+    }
+    Write-Info "  $other defines [mcp_servers.$Name] with another transport, which Codex cannot merge; updating it too."
+    Set-McpTomlTable -File $other -Table "mcp_servers.$Name" -Body $Body -Private:($otherScope -eq 'global')
+}
+
+# The claude CLI as an application (claude.exe / claude.cmd, or the executable
+# on macOS/Linux) before anything else: npm's claude.ps1 shim may be blocked
+# by the execution policy, and PowerShell drops a literal '--' passed to it.
+function Get-ClaudeCli {
+    $apps = @(Get-Command claude -CommandType Application -All -ErrorAction SilentlyContinue)
+    if ($script:IsWindowsHost) { $apps = @($apps | Where-Object { $_.Extension -in '.exe', '.cmd', '.bat' }) }
+    if ($apps.Count -gt 0) { return $apps[0] }
+    return (Get-Command claude -ErrorAction SilentlyContinue | Select-Object -First 1)
+}
+
+# Runs $Command with all its output discarded and returns its exit code.
+function Invoke-NativeQuiet {
+    param([System.Management.Automation.CommandInfo]$Command, [string[]]$CliArgs)
+    # Windows PowerShell turns redirected stderr into errors, which 'Stop'
+    # would make terminating; the exit code is what counts here.
+    $ErrorActionPreference = 'Continue'
+    & $Command @CliArgs *> $null
+    return $LASTEXITCODE
+}
+
+# Registers a Claude Code user-scope server through the claude CLI. `mcp add`
+# exits 1 when the name exists, so any entry is removed first. Its output is
+# discarded: it echoes the command line, the Context7 key included.
+function Add-ClaudeUserMcp {
+    param([string]$Name, [string[]]$CliArgs)
+    $claude = Get-ClaudeCli
+    if ($null -eq $claude) {
+        Write-Info "  Skipped: 'claude' CLI not found on PATH. Install Claude Code and re-run."
+        return
+    }
+    $null = Invoke-NativeQuiet -Command $claude -CliArgs @('mcp', 'remove', '--scope', 'user', $Name)
+    if ((Invoke-NativeQuiet -Command $claude -CliArgs (@('mcp', 'add') + $CliArgs)) -ne 0) {
+        throw "claude mcp add $Name failed"
+    }
+    Write-Info "  Registered $Name in the Claude Code user config"
+}
+
+# Writes MCP server $Name for $Agent at $Scope. $Entry is the server object for
+# a JSON config, or the TOML table body lines for codex. For claude at global
+# scope $CliArgs (the arguments of `claude mcp add`) are used instead.
+function Write-McpServer {
+    param([string]$Agent, [string]$Scope, [string]$Name, [object]$Entry, [string[]]$CliArgs)
+    if ($Agent -eq 'claude' -and $Scope -eq 'global') {
+        Add-ClaudeUserMcp -Name $Name -CliArgs $CliArgs
+        return
+    }
+    $files = @(Get-McpConfigFiles -Agent $Agent -Scope $Scope)
+    if ($files.Count -eq 0) {
+        Write-Info '  Skipped: Claude Desktop has no config folder here. Install and start it once, then re-run.'
+        return
+    }
+    # User-level files may hold the Context7 key.
+    $isPrivate = ($Scope -eq 'global' -or $Agent -eq 'claude-desktop')
+    foreach ($file in $files) {
+        if ($Agent -eq 'codex') {
+            Set-McpTomlTable -File $file -Table "mcp_servers.$Name" -Body $Entry -Private:$isPrivate
+            Sync-CodexOtherLayer -Scope $Scope -Name $Name -Body $Entry
+        } else {
+            $root = if ($Agent -eq 'opencode') { 'mcp' } else { 'mcpServers' }
+            Set-McpJsonEntry -File $file -Root $root -Name $Name -Entry $Entry -Private:$isPrivate
+        }
+    }
+    if ($Agent -eq 'claude-desktop') {
+        Write-Info '  Quit Claude Desktop completely (not just its window) and start it again to load the change.'
+    }
+}
+
+# Prints what the user still has to do for the configs just written.
+function Write-McpFollowups {
+    param([string[]]$AgentList, [string]$McpScope)
+    if ($McpScope -eq 'local') {
+        if ($AgentList -contains 'claude') {
+            Write-Info 'Claude Code asks to approve the servers in .mcp.json on its next start in this project.'
+        }
+        if ($AgentList -contains 'codex') {
+            Write-Info "Codex reads .codex/config.toml only in trusted projects: accept its 'trust this folder' prompt. The Codex desktop app ignores project MCP servers; use -Scope global for it."
+        }
+    }
+}
+
+# Runs MCP step $Step (a function taking -Agent plus $StepParams) for every
+# agent. A failing agent is reported and marks the run failed; the agents
+# after it still run.
+function Invoke-McpForAgents {
+    param([string[]]$AgentList, [string]$Step, [hashtable]$StepParams)
+    foreach ($agent in $AgentList) {
+        Write-Info ''
+        try {
+            & $Step -Agent $agent @StepParams
+        } catch {
+            Write-Err $_.Exception.Message
+            $script:McpFailed = $true
+        }
+    }
+}
+
+# =================================================================
 # MCP install - JetBrains
 # =================================================================
 
-function Get-OpencodeConfigPath {
-    $dir = Join-Path $HOME '.config/opencode'
-    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $file = Join-Path $dir 'opencode.json'
-    if (-not (Test-Path $file)) { '{}' | Out-File -FilePath $file -Encoding utf8 }
-    return $file
-}
-
-function Set-OpencodeMcpEntry {
-    param(
-        [string]$Name,
-        [hashtable]$Entry
-    )
-    $file = Get-OpencodeConfigPath
-    $json = Get-Content -Raw -Path $file | ConvertFrom-Json -ErrorAction Stop
-    # NOTE: PSObject.Properties.Match() returns an always-truthy collection object,
-    # and `.Name` member-enumeration throws on an empty collection under StrictMode.
-    # The by-name indexer returns $null when the property is absent, which is safe.
-    if ($null -eq $json.PSObject.Properties['mcp']) {
-        $json | Add-Member -MemberType NoteProperty -Name 'mcp' -Value (New-Object PSObject)
+# IntelliJ 2026.1+ serves Streamable HTTP at /stream; 2025.2/2025.3 serve only
+# SSE at /sse and answer 404 there. A HEAD request tells them apart without
+# opening an MCP session. When the IDE does not answer (server disabled, IDE
+# closed), assume 2026.1+ and say so.
+function Resolve-JetbrainsTransport {
+    $code = 0
+    # HttpWebRequest works the same on Windows PowerShell 5.1 and pwsh 7. No
+    # proxy: one set in HTTP_PROXY would answer instead of the IDE.
+    $request = [System.Net.WebRequest]::Create("http://127.0.0.1:$($script:JbPort)/stream")
+    $request.Method  = 'HEAD'
+    $request.Proxy   = $null
+    $request.Timeout = 3000
+    try {
+        $response = $request.GetResponse()
+        $code = [int]$response.StatusCode
+        $response.Close()
+    } catch {
+        # An HTTP error status arrives as a WebException carrying the response
+        # (wrapped by PowerShell); there is none when nothing listens.
+        $ex = $_.Exception
+        while ($ex -and $ex -isnot [System.Net.WebException]) { $ex = $ex.InnerException }
+        if ($ex -and $ex.Response) {
+            $code = [int]$ex.Response.StatusCode
+            $ex.Response.Close()
+        }
     }
-    if ($null -ne $json.mcp.PSObject.Properties[$Name]) {
-        $json.mcp.PSObject.Properties.Remove($Name)
+    $script:JbTransport = 'stream'
+    if ($code -eq 404) {
+        $script:JbTransport = 'sse'
+        Write-Info "IntelliJ IDEA MCP server on port $($script:JbPort) has no /stream endpoint (IntelliJ IDEA before 2026.1): using SSE."
+    } elseif ($code -eq 0) {
+        Write-Info "IntelliJ IDEA MCP server is not reachable on port $($script:JbPort); assuming IntelliJ IDEA 2026.1+."
+        Write-Info 'Enable it in Settings | Tools | MCP Server. On IntelliJ IDEA 2025.x, re-run this step once it is enabled.'
     }
-    $json.mcp | Add-Member -MemberType NoteProperty -Name $Name -Value ([PSCustomObject]$Entry)
-    $json | ConvertTo-Json -Depth 10 | Out-File -FilePath $file -Encoding utf8
-    Write-ChangeMarker -Action 'updated' -Type 'file' -Path $file
-    Write-Info "Updated $file with $Name MCP entry."
-}
-
-# Registers a user-scope Claude MCP server idempotently. `claude mcp add` exits
-# non-zero and writes "already exists in user config" to stderr when the name is
-# already present, which Studio treats as a failed wizard step. Removing any
-# existing entry first -- silencing the harmless "not found" message and guarding
-# the non-zero exit -- makes a re-run succeed cleanly (exit 0, no stderr).
-# $AddArgs are the arguments that follow `claude mcp add`.
-function Add-ClaudeUserMcp {
-    param([string]$Name, [string[]]$AddArgs)
-    try { & claude mcp remove --scope user $Name 2>&1 | Out-Null } catch { }
-    & claude mcp add @AddArgs
-}
-
-function Install-JetbrainsForClaude {
-    if (-not (Test-AgentCli -Tool 'claude' -Label 'Claude CLI')) { return }
-    Write-Info 'Adding JetBrains MCP for Claude CLI...'
-    Add-ClaudeUserMcp -Name 'jetbrains' -AddArgs @('--transport', 'sse', 'jetbrains', '--scope', 'user', 'http://localhost:64342/sse')
-}
-
-function Install-JetbrainsForCodex {
-    if (-not (Test-AgentCli -Tool 'codex' -Label 'Codex')) { return }
-    Write-Info 'Adding JetBrains MCP for Codex (Streamable HTTP; requires IntelliJ 2026.1+)...'
-    Write-Info 'For older IntelliJ versions, follow the STDIO setup in the README manually.'
-    & codex mcp add jetbrains --url http://localhost:64342/stream
-}
-
-function Install-JetbrainsForOpencode {
-    Set-OpencodeMcpEntry -Name 'jetbrains' -Entry @{
-        type    = 'remote'
-        url     = 'http://localhost:64342/sse'
-        enabled = $true
-    }
-}
-
-function Install-JetbrainsForJunie {
-    Write-Info 'Junie runs inside IntelliJ and already has native IDE access. No JetBrains MCP needed.'
 }
 
 function Install-JetbrainsFor {
-    param([string]$Agent)
-    Write-Info ''
+    param([string]$Agent, [string]$Scope)
+    $base = "http://127.0.0.1:$($script:JbPort)"
     Write-Info "[JetBrains MCP] $(Get-AgentLabel -Agent $Agent)"
-    switch ($Agent) {
-        'claude'   { Install-JetbrainsForClaude }
-        'codex'    { Install-JetbrainsForCodex }
-        'opencode' { Install-JetbrainsForOpencode }
-        'junie'    { Install-JetbrainsForJunie }
-        default    { throw "unknown agent '$Agent'" }
+    if ($Agent -eq 'junie') {
+        Write-Info '  Junie runs inside IntelliJ IDEA and already has native IDE access. No JetBrains MCP needed.'
+        return
     }
+    if ($Agent -eq 'claude-desktop') {
+        # Claude Desktop takes stdio servers only: a stdio-to-SSE bridge.
+        Write-McpServer -Agent $Agent -Scope $Scope -Name 'jetbrains' -Entry ([PSCustomObject][ordered]@{
+            command = 'npx'; args = @('-y', 'mcp-remote', "$base/sse", '--transport', 'sse-only') })
+        return
+    }
+    $isSse = ($script:JbTransport -eq 'sse')
+    $url = if ($isSse) { "$base/sse" } else { "$base/stream" }
+    switch ($Agent) {
+        'claude' {
+            $type = if ($isSse) { 'sse' } else { 'http' }
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'jetbrains' -Entry ([PSCustomObject][ordered]@{ type = $type; url = $url }) `
+                -CliArgs @('--scope', 'user', '--transport', $type, 'jetbrains', $url)
+        }
+        'codex' {
+            # Codex has no SSE transport: the same stdio bridge on 2025.x.
+            $body = @("url = `"$url`"")
+            if ($isSse) { $body = @('command = "npx"', "args = [`"-y`", `"mcp-remote`", `"$url`", `"--transport`", `"sse-only`"]", 'startup_timeout_sec = 60') }
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'jetbrains' -Entry $body
+        }
+        'opencode' {
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'jetbrains' -Entry ([PSCustomObject][ordered]@{ type = 'remote'; url = $url; enabled = $true })
+        }
+    }
+}
+
+function Install-McpJetbrains {
+    param([string[]]$AgentList, [string]$McpScope)
+    Resolve-JetbrainsTransport
+    Invoke-McpForAgents -AgentList $AgentList -Step 'Install-JetbrainsFor' -StepParams @{ Scope = $McpScope }
+    if ($AgentList -contains 'claude-desktop') {
+        Write-NpxNote -What "Claude Desktop's JetBrains MCP bridge"
+    } elseif ($AgentList -contains 'codex' -and $script:JbTransport -eq 'sse') {
+        Write-NpxNote -What "Codex's JetBrains MCP bridge"
+    }
+    Write-Info ''
+    Write-McpFollowups -AgentList $AgentList -McpScope $McpScope
 }
 
 function Invoke-CmdMcpJetbrains {
-    $agents = Resolve-AgentsCsv -Csv $Agents -Subcommand 'mcp-jetbrains'
-    foreach ($a in $agents) {
-        try { Install-JetbrainsFor -Agent $a } catch { Write-Info "error: $($_.Exception.Message)" }
-    }
+    $agentList = Resolve-AgentsCsv -Csv $Agents -Subcommand 'mcp-jetbrains' -Valid $script:McpAgents
+    $mcpScope = Resolve-Scope -Scope $Scope -Default 'local' -Subcommand 'mcp-jetbrains'
+    Install-McpJetbrains -AgentList $agentList -McpScope $mcpScope
 }
 
 # =================================================================
-# MCP install - Context7
+# MCP install - Context7 (always user level: the entry carries the API key)
 # =================================================================
 
-function Install-Context7ForClaude {
+# False for an empty key or one that would need escaping: the key is spliced
+# into JSON, TOML and an HTTP header as is.
+function Test-Context7Key {
     param([string]$Key)
-    if (-not (Test-AgentCli -Tool 'claude' -Label 'Claude CLI')) { return }
-    Write-Info 'Adding Context7 MCP for Claude CLI...'
-    Add-ClaudeUserMcp -Name 'context7' -AddArgs @('context7', '--scope', 'user', '--', 'npx', '-y', '@upstash/context7-mcp', '--api-key', $Key)
-}
-
-function Install-Context7ForCodex {
-    param([string]$Key)
-    if (-not (Test-AgentCli -Tool 'codex' -Label 'Codex')) { return }
-    Write-Info 'Adding Context7 MCP for Codex...'
-    & codex mcp add context7 -- npx -y '@upstash/context7-mcp' --api-key $Key
-}
-
-function Install-Context7ForOpencode {
-    param([string]$Key)
-    Set-OpencodeMcpEntry -Name 'context7' -Entry @{
-        type    = 'local'
-        command = @('npx', '-y', '@upstash/context7-mcp', '--api-key', $Key)
-        enabled = $true
-    }
-}
-
-function Install-Context7ForJunie {
-    param([string]$Key)
-    Write-Info 'Junie does not support automated MCP setup.'
-    Write-Info 'Open IntelliJ Settings -> Tools -> Junie -> MCP Settings, click Add, then paste:'
-    Write-Output @"
-{
-  "mcpServers": {
-    "context7": {
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp", "--api-key", "$Key"]
-    }
-  }
-}
-"@
+    return ($Key -cmatch '^[A-Za-z0-9._-]+\z')
 }
 
 function Install-Context7For {
-    param(
-        [string]$Agent,
-        [string]$Key
-    )
-    Write-Info ''
+    param([string]$Agent, [string]$Key)
+    $url = $script:Context7Url
     Write-Info "[Context7 MCP] $(Get-AgentLabel -Agent $Agent)"
     switch ($Agent) {
-        'claude'   { Install-Context7ForClaude -Key $Key }
-        'codex'    { Install-Context7ForCodex -Key $Key }
-        'opencode' { Install-Context7ForOpencode -Key $Key }
-        'junie'    { Install-Context7ForJunie -Key $Key }
-        default    { throw "unknown agent '$Agent'" }
+        'claude' {
+            Write-McpServer -Agent $Agent -Scope 'global' -Name 'context7' -Entry $null `
+                -CliArgs @('--scope', 'user', '--transport', 'http', 'context7', $url, '--header', "Authorization: Bearer $Key")
+        }
+        'codex' {
+            Write-McpServer -Agent $Agent -Scope 'global' -Name 'context7' `
+                -Entry @("url = `"$url`"", "http_headers = { Authorization = `"Bearer $Key`" }")
+        }
+        'opencode' {
+            Write-McpServer -Agent $Agent -Scope 'global' -Name 'context7' -Entry ([PSCustomObject][ordered]@{
+                type = 'remote'; url = $url; headers = [PSCustomObject]@{ Authorization = "Bearer $Key" }; enabled = $true })
+        }
+        default {
+            # Junie and Claude Desktop: stdio, the key in the environment, not in argv.
+            Write-McpServer -Agent $Agent -Scope 'global' -Name 'context7' -Entry ([PSCustomObject][ordered]@{
+                command = 'npx'; args = @('-y', '@upstash/context7-mcp'); env = [PSCustomObject]@{ CONTEXT7_API_KEY = $Key } })
+        }
     }
 }
 
-function Invoke-CmdMcpContext7 {
-    $agents = Resolve-AgentsCsv -Csv $Agents -Subcommand 'mcp-context7'
+function Install-McpContext7 {
+    param([string[]]$AgentList, [string]$Key)
+    # The entries carry the key: see Save-McpConfig and Sync-CodexOtherLayer.
+    $script:McpPrivate = $true
+    try {
+        Invoke-McpForAgents -AgentList $AgentList -Step 'Install-Context7For' -StepParams @{ Key = $Key }
+    } finally {
+        $script:McpPrivate = $false
+    }
+    if ($AgentList -contains 'junie' -or $AgentList -contains 'claude-desktop') {
+        Write-NpxNote -What 'Context7 for Junie and Claude Desktop'
+    }
+    Write-Info ''
+    Write-McpFollowups -AgentList $AgentList -McpScope 'global'
+}
 
+function Invoke-CmdMcpContext7 {
+    if ($Scope) { Write-ErrAndExit 'mcp-context7: unknown argument: -Scope (Context7 is always registered at user level)' }
+    $agentList = Resolve-AgentsCsv -Csv $Agents -Subcommand 'mcp-context7' -Valid $script:McpAgents
     $apiKey = $Context7Key
     if (-not $apiKey) {
         $apiKey = Read-Prompt -Message 'Context7 API key' -Default ''
         if (-not $apiKey) { Write-ErrAndExit 'Context7 API key is required' }
     }
-
-    foreach ($a in $agents) {
-        try { Install-Context7For -Agent $a -Key $apiKey } catch { Write-Info "error: $($_.Exception.Message)" }
+    if (-not (Test-Context7Key -Key $apiKey)) {
+        Write-ErrAndExit "Context7 API key may contain only letters, digits, '.', '_' and '-'"
     }
+    Install-McpContext7 -AgentList $agentList -Key $apiKey
 }
 
 # =================================================================
-# Playwright install (npx @playwright/cli)
+# MCP install - Playwright
 # =================================================================
 
-function Install-PlaywrightForAgents {
-    param([string[]]$Agents)
-
-    Assert-Npx
-
-    # Playwright skills always install globally. Mirror the Jmix model: copy the
-    # skills into a canonical store, then per-skill symlink them into each agent
-    # skills dir so they coexist with other skills already present there.
-    $root = $HOME
-    $storeDir = Join-Path $HOME '.agents/.playwright/skills'
-    $storeExisted = Test-Path $storeDir
-
-    # @playwright/cli install --skills writes to <cwd>/.claude/skills/<skill>.
-    # Run it inside a private staging dir so nothing leaks into the project or a
-    # real agent dir, then copy the produced skill folders into the store.
-    $pwStaging = Join-Path ([System.IO.Path]::GetTempPath()) ("jmix-playwright-" + [System.Guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $pwStaging -Force | Out-Null
-    try {
-        Write-Info 'Installing Playwright skills via npx (@playwright/cli)...'
-        Push-Location $pwStaging
-        try {
-            & npx -y '@playwright/cli@latest' install --skills
-            $playwrightExit = $LASTEXITCODE
-        } finally {
-            Pop-Location
+# Earlier toolkit versions installed the playwright-cli skill into a global
+# store and linked it into the agent skill dirs (on Windows as junctions or
+# symlinks with absolute targets). The step now registers the MCP server
+# instead, so those links and the store are removed.
+function Remove-LegacyPlaywrightSkills {
+    $store = Join-Path $script:UserHome '.agents/.playwright'
+    if (-not (Test-Path -LiteralPath $store -PathType Container)) { return }
+    foreach ($rel in '.claude/skills', '.agents/skills', '.junie/skills') {
+        $dir = Join-Path $script:UserHome $rel
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+        foreach ($item in Get-ChildItem -LiteralPath $dir -Force) {
+            if (-not $item.LinkType) { continue }
+            # Only links into the store: ../.playwright/skills/X from
+            # ~/.agents/skills, .../.agents/.playwright/skills/X elsewhere.
+            $target = [string](@($item.Target) | Select-Object -First 1)
+            if ($target -notmatch '^(?:\.\.[\\/]|.*[\\/]\.agents[\\/])\.playwright[\\/]skills[\\/].') { continue }
+            Remove-Link -Item $item
+            Write-Info "  Removed old playwright-cli skill link $($item.FullName)"
         }
-        if ($playwrightExit -ne 0) {
-            Write-ErrAndExit '@playwright/cli install --skills failed'
-        }
-
-        $produced = Join-Path $pwStaging '.claude/skills'
-        if (-not (Test-Path $produced)) {
-            Write-ErrAndExit "@playwright/cli produced no skills under $produced"
-        }
-
-        Write-Info ''
-        Write-Info "Installing Playwright skills into store $storeDir"
-        if (-not (Test-Path $storeDir)) { New-Item -ItemType Directory -Path $storeDir -Force | Out-Null }
-        $count = 0
-        foreach ($skill in Get-ChildItem -Path $produced -Directory) {
-            $dest = Join-Path $storeDir $skill.Name
-            Write-Dest -Src $skill.FullName -Dest $dest -Label $skill.Name
-            $count++
-        }
-        if ($count -eq 0) {
-            Write-ErrAndExit "no Playwright skill folders found under $produced"
-        }
-        Write-ChangeMarker -Action $(if ($storeExisted) { 'updated' } else { 'created' }) -Type 'dir' -Path $storeDir
-
-        Write-Info ''
-        Write-Info 'Linking store skills into agent dirs'
-        $seen = @{}
-        foreach ($a in $Agents) {
-            $rel = Get-AgentSymlinkRel -Agent $a
-            if ($seen.ContainsKey($rel)) { continue }
-            $seen[$rel] = $true
-            $agentDir = Join-Path $root $rel
-            $agentDirExisted = Test-Path $agentDir
-            New-SkillSymlinks -AgentDir $agentDir -StoreDir $storeDir
-            Write-ChangeMarker -Action $(if ($agentDirExisted) { 'updated' } else { 'created' }) -Type 'dir' -Path $agentDir
-            Write-Info "  Linked skills into $agentDir"
-        }
-
-        Write-Info ''
-        Write-Info "Done. Installed Playwright skills store at $storeDir and linked: $($Agents -join ', ')"
-    } finally {
-        if (Test-Path $pwStaging) { Remove-Item $pwStaging -Recurse -Force -ErrorAction SilentlyContinue }
     }
+    # A store that cannot be removed is reported, not a reason to stop.
+    try {
+        $storeItem = Get-Item -LiteralPath $store -Force
+        if ($storeItem.LinkType) { Remove-Link -Item $storeItem }
+        else { Remove-Item -LiteralPath $store -Recurse -Force }
+        Write-Info "  Removed old playwright-cli skills store $store"
+    } catch {
+        Write-Err "cannot fully remove the old playwright-cli skills store $store"
+    }
+}
+
+function Install-PlaywrightFor {
+    param([string]$Agent, [string]$Scope)
+    $pkg = $script:PlaywrightMcpPkg
+    Write-Info "[Playwright MCP] $(Get-AgentLabel -Agent $Agent)"
+    switch ($Agent) {
+        'claude' {
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'playwright' `
+                -Entry ([PSCustomObject][ordered]@{ type = 'stdio'; command = 'npx'; args = @('-y', $pkg) }) `
+                -CliArgs @('--scope', 'user', 'playwright', '--', 'npx', '-y', $pkg)
+        }
+        'codex' {
+            # The first npx download can outlast Codex's default startup timeout.
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'playwright' `
+                -Entry @('command = "npx"', "args = [`"-y`", `"$pkg`"]", 'startup_timeout_sec = 60')
+        }
+        'opencode' {
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'playwright' `
+                -Entry ([PSCustomObject][ordered]@{ type = 'local'; command = @('npx', '-y', $pkg); enabled = $true })
+        }
+        default {
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'playwright' `
+                -Entry ([PSCustomObject][ordered]@{ command = 'npx'; args = @('-y', $pkg) })
+        }
+    }
+}
+
+function Install-McpPlaywright {
+    param([string[]]$AgentList, [string]$McpScope)
+    # Cleanup of an old install never fails the step.
+    try {
+        Remove-LegacyPlaywrightSkills
+    } catch {
+        Write-Err "cannot remove the old playwright-cli skill: $($_.Exception.Message)"
+    }
+    Invoke-McpForAgents -AgentList $AgentList -Step 'Install-PlaywrightFor' -StepParams @{ Scope = $McpScope }
+    Write-NpxNote -What 'The Playwright MCP server'
+    Write-Info ''
+    Write-McpFollowups -AgentList $AgentList -McpScope $McpScope
 }
 
 function Invoke-CmdPlaywright {
-    $agents = Resolve-AgentsCsv -Csv $Agents -Subcommand 'playwright'
-    Install-PlaywrightForAgents -Agents $agents
+    $agentList = Resolve-AgentsCsv -Csv $Agents -Subcommand 'playwright' -Valid $script:McpAgents
+    $mcpScope = Resolve-Scope -Scope $Scope -Default 'local' -Subcommand 'playwright'
+    Install-McpPlaywright -AgentList $agentList -McpScope $mcpScope
 }
 
 # =================================================================
@@ -1017,6 +1551,13 @@ function Read-AgentChoice {
     if ($num -ge 1 -and $num -le $Options.Length) { return @($Options[$num - 1]) }
     Write-Host "Unrecognized choice '$answer'. Skipping."
     return @('skip')
+}
+
+# Returns the scope of an MCP step: 'local' (default) or 'global'.
+function Read-McpScope {
+    $answer = Read-Prompt -Message 'Register in: (l)ocal project config or (g)lobal user config' -Default 'l'
+    if ($answer -match '^(g|global)$') { return 'global' }
+    return 'local'
 }
 
 function Invoke-Wizard {
@@ -1060,6 +1601,7 @@ function Invoke-Wizard {
                 New-SkillSymlinks -AgentDir $agentDir -StoreDir $wizStoreDir
                 Write-Info "  Linked skills into $agentDir"
             }
+            Remove-OldJunieSkillLinks -Root $wizRoot
         } catch { Write-Info "error: $($_.Exception.Message)" }
         $summaryStrings.skills = "$($sel -join ', ') ($resolvedScope)"
     }
@@ -1076,44 +1618,36 @@ function Invoke-Wizard {
         }
     }
 
+    # Steps 3-5 reuse the subcommand steps; a failed agent there is reported
+    # and the wizard moves on.
+
     # Step 3: JetBrains MCP
-    $sel = @(Read-AgentChoice -Label '[3/5] Connect agent to IntelliJ IDEA via JetBrains MCP?' -Options $script:JetbrainsAgents)
+    $sel = @(Read-AgentChoice -Label '[3/5] Connect agent to IntelliJ IDEA via JetBrains MCP?' -Options @($script:McpAgents | Where-Object { $_ -ne 'junie' }))
     if ($sel[0] -ne 'skip') {
-        foreach ($a in $sel) {
-            try { Install-JetbrainsFor -Agent $a } catch { Write-Info "error: $($_.Exception.Message)" }
-        }
-        $summaryStrings.jetbrains = $sel -join ', '
+        $mcpScope = Read-McpScope
+        Install-McpJetbrains -AgentList $sel -McpScope $mcpScope
+        $summaryStrings.jetbrains = "$($sel -join ', ') ($mcpScope)"
     }
 
     # Step 4: Context7 MCP
-    $sel = @(Read-AgentChoice -Label '[4/5] Connect agent to library docs via Context7 MCP?' -Options $script:Context7Agents)
+    $sel = @(Read-AgentChoice -Label '[4/5] Connect agent to library docs via Context7 MCP?' -Options $script:McpAgents)
     if ($sel[0] -ne 'skip') {
         $apiKey = Read-Prompt -Message 'Context7 API key' -Default ''
-        if ($apiKey) {
-            foreach ($a in $sel) {
-                try { Install-Context7For -Agent $a -Key $apiKey } catch { Write-Info "error: $($_.Exception.Message)" }
-            }
-            $summaryStrings.context7 = $sel -join ', '
+        if (Test-Context7Key -Key $apiKey) {
+            Install-McpContext7 -AgentList $sel -Key $apiKey
+            $summaryStrings.context7 = "$($sel -join ', ') (user level)"
         } else {
-            Write-Info 'API key not provided, skipping Context7 setup.'
+            Write-Info 'API key missing or malformed, skipping Context7 setup.'
             $summaryStrings.context7 = 'skipped (no key)'
         }
     }
 
-    # Step 5: Playwright
-    $sel = @(Read-AgentChoice -Label '[5/5] Install Playwright? (requires npx)' -Options $script:AllAgents)
-    if ($sel[0] -ne 'skip' -and -not (Get-Command npx -ErrorAction SilentlyContinue)) {
-        Write-Info 'Skipping Playwright: npx (Node.js) not found on PATH.'
-        $summaryStrings.playwright = 'skipped (no npx)'
-        $sel = @('skip')
-    }
+    # Step 5: Playwright MCP
+    $sel = @(Read-AgentChoice -Label '[5/5] Connect agent to a browser via Playwright MCP?' -Options $script:McpAgents)
     if ($sel[0] -ne 'skip') {
-        try {
-            Install-PlaywrightForAgents -Agents $sel
-            $summaryStrings.playwright = $sel -join ', '
-        } catch {
-            Write-Info "error: $($_.Exception.Message)"
-        }
+        $mcpScope = Read-McpScope
+        Install-McpPlaywright -AgentList $sel -McpScope $mcpScope
+        $summaryStrings.playwright = "$($sel -join ', ') ($mcpScope)"
     }
 
     Write-Info ''
@@ -1132,6 +1666,15 @@ function Invoke-Wizard {
 try {
     Write-EnvDiagnostics
 
+    # The port is spliced into URLs, JSON and TOML.
+    if ($script:JbPort -notmatch '^[0-9]+\z') {
+        Write-ErrAndExit "JMIX_IDE_MCP_PORT must be a port number (got '$($script:JbPort)')"
+    }
+    $portDigits = $script:JbPort.TrimStart('0')
+    if ($portDigits.Length -eq 0 -or $portDigits.Length -gt 5 -or [int]$portDigits -gt 65535) {
+        Write-ErrAndExit "JMIX_IDE_MCP_PORT must be between 1 and 65535 (got $($script:JbPort))"
+    }
+
     switch ($Subcommand) {
         ''               { Invoke-Wizard }
         'skills'         { Invoke-CmdSkills }
@@ -1141,6 +1684,8 @@ try {
         'playwright'     { Invoke-CmdPlaywright }
         default          { Write-ErrAndExit "unknown subcommand: $Subcommand" }
     }
+    # Set only by MCP steps; the wizard reports a failed agent and goes on.
+    if ($script:McpFailed -and $Subcommand) { exit 1 }
 }
 finally {
     if ($script:Staging -and (Test-Path $script:Staging)) {
