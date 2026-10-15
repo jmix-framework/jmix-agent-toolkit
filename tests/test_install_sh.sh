@@ -566,15 +566,18 @@ if command -v jq >/dev/null 2>&1; then
     #     OpenCode, a stdio bridge for Codex (no SSE transport there).
     if command -v python3 >/dev/null 2>&1; then
         python3 - "${WORK}/port" <<'PY' &
-import http.server, sys
+import http.server, socketserver, sys
 class H(http.server.BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.send_response(404); self.end_headers()
     do_GET = do_HEAD
     def log_message(self, *args):
         pass
-s = http.server.HTTPServer(("127.0.0.1", 0), H)
-open(sys.argv[1], "w").write(str(s.server_port))
+# Plain TCPServer: HTTPServer's bind does a reverse DNS lookup (getfqdn) that
+# can hang for half a minute on a CI macOS runner.
+s = socketserver.TCPServer(("127.0.0.1", 0), H)
+with open(sys.argv[1], "w") as f:
+    f.write(str(s.server_address[1]))
 s.serve_forever()
 PY
         server_pid=$!
