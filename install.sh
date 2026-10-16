@@ -3,10 +3,10 @@
 #
 # Default (no subcommand) launches an interactive wizard that guides through:
 #   1. Installing Jmix skills (globally or into the project) for one or all agents.
-#   2. Adding project-level guidelines (CLAUDE.md / AGENTS.md / .junie/guidelines.md).
+#   2. Adding project-level guidelines (CLAUDE.md / AGENTS.md).
 #   3. Registering the JetBrains MCP server with the agent.
 #   4. Registering the Context7 MCP server with the agent.
-#   5. Installing Playwright testing skills (requires npx).
+#   5. Registering the Playwright MCP server with the agent.
 #
 # Subcommands are available for non-interactive use; see `install.sh --help`.
 
@@ -17,9 +17,6 @@ REPO_NAME="jmix-agent-toolkit"
 
 # Global state populated by ensure_tarball()
 STAGING=""
-# Temp dir for the Playwright install; global so the EXIT trap can clean it
-# after cmd_playwright() returns (function locals are out of scope by then).
-PW_STAGING=""
 EXTRACTED_DIR=""
 SOURCE_SKILLS_DIR=""
 SOURCE_GUIDELINES_BLOCK=""
@@ -34,8 +31,22 @@ BACKUP_EXISTING=0
 VERBOSE=0
 
 ALL_AGENTS="claude codex opencode junie"
-JETBRAINS_AGENTS="claude codex opencode junie"
-CONTEXT7_AGENTS="claude codex opencode junie"
+# Junie works inside the IDE and needs no JetBrains MCP; the wizard does not offer it.
+JETBRAINS_AGENTS="claude codex opencode"
+
+# IntelliJ IDEA's MCP server listens on 127.0.0.1 only. Its default port is
+# 64342; another JetBrains IDE started first moves it, hence the override.
+JB_PORT="${JMIX_IDE_MCP_PORT:-64342}"
+# "stream" (IntelliJ 2026.1+) or "sse" (2025.2/2025.3); see detect_jetbrains_transport.
+JB_TRANSPORT="stream"
+# 1 when the IDE did not answer and JB_TRANSPORT is only assumed.
+JB_GUESSED=0
+CONTEXT7_URL="https://mcp.context7.com/mcp"
+# 1 while writing entries that carry the Context7 key; see commit_config.
+MCP_PRIVATE=0
+# 1 when the last commit_config created or updated its file.
+CONFIG_CHANGED=0
+PLAYWRIGHT_MCP_PKG="@playwright/mcp@latest"
 
 # =================================================================
 # Helpers
@@ -79,18 +90,12 @@ require_tool() {
     command -v "$1" >/dev/null 2>&1 || die "$1 not found. Install it and re-run."
 }
 
-# Ensures npx (Node.js) is on PATH. When missing, prints per-OS install guidance
-# and exits (no automatic runtime install).
-require_npx() {
+# MCP servers started through npx need Node.js on the machine the agent runs
+# on, not at install time, so a missing npx is only a warning.
+warn_if_no_npx() {
     command -v npx >/dev/null 2>&1 && return 0
-    err "npx (Node.js) is required for the Playwright step but was not found on PATH."
-    err "Install Node.js (includes npx), then re-run:"
-    case "$(uname -s 2>/dev/null)" in
-        Darwin) err "  macOS:  brew install node    (or download from https://nodejs.org)" ;;
-        Linux)  err "  Linux:  install via your package manager (e.g. 'sudo apt install nodejs npm') or download from https://nodejs.org" ;;
-        *)      err "  See https://nodejs.org/en/download" ;;
-    esac
-    exit 1
+    log ""
+    log "Note: $1 starts through npx, which is not on PATH here. Install Node.js 20+ (https://nodejs.org) before using it."
 }
 
 # Returns a not-yet-existing backup path for $1: first "<path>.bak", then on
@@ -119,7 +124,8 @@ write_dest() {
     local dest="$2"
     local label="$3"
     local existed=0
-    [ -e "$dest" ] && existed=1
+    # A dangling dest symlink counts too: cp would write through it.
+    { [ -e "$dest" ] || [ -L "$dest" ]; } && existed=1
     local backup_info=""
     if [ "$existed" -eq 1 ]; then
         if [ "$BACKUP_EXISTING" -eq 1 ]; then
@@ -151,19 +157,20 @@ emit_change() {
 # Validates each token. Emits a space-separated list to stdout.
 # $1 - csv string (may be empty)
 # $2 - subcommand name for the error message
+# $3 - space-separated valid agents (defaults to ALL_AGENTS)
 parse_agents_csv() {
     local csv="$1"
     local subcommand="$2"
+    local valid="${3:-$ALL_AGENTS}"
     if [ -z "$csv" ]; then
         die "${subcommand}: --agents is required (e.g. --agents claude,codex)"
     fi
     local result=""
     local token
     for token in $(printf '%s' "$csv" | tr ',' ' ' | tr -s ' ' ' '); do
-        case "$token" in
-            claude|codex|opencode|junie) result="${result} ${token}" ;;
-            "") ;;
-            *) die "unknown agent in --agents: '$token'" ;;
+        case " ${valid} " in
+            *" ${token} "*) result="${result} ${token}" ;;
+            *) die "${subcommand}: unknown agent in --agents: '$token' (valid: $(printf '%s' "$valid" | tr ' ' ','))" ;;
         esac
     done
     result="$(printf '%s' "$result" | sed 's/^ //;s/ $//')"
@@ -218,9 +225,9 @@ Usage:
   install.sh                                                     # interactive wizard
   install.sh skills        --agents CSV [--scope global|local]   # install skills into the canonical store and symlink agent dirs
   install.sh agents-md     [options]                             # install project guidelines
-  install.sh mcp-jetbrains [options]                             # register JetBrains MCP
-  install.sh mcp-context7  [options] [--context7-key KEY]        # register Context7 MCP
-  install.sh playwright    [options]                             # install Playwright
+  install.sh mcp-jetbrains [options] [--scope local|global]      # register JetBrains MCP
+  install.sh mcp-context7  [options] [--context7-key KEY]        # register Context7 MCP (user level)
+  install.sh playwright    [options] [--scope local|global]      # register Playwright MCP
 
 Common options:
   --content-ref REF          Repository branch/ref to download and use. Defaults
@@ -232,16 +239,18 @@ Common options:
   --agents CSV               Comma-separated agent list. Accepts a single value
                              too (e.g. "claude" or "claude,codex"). Required by
                              every subcommand. Valid values:
-                             claude, codex, opencode, junie.
+                             claude, codex, opencode, junie. In the MCP
+                             subcommands, claude also sets up Claude Desktop
+                             when it is installed here.
   --backup-existing-files    Rename overwritten files/dirs to <name>.bak
                              (deduped: .bak, .bak1, .bak2, ...) instead of
                              deleting them. Off by default. Project guidelines
-                             (CLAUDE.md / AGENTS.md / guidelines.md) are merged
+                             (CLAUDE.md / AGENTS.md) are merged
                              rather than overwritten and are not covered by this
                              flag: a backup is made only when the toolkit
                              rewrites content it does not own -- replacing a
                              guidelines file an older toolkit version installed,
-                             or appending to your own file. Replacing only the
+                             or adding the block to your own file. Replacing only the
                              marked region never makes a backup, and a file
                              that is already up to date is left untouched.
   --verbose, --debug         Print extra diagnostic output (OS, PATH, resolved
@@ -254,11 +263,21 @@ skills options:
                          matching dir under the current project (e.g.
                          ./.claude/skills).
 
+mcp-jetbrains / playwright options:
+  --scope local|global   Where to register the MCP server. "local" (default)
+                         writes the project files in the current directory
+                         (.mcp.json, .codex/config.toml, opencode.json,
+                         .junie/mcp/mcp.json); "global" writes the user-level
+                         config of each agent. Claude Desktop, set up with
+                         claude, has only a user-level config.
+
 mcp-context7 options:
   --context7-key K   Context7 API key. Prompted interactively when missing.
+                     Context7 is always registered at user level, so the key
+                     never lands in project files.
 
-playwright options:
-  (uses common --agents flag; requires `npx` (Node.js) on PATH)
+Environment:
+  JMIX_IDE_MCP_PORT  Port of the IntelliJ IDEA MCP server (default 64342).
 EOF
 }
 
@@ -324,24 +343,47 @@ ensure_tarball() {
 # =================================================================
 
 # Validates the install scope. Emits the normalized value ("global"/"local").
-# $1 - raw scope string (may be empty -> defaults to global)
+# $1 - raw scope string   $2 - subcommand name for the error message
 parse_scope() {
-    case "${1:-global}" in
-        global|local) printf '%s' "${1:-global}" ;;
-        *) die "skills: --scope must be 'global' or 'local' (got '$1')" ;;
+    case "$1" in
+        global|local) printf '%s' "$1" ;;
+        *) die "$2: --scope must be 'global' or 'local' (got '$1')" ;;
     esac
 }
 
 # Relative skills dir each agent reads, used as a whole-dir symlink to the store.
-# claude -> .claude/skills ; codex & opencode -> .agents/skills (open standard) ;
-# junie -> .junie/skills. Rooted at $HOME (global) or the project dir (local).
+# claude -> .claude/skills ; codex, opencode & junie -> .agents/skills (open
+# standard). Rooted at $HOME (global) or the project dir (local).
 agent_symlink_rel() {
     case "$1" in
-        claude)            printf '.claude/skills' ;;
-        codex|opencode)    printf '.agents/skills' ;;
-        junie)             printf '.junie/skills' ;;
+        claude)               printf '.claude/skills' ;;
+        codex|opencode|junie) printf '.agents/skills' ;;
         *) die "unknown agent '$1'" ;;
     esac
+}
+
+# Earlier versions also linked the skills into .junie/skills. Junie reads
+# .agents/skills now, and its CLI reads ~/.junie/skills first, so links left
+# there would shadow newer skills: the toolkit's own links are removed. Only
+# when this run linked .agents/skills (otherwise Junie would be left with no
+# skills), and never from a .junie/skills that is the same dir as an agent
+# skills dir: its links are the ones this run just created.
+# $1 - scope root (the user home or the project dir)   $2 - agents of this run
+remove_old_junie_skill_links() {
+    local dir="$1/.junie/skills" link
+    [ -d "$dir" ] || return 0
+    case " $2 " in *" codex "*|*" opencode "*|*" junie "*) ;; *) return 0 ;; esac
+    if [ "$dir" -ef "$1/.agents/skills" ] || [ "$dir" -ef "$1/.claude/skills" ]; then
+        return 0
+    fi
+    for link in "$dir"/jmix "$dir"/jmix-*; do
+        [ -L "$link" ] || continue
+        case "$(readlink "$link")" in
+            */.agents/.jmix/skills/*|*/.skills/*)
+                rm -f "$link" && log "  Removed old Junie skill link ${link}" ;;
+        esac
+    done
+    rmdir "$dir" 2>/dev/null || true
 }
 
 # Removes a path only when it is a dangling (broken) symlink, so a later
@@ -397,6 +439,12 @@ install_skills_to_store() {
 relpath() {
     local base="$1" target="$2" up=""
     while [ "$target" != "$base" ] && [ "${target#"$base"/}" = "$target" ]; do
+        # Only "/" in common (e.g. ~/.claude -> /mnt/c/...): "${target#//}" never
+        # strips, so stop here instead of climbing forever.
+        if [ "$base" = / ]; then
+            printf '%s%s' "$up" "${target#/}"
+            return
+        fi
         base="$(dirname "$base")"
         up="../$up"
     done
@@ -407,33 +455,77 @@ relpath() {
     fi
 }
 
+# Creates agent skills dir $1 and prints its physical path. A symlinked dir
+# (e.g. ~/.agents/skills -> ~/.claude/skills) must be resolved: a relative link
+# target is interpreted where the link physically lives.
+prepare_agent_dir() {
+    # Clear a broken-symlink agent base/dir (e.g. ~/.junie -> missing) so mkdir works.
+    clear_dangling_symlink "$(dirname "$1")"
+    clear_dangling_symlink "$1"
+    mkdir -p "$1" || die "cannot create $1"
+    (cd "$1" && pwd -P)
+}
+
 # Per-skill symlinks: link each store skill folder into the agent skills dir,
 # so Jmix skills coexist with other skills already present there. The link target
 # is relative to the agent dir (see relpath) so links stay valid after a clone.
-# $1 - agent skills dir (kept as a real dir)
+# Only the skills being installed are linked: the store also keeps the backups
+# that --backup-existing-files makes there.
+# $1 - physical agent skills dir (kept as a real dir), see prepare_agent_dir
 # $2 - store dir holding the skill folders
 link_skills_into_dir() {
     local agent_dir="$1"
     local store_dir="$2"
-    # Clear a broken-symlink agent base/dir (e.g. ~/.junie -> missing) so mkdir works.
-    clear_dangling_symlink "$(dirname "$agent_dir")"
-    clear_dangling_symlink "$agent_dir"
-    mkdir -p "$agent_dir" || die "cannot create ${agent_dir}"
     local rel_store skill name
-    rel_store="$(relpath "$agent_dir" "$store_dir")"
-    for skill in "$store_dir"/*/; do
+    rel_store="$(relpath "$agent_dir" "$(cd "$store_dir" && pwd -P)")"
+    for skill in "$SOURCE_SKILLS_DIR"/*/; do
         [ -d "$skill" ] || continue
         name="$(basename "$skill")"
         create_symlink "${agent_dir}/${name}" "${rel_store}/${name}"
     done
+    # Earlier versions linked those store backups too; their links go.
+    for skill in "$agent_dir"/*.bak*; do
+        [ -L "$skill" ] || continue
+        case "$(readlink "$skill")" in
+            "${rel_store}/$(basename "$skill")") rm -f "$skill" ;;
+        esac
+    done
+}
+
+# Links the store into the skills dir of every agent in $3 under root $1.
+# Agents sharing a dir (codex/opencode), or dirs resolving to the same physical
+# dir, are linked once.
+link_store_into_agents() {
+    local root="$1" store_dir="$2" agents="$3"
+    local agent agent_dir phys existed seen=" "
+    for agent in $agents; do
+        agent_dir="${root}/$(agent_symlink_rel "$agent")"
+        existed=0
+        [ -d "$agent_dir" ] && existed=1
+        phys="$(prepare_agent_dir "$agent_dir")" || return 1
+        case "$seen" in
+            *" ${phys} "*) continue ;;
+        esac
+        seen="${seen}${phys} "
+        # An agent dir that is the store (e.g. .claude/skills -> ../.skills)
+        # already holds the skills; links there would point at themselves.
+        if [ "$phys" -ef "$store_dir" ]; then
+            log "  ${agent_dir} is the skills store itself; nothing to link"
+            continue
+        fi
+        link_skills_into_dir "$phys" "$store_dir"
+        emit_change "$([ "$existed" -eq 1 ] && printf updated || printf created)" dir "$agent_dir"
+        log "  Linked skills into ${agent_dir}"
+    done
+    remove_old_junie_skill_links "$root" "$agents"
 }
 
 agent_label() {
     case "$1" in
-        claude)   printf 'Claude CLI' ;;
-        codex)    printf 'Codex' ;;
-        opencode) printf 'OpenCode' ;;
-        junie)    printf 'Junie' ;;
+        claude)         printf 'Claude CLI' ;;
+        codex)          printf 'Codex' ;;
+        opencode)       printf 'OpenCode' ;;
+        junie)          printf 'Junie' ;;
         *) printf '%s' "$1" ;;
     esac
 }
@@ -465,7 +557,7 @@ cmd_skills() {
 
     local agents
     agents="$(parse_agents_csv "$agents_csv" "skills")"
-    scope="$(parse_scope "$scope")"
+    scope="$(parse_scope "$scope" skills)"
 
     ensure_tarball
 
@@ -487,20 +579,7 @@ cmd_skills() {
 
     log ""
     log "Linking store skills into agent dirs"
-    local agent rel agent_dir seen=" "
-    for agent in $agents; do
-        rel="$(agent_symlink_rel "$agent")"
-        case "$seen" in
-            *" ${rel} "*) continue ;;
-        esac
-        seen="${seen}${rel} "
-        agent_dir="${root}/${rel}"
-        local agent_dir_existed=0
-        [ -d "$agent_dir" ] && agent_dir_existed=1
-        link_skills_into_dir "$agent_dir" "$store_dir"
-        emit_change "$([ "$agent_dir_existed" -eq 1 ] && printf updated || printf created)" dir "$agent_dir"
-        log "  Linked skills into ${agent_dir}"
-    done
+    link_store_into_agents "$root" "$store_dir" "$agents"
 
     log ""
     log "Done. Installed ${scope} skills store at ${store_dir} and linked: $(printf '%s' "$agents" | tr ' ' ',' | sed 's/,/, /g')"
@@ -515,12 +594,28 @@ agents_md_dest_for_agent() {
     local pwd_
     pwd_="$(pwd -P)"
     case "$agent" in
-        claude)   printf '%s/CLAUDE.md' "$pwd_" ;;
-        codex)    printf '%s/AGENTS.md' "$pwd_" ;;
-        opencode) printf '%s/AGENTS.md' "$pwd_" ;;
-        junie)    printf '%s/.junie/guidelines.md' "$pwd_" ;;
+        claude)               printf '%s/CLAUDE.md' "$pwd_" ;;
+        codex|opencode|junie) printf '%s/AGENTS.md' "$pwd_" ;;
         *) die "unknown agent '$1'" ;;
     esac
+}
+
+# Codex reads AGENTS.override.md instead of AGENTS.md in the same dir, and only
+# the first 32 KiB (project_doc_max_bytes) of its project docs. Warns when
+# either keeps the block in AGENTS.md $1 from Codex.
+warn_if_codex_misses_block() {
+    local dir offset
+    dir="$(dirname "$1")"
+    if [ -e "${dir}/AGENTS.override.md" ]; then
+        log "  Note: Codex reads ${dir}/AGENTS.override.md instead of AGENTS.md there, so it does not see the Jmix block. Copy the block into it."
+    fi
+    # -a: a NUL or invalid UTF-8 byte must not turn the output into "Binary file
+    # ... matches"; anything but digits is ignored.
+    offset="$(LC_ALL=C grep -abF "$BLOCK_END" "$1" | tail -n 1 | cut -d: -f1)" || offset=""
+    case "$offset" in ''|*[!0-9]*) offset="" ;; esac
+    if [ -n "$offset" ] && [ $((offset + ${#BLOCK_END})) -gt 32768 ]; then
+        log "  Note: Codex reads only the first 32 KiB of AGENTS.md, and the Jmix block ends past that. Move the block (with its markers) to the top."
+    fi
 }
 
 # The marker pair delimiting the toolkit-managed region inside a project
@@ -665,19 +760,31 @@ claude_md_covered_by_agents_md() {
     [ -f "$claude_md" ] && grep -Eq '(^|[[:space:]])@(\./)?AGENTS\.md([[:space:]]|$)' "$claude_md"
 }
 
-# Installs the toolkit-managed block into the agent's project guidelines file.
+# Installs the block for agent $1, then checks what could still hide it from
+# the agent (see the helpers above).
+install_guidelines_block_for() {
+    local dest
+    dest="$(agents_md_dest_for_agent "$1")"
+    write_guidelines_block "$1" "$dest"
+    if [ "$1" = codex ]; then
+        warn_if_codex_misses_block "$dest"
+    fi
+}
+
+# Writes the toolkit-managed block for agent $1 into project guidelines file $2.
 # Four branches, in order:
 #   1. no file            -> write the block alone
 #   2. markers present    -> replace only that region, no backup
 #   3. legacy toolkit file-> back up, replace whole file
-#   4. anything else      -> back up, append the block, keep everything they wrote
+#   4. anything else      -> back up, add the block, keep everything they wrote:
+#                            on top of an AGENTS.md (Codex reads only its first
+#                            32 KiB), at the end of any other file
 # Before 2-4, a CLAUDE.md that already gets the block through AGENTS.md (see
 # claude_md_covered_by_agents_md) is skipped, and a dest that exists but is not
 # a file is an error.
-install_guidelines_block_for() {
-    local agent="$1"
-    local dest label dest_dir tmp backup
-    dest="$(agents_md_dest_for_agent "$agent")"
+write_guidelines_block() {
+    local agent="$1" dest="$2"
+    local label dest_dir tmp backup
     label="$(agent_label "$agent")"
 
     [ -f "$SOURCE_GUIDELINES_BLOCK" ] \
@@ -730,6 +837,20 @@ install_guidelines_block_for() {
 
     if looks_like_legacy_guidelines "$dest"; then
         cp "$SOURCE_GUIDELINES_BLOCK" "$tmp" || { rm -f "$tmp"; die "cannot stage ${dest}"; }
+    elif [ "$(basename "$dest")" = AGENTS.md ]; then
+        # A leading UTF-8 BOM stays the first bytes of the file.
+        {
+            if [ "$(head -c 3 "$dest")" = $'\xef\xbb\xbf' ]; then
+                printf '\357\273\277'
+                cat "$SOURCE_GUIDELINES_BLOCK"
+                printf '\n'
+                tail -c +4 "$dest"
+            else
+                cat "$SOURCE_GUIDELINES_BLOCK"
+                printf '\n'
+                cat "$dest"
+            fi
+        } > "$tmp" || { rm -f "$tmp"; die "cannot stage ${dest}"; }
     else
         {
             cat "$dest"
@@ -751,11 +872,10 @@ install_guidelines_block_for() {
 # state whatever order the agents were given in. $2=1 keeps going after a
 # failed agent (wizard).
 install_guidelines_blocks() {
-    local agents="$1" lenient="${2:-0}" ordered="" has_claude=0 agent
-    for agent in $agents; do
-        if [ "$agent" = claude ]; then has_claude=1; else ordered="${ordered} ${agent}"; fi
+    local agents="$1" lenient="${2:-0}" ordered="" agent
+    for agent in codex opencode junie claude; do
+        case " $agents " in *" ${agent} "*) ordered="${ordered} ${agent}" ;; esac
     done
-    [ "$has_claude" -eq 1 ] && ordered="${ordered} claude"
     for agent in $ordered; do
         if [ "$lenient" -eq 1 ]; then
             install_guidelines_block_for "$agent" || true
@@ -795,81 +915,401 @@ cmd_agents_md() {
 }
 
 # =================================================================
-# MCP install - JetBrains
+# MCP registration (shared by mcp-jetbrains, mcp-context7, playwright)
 # =================================================================
+#
+# Servers are written straight into each agent's config file, so no agent CLI
+# has to be on PATH (Studio runs this from the IDE process). Local scope writes
+# the project files, global scope the user files:
+#
+#   agent           local                  global
+#   claude          .mcp.json              ~/.claude.json via `claude mcp add`
+#   codex           .codex/config.toml     ${CODEX_HOME:-~/.codex}/config.toml
+#   opencode        opencode.json          ${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json
+#   junie           .junie/mcp/mcp.json    ${JUNIE_HOME:-~/.junie}/mcp/mcp.json
+#
+# With claude, Claude Desktop is set up too when it is installed (see
+# mcp_desktop): claude_desktop_config.json, user level only.
+#
+# ~/.claude.json is Claude Code's own state file, so it is changed only through
+# the claude CLI. Every other file is merged in place: other servers and keys
+# are kept, an unchanged file is not rewritten, and a file that cannot be
+# parsed is left alone and the step fails.
 
-# Registers a user-scope Claude MCP server idempotently. `claude mcp add` exits
-# non-zero and writes "already exists in user config" to stderr when the name is
-# already present, which Studio treats as a failed wizard step. Removing any
-# existing entry first (discarding the harmless "not found" output) makes a re-run
-# succeed cleanly. Usage: add_claude_user_mcp <name> <args-after-"mcp add"...>
-add_claude_user_mcp() {
-    local name="$1"; shift
-    claude mcp remove --scope user "$name" >/dev/null 2>&1 || true
-    claude mcp add "$@"
+# Prints the Claude Desktop config file, or fails when Claude Desktop has no
+# config folder here (not installed, or never started).
+claude_desktop_config() {
+    local dir
+    case "$(uname -s 2>/dev/null)" in
+        Darwin) dir="${HOME}/Library/Application Support/Claude" ;;
+        Linux)  dir="${XDG_CONFIG_HOME:-${HOME}/.config}/Claude" ;;
+        *) return 1 ;;
+    esac
+    [ -d "$dir" ] || return 1
+    printf '%s/claude_desktop_config.json' "$dir"
 }
 
-mcp_jetbrains_for_claude() {
-    require_tool claude
-    log "Adding JetBrains MCP for Claude CLI..."
-    add_claude_user_mcp jetbrains --transport sse jetbrains --scope user http://localhost:64342/sse
-}
-
-mcp_jetbrains_for_codex() {
-    require_tool codex
-    log "Adding JetBrains MCP for Codex (Streamable HTTP; requires IntelliJ 2026.1+)..."
-    log "For older IntelliJ versions, follow the STDIO setup in the README manually."
-    codex mcp add jetbrains --url http://localhost:64342/stream
-}
-
-mcp_jetbrains_for_opencode() {
-    local config_dir="${HOME}/.config/opencode"
-    local config_file="${config_dir}/opencode.json"
-    mkdir -p "$config_dir"
-    [ -f "$config_file" ] || echo '{}' > "$config_file"
-
-    if ! command -v jq >/dev/null 2>&1; then
-        log "OpenCode requires jq to edit ${config_file}. Add this block manually:"
-        cat <<'EOF'
-  "mcp": {
-    "jetbrains": {
-      "type": "remote",
-      "url": "http://localhost:64342/sse",
-      "enabled": true
-    }
-  }
-EOF
-        return 1
-    fi
-
-    local tmp
-    tmp="$(mktemp)"
-    jq '.mcp = (.mcp // {}) | .mcp.jetbrains = {"type":"remote","url":"http://localhost:64342/sse","enabled":true}' "$config_file" > "$tmp"
-    mv "$tmp" "$config_file"
-    emit_change updated file "$config_file"
-    log "Updated ${config_file} with JetBrains MCP entry."
-}
-
-mcp_jetbrains_for_junie() {
-    log "Junie runs inside IntelliJ and already has native IDE access. No JetBrains MCP needed."
-}
-
-install_jetbrains_for() {
-    local agent="$1"
-    log ""
-    log "[JetBrains MCP] $(agent_label "$agent")"
-    case "$agent" in
-        claude)   mcp_jetbrains_for_claude ;;
-        codex)    mcp_jetbrains_for_codex ;;
-        opencode) mcp_jetbrains_for_opencode ;;
-        junie)    mcp_jetbrains_for_junie ;;
-        *) die "unknown agent '$1'" ;;
+# Prints the MCP config file of agent $1 for scope $2 (see the table above).
+mcp_config_file() {
+    local proj
+    proj="$(pwd -P)"
+    case "$1:$2" in
+        claude:local)     printf '%s/.mcp.json' "$proj" ;;
+        codex:local)      printf '%s/.codex/config.toml' "$proj" ;;
+        codex:global)     printf '%s/config.toml' "${CODEX_HOME:-${HOME}/.codex}" ;;
+        opencode:local)   printf '%s/opencode.json' "$proj" ;;
+        opencode:global)  printf '%s/opencode/opencode.json' "${XDG_CONFIG_HOME:-${HOME}/.config}" ;;
+        junie:local)      printf '%s/.junie/mcp/mcp.json' "$proj" ;;
+        junie:global)     printf '%s/mcp/mcp.json' "${JUNIE_HOME:-${HOME}/.junie}" ;;
+        *) return 1 ;;
     esac
 }
 
-cmd_mcp_jetbrains() {
-    local agents_csv=""
+# Moves staged file $1 over config file $2 unless they are identical, logging
+# the outcome. A new file gets mode $3; an existing one keeps its mode, and a
+# symlinked one is written through (see preserve_dest_mode / commit_staged).
+# With MCP_PRIVATE=1 (the entry carries the Context7 key) the file ends up
+# readable by its owner only, whatever mode it had.
+commit_config() {
+    local tmp="$1" file="$2" mode="$3"
+    # Narrow the old mode before copying it or writing through a symlink.
+    if [ "$MCP_PRIVATE" = 1 ] && [ -e "$file" ]; then
+        chmod go-rwx "$file" || { rm -f "$tmp"; err "cannot restrict the permissions of ${file}"; return 1; }
+    fi
+    if [ -f "$file" ] && cmp -s "$tmp" "$file"; then
+        rm -f "$tmp"
+        log "  Unchanged: ${file}"
+        CONFIG_CHANGED=0
+    elif [ -e "$file" ]; then
+        preserve_dest_mode "$tmp" "$file"
+        commit_staged "$tmp" "$file" || { rm -f "$tmp"; err "cannot write ${file}"; return 1; }
+        log "  Updated: ${file}"
+        emit_change updated file "$file"
+        CONFIG_CHANGED=1
+    else
+        if ! { chmod "$mode" "$tmp" && mv "$tmp" "$file"; }; then
+            rm -f "$tmp"; err "cannot write ${file}"; return 1
+        fi
+        log "  Created: ${file}"
+        emit_change created file "$file"
+        CONFIG_CHANGED=1
+    fi
+}
 
+# Reads JSON on stdin, sets .[$1][$2] = $3 (compact JSON) and prints the result.
+# Uses jq, or node when jq is missing; fails on input that is not a JSON object
+# (JSONC comments included) or when neither tool exists.
+json_merge() {
+    if command -v jq >/dev/null 2>&1; then
+        jq --arg r "$1" --arg n "$2" --argjson e "$3" \
+            'if type == "object" then .[$r] = ((.[$r] // {}) | .[$n] = $e) else error("not an object") end'
+    elif command -v node >/dev/null 2>&1; then
+        node -e '
+            const [root, name, entry] = process.argv.slice(1);
+            let text = "";
+            process.stdin.on("data", d => text += d).on("end", () => {
+                const o = JSON.parse(text);
+                if (o === null || typeof o !== "object" || Array.isArray(o)) process.exit(1);
+                o[root] = (o[root] && typeof o[root] === "object") ? o[root] : {};
+                o[root][name] = JSON.parse(entry);
+                process.stdout.write(JSON.stringify(o, null, 2) + "\n");
+            });' "$1" "$2" "$3"
+    else
+        return 1
+    fi
+}
+
+# Sets server $3 = $4 (compact JSON) under the "$2" object of JSON file $1.
+# $5 - mode for a newly created file
+json_set_entry() {
+    local file="$1" root="$2" name="$3" entry="$4" mode="$5" dir tmp
+    if { [ -e "$file" ] || [ -L "$file" ]; } && [ ! -f "$file" ]; then
+        err "cannot update ${file}: it exists but is not a regular file"
+        return 1
+    fi
+    if [ -e "$file" ] && [ ! -r "$file" ]; then
+        err "cannot read ${file}; it was left unchanged"
+        return 1
+    fi
+    dir="$(dirname "$file")"
+    mkdir -p "$dir" || { err "cannot create ${dir}"; return 1; }
+    tmp="$(mktemp "${dir}/.jmix-mcp.XXXXXX")" || { err "cannot create a temp file in ${dir}"; return 1; }
+    # A new or blank file needs no merge, so no jq/node either; a re-run finds
+    # this exact text and leaves it alone.
+    printf '{\n  "%s": {\n    "%s": %s\n  }\n}\n' "$root" "$name" "$entry" > "$tmp"
+    if [ ! -f "$file" ] || ! grep -q '[^[:space:]]' "$file" || cmp -s "$tmp" "$file"; then
+        commit_config "$tmp" "$file" "$mode"
+        return
+    fi
+    # Merge into the existing content; a UTF-8 BOM (Windows editors) is dropped.
+    # pipefail (set at the top) fails the pipeline when json_merge does.
+    if ! LC_ALL=C sed $'1s/^\xef\xbb\xbf//' "$file" \
+        | json_merge "$root" "$name" "$entry" > "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
+        rm -f "$tmp"
+        if command -v jq >/dev/null 2>&1 || command -v node >/dev/null 2>&1; then
+            err "cannot update ${file}: it is not plain JSON (comments are not supported). Add the \"${name}\" server to it manually, see README."
+        else
+            err "cannot update ${file}: editing it needs jq or node. Install one of them, or add the \"${name}\" server manually, see README."
+        fi
+        return 1
+    fi
+    commit_config "$tmp" "$file" "$mode"
+}
+
+# Sets table [$2] of TOML file $1 to body $3: an existing [$2] (with its
+# sub-tables) is replaced where it stands, otherwise the table is appended.
+# Fails, leaving the file alone, when $2 is defined another way (dotted keys,
+# or inline in a parent) that this line-based edit cannot replace.
+# $4 - mode for a newly created file; $5=check validates a write without
+# committing it, $5=scan only checks how [$2] is defined, for a file that is
+# read but not written (triple-quoted strings elsewhere do not matter then).
+toml_set_table() {
+    local file="$1" table="$2" body="$3" mode="$4" check="${5:-}" dir tmp rc=0
+    if { [ -e "$file" ] || [ -L "$file" ]; } && [ ! -f "$file" ]; then
+        err "cannot update ${file}: it exists but is not a regular file"
+        return 1
+    fi
+    if [ -e "$file" ] && [ ! -r "$file" ]; then
+        err "cannot read ${file}; it was left unchanged"
+        return 1
+    fi
+    # shortcut: refuse triple-quoted content; use a TOML parser to edit it safely.
+    if [ "$check" != scan ] && [ -f "$file" ] && grep -Eq "\"\"\"|'''" "$file"; then
+        err "cannot update ${file}: multi-line TOML strings are not supported. Add [${table}] manually, see README."
+        return 1
+    fi
+    [ -n "$check" ] && [ ! -f "$file" ] && return 0
+    if [ -n "$check" ]; then
+        # In particular, never stage a Context7 key in a project directory.
+        tmp=/dev/null
+    else
+        dir="$(dirname "$file")"
+        mkdir -p "$dir" || { err "cannot create ${dir}"; return 1; }
+        tmp="$(mktemp "${dir}/.jmix-mcp.XXXXXX")" || { err "cannot create a temp file in ${dir}"; return 1; }
+    fi
+    if [ -f "$file" ]; then
+        # Comments before the next table usually introduce that table.
+        JMIX_TOML_BODY="$body" awk -v t="$table" '
+            function norm(s) { gsub(/[ \t"]/, "", s); gsub(sprintf("%c", 39), "", s); return s }
+            function emit(s) { out[++n] = s; if (s !~ /^[ \t\r]*$/) last = n }
+            function flush(  i) { for (i = 1; i <= np; i++) emit(pend[i]); np = 0 }
+            # The BOM is found with index() and measured with length(): gawk in
+            # a UTF-8 locale counts it as one character, and BSD awk compares
+            # strings by collation, which ignores it ("\357\273\277x" == "x").
+            BEGIN { body = ENVIRON["JMIX_TOML_BODY"]; bom = "\357\273\277"; blen = length(bom) }
+            {
+                line = $0; probe = line
+                if (NR == 1 && index(probe, bom) == 1) { probe = substr(probe, blen + 1); hasbom = 1 }
+            }
+            probe ~ /^[ \t]*\[/ {
+                h = probe; sub(/^[ \t]*\[+/, "", h); sub(/\].*$/, "", h); h = norm(h)
+                if (skip) flush()
+                skip = (h == t || index(h, t ".") == 1)
+                if (!skip) { cur = h; emit(line); next }
+                if (!done) { emit((NR == 1 && hasbom ? bom : "") "[" t "]"); emit(body); done = 1 }
+                next
+            }
+            skip {
+                if (probe ~ /^[ \t]*(#.*)?\r?$/) pend[++np] = line; else np = 0
+                next
+            }
+            {
+                if (index(probe, "=")) {
+                    k = probe; sub(/=.*$/, "", k); k = norm(k)
+                    full = (cur == "" ? k : cur "." k)
+                    if (full == t || index(full, t ".") == 1 || index(t, full ".") == 1) { conflict = 1; exit }
+                }
+                emit(line)
+            }
+            END {
+                if (conflict) exit 3
+                if (skip) flush()
+                for (i = 1; i <= last; i++) print out[i]
+                if (!done) {
+                    if (last) print ""
+                    print "[" t "]"
+                    print body
+                }
+            }
+        ' "$file" > "$tmp" || rc=$?
+    else
+        printf '[%s]\n%s\n' "$table" "$body" > "$tmp"
+    fi
+    if [ "$rc" -ne 0 ]; then
+        [ -n "$check" ] || rm -f "$tmp"
+        err "cannot update ${file}: [${table}] is defined there in a form this installer does not edit. Change it manually, see README."
+        return 1
+    fi
+    [ -n "$check" ] && return 0
+    commit_config "$tmp" "$file" "$mode"
+}
+
+# Prints "url" or "command" -- the transport of table [$2] in Codex config $1 --
+# or nothing when the file or the table is absent.
+codex_transport() {
+    [ -r "$1" ] || return 0
+    awk -v t="$2" '
+        function norm(s) { gsub(/[ \t"]/, "", s); gsub(sprintf("%c", 39), "", s); return s }
+        BEGIN { bom = "\357\273\277"; blen = length(bom) }
+        NR == 1 && index($0, bom) == 1 { $0 = substr($0, blen + 1) }
+        /^[ \t]*\[/ { h = $0; sub(/^[ \t]*\[+/, "", h); sub(/\].*$/, "", h); in_t = (norm(h) == t); next }
+        in_t && index($0, "=") { k = $0; sub(/=.*$/, "", k); k = norm(k); if (k == "url" || k == "command") { print k; exit } }
+    ' "$1"
+}
+
+# Codex merges [mcp_servers.X] of the user and the project config key by key,
+# and refuses its whole configuration when the result mixes url (HTTP) and
+# command (stdio). When the other layer defines the server with the other
+# transport, it gets the same entry -- unless the entry carries the Context7
+# key, which never goes into a project file, or the JetBrains transport is only
+# assumed (IDE not reachable), which must not replace a working entry.
+# $1 - scope to write   $2 - server name   $3 - TOML body; $4=check preflights.
+codex_align_other_layer() {
+    local other_scope=global other mine theirs mode=600 dir inherited own
+    [ "$1" = global ] && { other_scope=local; mode=644; }
+    other="$(mcp_config_file codex "$other_scope")"
+    own="$(mcp_config_file codex "$1")"
+    # Run from the user's home, the project layer is the user layer.
+    if [ "$other" = "$own" ] || [ "$other" -ef "$own" ]; then
+        return 0
+    fi
+    toml_set_table "$other" "mcp_servers.$2" "$3" "$mode" scan || return 1
+    case "$3" in url*) mine="url" ;; *) mine="command" ;; esac
+    # Parent project configs are inherited too; never rewrite their settings.
+    dir="$(pwd -P)"
+    while [ "$dir" != / ] && [ ! -e "$dir/.git" ]; do
+        dir="$(dirname "$dir")"
+        inherited="${dir}/.codex/config.toml"
+        if [ "$inherited" = "$own" ] || [ "$inherited" = "$other" ] \
+            || [ "$inherited" -ef "$own" ] || [ "$inherited" -ef "$other" ]; then continue; fi
+        toml_set_table "$inherited" "mcp_servers.$2" "$3" 644 scan || return 1
+        theirs="$(codex_transport "$inherited" "mcp_servers.$2")" || return 1
+        if [ -n "$theirs" ] && [ "$theirs" != "$mine" ]; then
+            err "${inherited} defines inherited [mcp_servers.$2] with another transport; change it manually before re-running."
+            return 1
+        fi
+    done
+    theirs="$(codex_transport "$other" "mcp_servers.$2")" || return 1
+    [ -n "$theirs" ] && [ "$theirs" != "$mine" ] || return 0
+    if [ "$MCP_PRIVATE" = 1 ]; then
+        err "${other} defines [mcp_servers.$2] with another transport, and Codex cannot merge the two: remove that table there."
+        return 1
+    fi
+    if [ "$2" = jetbrains ] && [ "$JB_GUESSED" = 1 ]; then
+        err "${other} defines [mcp_servers.jetbrains] with another transport, and IntelliJ IDEA is not reachable to tell which one it serves. Start it with its MCP server enabled and re-run."
+        return 1
+    fi
+    # The other layer is rewritten below, so the preflight checks it can be.
+    if [ "${4:-}" = check ]; then
+        toml_set_table "$other" "mcp_servers.$2" "$3" "$mode" check
+        return
+    fi
+    log "  ${other} defines [mcp_servers.$2] with another transport, which Codex cannot merge; updating it too."
+    if [ "$other_scope" = global ]; then
+        log "  Other projects with their own [mcp_servers.$2] of the old transport need this step re-run there."
+    fi
+    toml_set_table "$other" "mcp_servers.$2" "$3" "$mode"
+}
+
+# Registers a Claude Code user-scope server through the claude CLI. `mcp add`
+# exits 1 when the name exists, so any entry is removed first. Its output is
+# discarded: it echoes the command line, the Context7 key included.
+# $1 - server name, $@ after it - arguments of `claude mcp add`
+mcp_claude_user() {
+    local name="$1"
+    shift
+    if ! command -v claude >/dev/null 2>&1; then
+        log "  Skipped: 'claude' CLI not found on PATH. Install Claude Code and re-run."
+        return 0
+    fi
+    claude mcp remove --scope user "$name" >/dev/null 2>&1 || true
+    claude mcp add "$@" >/dev/null || { err "claude mcp add ${name} failed"; return 1; }
+    MCP_WRITTEN=1
+    log "  Registered ${name} in the Claude Code user config"
+}
+
+# Writes MCP server $3 for agent $1 at scope $2. $4 is the entry: compact JSON,
+# or the TOML table body for codex. For claude at global scope the remaining
+# arguments are passed to `claude mcp add` instead.
+mcp_write() {
+    local agent="$1" scope="$2" name="$3" entry="$4" file mode=644
+    shift 4
+    if [ "$agent" = claude ] && [ "$scope" = global ]; then
+        mcp_claude_user "$name" "$@"
+        return
+    fi
+    # User-level files may hold the Context7 key.
+    [ "$scope" = global ] && mode=600
+    file="$(mcp_config_file "$agent" "$scope")" || { err "no MCP config file for ${agent}"; return 1; }
+    case "$agent" in
+        codex)
+            toml_set_table "$file" "mcp_servers.${name}" "$entry" "$mode" check \
+                && codex_align_other_layer "$scope" "$name" "$entry" check \
+                && toml_set_table "$file" "mcp_servers.${name}" "$entry" "$mode" \
+                && codex_align_other_layer "$scope" "$name" "$entry" ;;
+        opencode)
+            json_set_entry "$file" mcp "$name" "$entry" "$mode" ;;
+        *)
+            json_set_entry "$file" mcpServers "$name" "$entry" "$mode" ;;
+    esac || return 1
+    MCP_WRITTEN=1
+}
+
+# Claude Desktop takes stdio servers only and has no project scope. It is set
+# up together with claude whenever it is installed here, i.e. its config
+# folder exists; otherwise nothing is written.
+# $1 - server name   $2 - stdio entry (compact JSON)
+mcp_desktop() {
+    local file
+    file="$(claude_desktop_config)" || return 0
+    CONFIG_CHANGED=0
+    json_set_entry "$file" mcpServers "$1" "$2" 600 || return 1
+    if [ "$CONFIG_CHANGED" = 1 ]; then
+        log "  Quit Claude Desktop completely (not just its window) and start it again to load the change."
+    fi
+}
+
+# Succeeds when claude is among the selected agents and Claude Desktop is installed.
+desktop_selected() {
+    case " $MCP_AGENTS_SEL " in *" claude "*) claude_desktop_config >/dev/null ;; *) return 1 ;; esac
+}
+
+# Prints what the user still has to do for the configs just written.
+# $1 - agents (space-separated)   $2 - scope
+mcp_followups() {
+    local agents=" $1 " scope="$2"
+    if [ "$scope" = local ]; then
+        case "$agents" in *" claude "*)
+            log "Claude Code asks to approve the servers in .mcp.json on its next start in this project." ;;
+        esac
+        case "$agents" in *" codex "*)
+            log "Codex reads .codex/config.toml only in trusted projects: accept its 'trust this folder' prompt. The Codex desktop app ignores project MCP servers; use --scope global for it." ;;
+        esac
+    fi
+}
+
+# Runs the MCP step for every agent and returns 1 if any of them failed.
+# $1 - per-agent function   $2 - agents   $3.. - extra arguments for $1
+mcp_for_agents() {
+    local fn="$1" agents="$2" agent rc=0
+    MCP_WRITTEN_AGENTS=""
+    shift 2
+    for agent in $agents; do
+        log ""
+        MCP_WRITTEN=0
+        "$fn" "$agent" "$@" || rc=1
+        [ "$MCP_WRITTEN" = 0 ] || MCP_WRITTEN_AGENTS="${MCP_WRITTEN_AGENTS} ${agent}"
+    done
+    return $rc
+}
+
+# Parses the shared MCP subcommand options into MCP_AGENTS_SEL / MCP_SCOPE /
+# MCP_KEY. $1 - subcommand name; $2 - 1 when --scope is accepted, 2 for
+# --context7-key; the rest are the arguments.
+parse_mcp_args() {
+    local sub="$1" extra="$2" agents_csv="" scope="local"
+    shift 2
+    MCP_KEY=""
     local _argc=-1
     while [ $# -gt 0 ]; do
         [ "$#" -ne "$_argc" ] || die "argument parser made no progress near: $1"
@@ -878,218 +1318,225 @@ cmd_mcp_jetbrains() {
             --agents)
                 [ $# -ge 2 ] || die "--agents requires an argument"
                 agents_csv="$2"; shift 2 ;;
+            --scope)
+                [ "$extra" = 1 ] || die "unknown argument: $1"
+                [ $# -ge 2 ] || die "--scope requires an argument"
+                scope="$2"; shift 2 ;;
+            --context7-key)
+                [ "$extra" = 2 ] || die "unknown argument: $1"
+                [ $# -ge 2 ] || die "--context7-key requires an argument"
+                MCP_KEY="$2"; shift 2 ;;
             --backup-existing-files)
                 BACKUP_EXISTING=1; shift ;;
+            --source)
+                # Accepted like every subcommand; MCP steps need no content.
+                [ $# -ge 2 ] || die "--source requires an argument"
+                shift 2 ;;
             -h|--help) usage; exit 0 ;;
             *) die "unknown argument: $1" ;;
         esac
     done
+    MCP_AGENTS_SEL="$(parse_agents_csv "$agents_csv" "$sub")"
+    MCP_SCOPE="$(parse_scope "$scope" "$sub")"
+}
 
-    local agents
-    agents="$(parse_agents_csv "$agents_csv" "mcp-jetbrains")"
+# =================================================================
+# MCP install - JetBrains
+# =================================================================
 
-    local agent rc=0
-    for agent in $agents; do
-        install_jetbrains_for "$agent" || rc=1
-    done
+# IntelliJ 2026.1+ serves Streamable HTTP at /stream; 2025.2/2025.3 serve only
+# SSE at /sse and answer 404 there. A HEAD request tells them apart without
+# opening an MCP session. When the IDE does not answer (server disabled, IDE
+# closed), assume 2026.1+ and say so.
+detect_jetbrains_transport() {
+    local code=""
+    if command -v curl >/dev/null 2>&1; then
+        # --noproxy: an http_proxy would answer instead of the IDE.
+        code="$(curl -s --noproxy '*' -o /dev/null -I -m 3 -w '%{http_code}' "http://127.0.0.1:${JB_PORT}/stream" 2>/dev/null)" || true
+    fi
+    case "$code" in
+        404)
+            JB_TRANSPORT=sse
+            log "IntelliJ IDEA MCP server on port ${JB_PORT} has no /stream endpoint (IntelliJ IDEA before 2026.1): using SSE." ;;
+        ''|000)
+            JB_TRANSPORT=stream
+            JB_GUESSED=1
+            log "IntelliJ IDEA MCP server is not reachable on port ${JB_PORT}; assuming IntelliJ IDEA 2026.1+."
+            log "Enable it in Settings | Tools | MCP Server. On IntelliJ IDEA 2025.x, re-run this step once it is enabled." ;;
+        *)
+            JB_TRANSPORT=stream ;;
+    esac
+}
+
+# $1 - agent   $2 - scope
+install_jetbrains_for() {
+    local agent="$1" scope="$2" base="http://127.0.0.1:${JB_PORT}"
+    # A stdio-to-SSE bridge for clients without an HTTP transport the IDE has.
+    local bridge_json="{\"command\":\"npx\",\"args\":[\"-y\",\"mcp-remote\",\"${base}/sse\",\"--transport\",\"sse-only\"]}"
+    log "[JetBrains MCP] $(agent_label "$agent")"
+    if [ "$agent" = junie ]; then
+        log "  Junie runs inside IntelliJ IDEA and already has native IDE access. No JetBrains MCP needed."
+        return 0
+    fi
+    local rc=0
+    if [ "$JB_TRANSPORT" = stream ]; then
+        case "$agent" in
+            claude)   mcp_write claude "$scope" jetbrains "{\"type\":\"http\",\"url\":\"${base}/stream\"}" \
+                          --scope user --transport http jetbrains "${base}/stream" ;;
+            codex)    mcp_write codex "$scope" jetbrains "url = \"${base}/stream\"" ;;
+            opencode) mcp_write opencode "$scope" jetbrains "{\"type\":\"remote\",\"url\":\"${base}/stream\",\"enabled\":true}" ;;
+        esac || rc=1
+    else
+        case "$agent" in
+            claude)   mcp_write claude "$scope" jetbrains "{\"type\":\"sse\",\"url\":\"${base}/sse\"}" \
+                          --scope user --transport sse jetbrains "${base}/sse" ;;
+            # Codex has no SSE transport.
+            codex)    mcp_write codex "$scope" jetbrains "command = \"npx\"
+args = [\"-y\", \"mcp-remote\", \"${base}/sse\", \"--transport\", \"sse-only\"]
+startup_timeout_sec = 60" ;;
+            opencode) mcp_write opencode "$scope" jetbrains "{\"type\":\"remote\",\"url\":\"${base}/sse\",\"enabled\":true}" ;;
+        esac || rc=1
+    fi
+    # Claude Desktop has no HTTP transport for local servers: always the bridge.
+    if [ "$agent" = claude ]; then
+        mcp_desktop jetbrains "$bridge_json" || rc=1
+    fi
+    return $rc
+}
+
+cmd_mcp_jetbrains() {
+    parse_mcp_args mcp-jetbrains 1 "$@"
+    detect_jetbrains_transport
+    local rc=0
+    mcp_for_agents install_jetbrains_for "$MCP_AGENTS_SEL" "$MCP_SCOPE" || rc=1
+    if desktop_selected; then
+        warn_if_no_npx "Claude Desktop's JetBrains MCP bridge"
+    elif [ "$JB_TRANSPORT" = sse ]; then
+        case " $MCP_AGENTS_SEL " in *" codex "*) warn_if_no_npx "Codex's JetBrains MCP bridge" ;; esac
+    fi
+    log ""
+    mcp_followups "$MCP_AGENTS_SEL" "$MCP_SCOPE"
     return $rc
 }
 
 # =================================================================
-# MCP install - Context7
+# MCP install - Context7 (always user level: the entry carries the API key)
 # =================================================================
 
-mcp_context7_for_claude() {
-    local key="$1"
-    require_tool claude
-    log "Adding Context7 MCP for Claude CLI..."
-    add_claude_user_mcp context7 context7 --scope user -- npx -y @upstash/context7-mcp --api-key "$key"
+# Fails for an empty key or one that would need escaping: the key is spliced
+# into JSON, TOML and an HTTP header as is.
+context7_key_ok() {
+    case "$1" in
+        ''|*[!A-Za-z0-9._-]*) return 1 ;;
+    esac
 }
 
-mcp_context7_for_codex() {
-    local key="$1"
-    require_tool codex
-    log "Adding Context7 MCP for Codex..."
-    codex mcp add context7 -- npx -y @upstash/context7-mcp --api-key "$key"
-}
-
-mcp_context7_for_opencode() {
-    local key="$1"
-    local config_dir="${HOME}/.config/opencode"
-    local config_file="${config_dir}/opencode.json"
-    mkdir -p "$config_dir"
-    [ -f "$config_file" ] || echo '{}' > "$config_file"
-
-    if ! command -v jq >/dev/null 2>&1; then
-        log "OpenCode requires jq to edit ${config_file}. Add this block manually:"
-        cat <<EOF
-  "mcp": {
-    "context7": {
-      "type": "local",
-      "command": ["npx", "-y", "@upstash/context7-mcp", "--api-key", "${key}"],
-      "enabled": true
-    }
-  }
-EOF
-        return 1
-    fi
-
-    local tmp
-    tmp="$(mktemp)"
-    jq --arg key "$key" '.mcp = (.mcp // {}) | .mcp.context7 = {"type":"local","command":["npx","-y","@upstash/context7-mcp","--api-key",$key],"enabled":true}' "$config_file" > "$tmp"
-    mv "$tmp" "$config_file"
-    emit_change updated file "$config_file"
-    log "Updated ${config_file} with Context7 MCP entry."
-}
-
-mcp_context7_for_junie() {
-    local key="$1"
-    log "Junie does not support automated MCP setup."
-    log "Open IntelliJ Settings -> Tools -> Junie -> MCP Settings, click Add, then paste:"
-    cat <<EOF
-{
-  "mcpServers": {
-    "context7": {
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp", "--api-key", "${key}"]
-    }
-  }
-}
-EOF
-}
-
+# $1 - agent   $2 - API key
 install_context7_for() {
-    local agent="$1"
-    local key="$2"
-    log ""
+    local agent="$1" key="$2"
+    local stdio_json="{\"command\":\"npx\",\"args\":[\"-y\",\"@upstash/context7-mcp\"],\"env\":{\"CONTEXT7_API_KEY\":\"${key}\"}}"
     log "[Context7 MCP] $(agent_label "$agent")"
     case "$agent" in
-        claude)   mcp_context7_for_claude "$key" ;;
-        codex)    mcp_context7_for_codex "$key" ;;
-        opencode) mcp_context7_for_opencode "$key" ;;
-        junie)    mcp_context7_for_junie "$key" ;;
-        *) die "unknown agent '$1'" ;;
+        claude)
+            local rc=0
+            mcp_write claude global context7 "" \
+                --scope user --transport http context7 "$CONTEXT7_URL" --header "Authorization: Bearer ${key}" || rc=1
+            mcp_desktop context7 "$stdio_json" || rc=1
+            return $rc ;;
+        codex)    mcp_write codex global context7 "url = \"${CONTEXT7_URL}\"
+http_headers = { Authorization = \"Bearer ${key}\" }" ;;
+        opencode) mcp_write opencode global context7 "{\"type\":\"remote\",\"url\":\"${CONTEXT7_URL}\",\"headers\":{\"Authorization\":\"Bearer ${key}\"},\"enabled\":true}" ;;
+        # Junie (and Claude Desktop above): stdio, the key in the environment, not in argv.
+        *)        mcp_write "$agent" global context7 "$stdio_json" ;;
     esac
 }
 
 cmd_mcp_context7() {
-    local agents_csv=""
-    local key=""
-
-    local _argc=-1
-    while [ $# -gt 0 ]; do
-        [ "$#" -ne "$_argc" ] || die "argument parser made no progress near: $1"
-        _argc=$#
-        case "$1" in
-            --agents)
-                [ $# -ge 2 ] || die "--agents requires an argument"
-                agents_csv="$2"; shift 2 ;;
-            --backup-existing-files)
-                BACKUP_EXISTING=1; shift ;;
-            --context7-key)
-                [ $# -ge 2 ] || die "--context7-key requires an argument"
-                key="$2"; shift 2 ;;
-            -h|--help) usage; exit 0 ;;
-            *) die "unknown argument: $1" ;;
-        esac
-    done
-
-    local agents
-    agents="$(parse_agents_csv "$agents_csv" "mcp-context7")"
-
+    parse_mcp_args mcp-context7 2 "$@"
+    local key="$MCP_KEY"
     if [ -z "$key" ]; then
         key="$(prompt 'Context7 API key' '')"
         [ -n "$key" ] || die "Context7 API key is required"
     fi
-
-    local agent rc=0
-    for agent in $agents; do
-        install_context7_for "$agent" "$key" || rc=1
-    done
+    context7_key_ok "$key" || die "Context7 API key may contain only letters, digits, '.', '_' and '-'"
+    local rc=0
+    MCP_PRIVATE=1
+    mcp_for_agents install_context7_for "$MCP_AGENTS_SEL" "$key" || rc=1
+    MCP_PRIVATE=0
+    case " $MCP_AGENTS_SEL " in
+        *" junie "*) warn_if_no_npx "Context7 for Junie" ;;
+        *) desktop_selected && warn_if_no_npx "Context7 for Claude Desktop" ;;
+    esac
+    log ""
+    mcp_followups "$MCP_AGENTS_SEL" global
     return $rc
 }
 
 # =================================================================
-# Playwright install (npx @playwright/cli)
+# MCP install - Playwright
 # =================================================================
 
+# Earlier toolkit versions installed the playwright-cli skill into a global
+# store and linked it into the agent skill dirs. The step now registers the
+# MCP server instead. Remove the shared store only after all global replacements.
+remove_legacy_playwright_skills() {
+    local store="${HOME}/.agents/.playwright" dir link agent
+    [ -d "$store" ] || return 0
+    # The global store and even agent directories may be shared by all agents.
+    for agent in $ALL_AGENTS; do
+        case " $1 " in *" $agent "*) ;; *) return 0 ;; esac
+    done
+    for dir in "${HOME}/.claude/skills" "${HOME}/.agents/skills" "${HOME}/.junie/skills"; do
+        for link in "$dir"/*; do
+            [ -L "$link" ] || continue
+            # Only links into the store: ../.playwright/skills/X from
+            # ~/.agents/skills, .../.agents/.playwright/skills/X elsewhere.
+            case "$(readlink "$link")" in
+                ../.playwright/skills/*|*/.agents/.playwright/skills/*)
+                    rm -f "$link" && log "  Removed old playwright-cli skill link ${link}" ;;
+            esac
+        done
+    done
+    # A store that cannot be removed is reported, not a reason to stop.
+    if rm -rf "$store"; then
+        log "  Removed old playwright-cli skills store ${store}"
+    else
+        err "cannot fully remove the old playwright-cli skills store ${store}"
+    fi
+}
+
+# $1 - agent   $2 - scope
+install_playwright_for() {
+    local agent="$1" scope="$2"
+    log "[Playwright MCP] $(agent_label "$agent")"
+    local stdio_json="{\"command\":\"npx\",\"args\":[\"-y\",\"${PLAYWRIGHT_MCP_PKG}\"]}"
+    case "$agent" in
+        claude)
+            local rc=0
+            mcp_write claude "$scope" playwright "{\"type\":\"stdio\",\"command\":\"npx\",\"args\":[\"-y\",\"${PLAYWRIGHT_MCP_PKG}\"]}" \
+                --scope user playwright -- npx -y "$PLAYWRIGHT_MCP_PKG" || rc=1
+            mcp_desktop playwright "$stdio_json" || rc=1
+            return $rc ;;
+        # The first npx download can outlast Codex's default startup timeout.
+        codex)    mcp_write codex "$scope" playwright "command = \"npx\"
+args = [\"-y\", \"${PLAYWRIGHT_MCP_PKG}\"]
+startup_timeout_sec = 60" ;;
+        opencode) mcp_write opencode "$scope" playwright "{\"type\":\"local\",\"command\":[\"npx\",\"-y\",\"${PLAYWRIGHT_MCP_PKG}\"],\"enabled\":true}" ;;
+        *)        mcp_write "$agent" "$scope" playwright "$stdio_json" ;;
+    esac
+}
+
 cmd_playwright() {
-    local agents_csv=""
-    local _argc=-1
-    while [ $# -gt 0 ]; do
-        [ "$#" -ne "$_argc" ] || die "argument parser made no progress near: $1"
-        _argc=$#
-        case "$1" in
-            --agents)
-                [ $# -ge 2 ] || die "--agents requires an argument"
-                agents_csv="$2"; shift 2 ;;
-            --backup-existing-files)
-                BACKUP_EXISTING=1; shift ;;
-            -h|--help) usage; exit 0 ;;
-            *) die "unknown argument: $1" ;;
-        esac
-    done
-
-    local agents
-    agents="$(parse_agents_csv "$agents_csv" "playwright")"
-
-    require_npx
-
-    # Playwright skills always install globally. Mirror the Jmix model: copy the
-    # skills into a canonical store, then per-skill symlink them into each agent
-    # skills dir so they coexist with other skills already present there.
-    local root="${HOME}"
-    local store_dir="${HOME}/.agents/.playwright/skills"
-    local store_existed=0
-    [ -d "$store_dir" ] && store_existed=1
-
-    # @playwright/cli install --skills writes to <cwd>/.claude/skills/<skill>.
-    # Run it inside a private staging dir so nothing leaks into the project or a
-    # real agent dir, then copy the produced skill folders into the store.
-    PW_STAGING="$(mktemp -d 2>/dev/null || mktemp -d -t jmix-playwright)" \
-        || die "cannot create temp dir for Playwright install"
-    trap 'rm -rf ${PW_STAGING:+"$PW_STAGING"} ${STAGING:+"$STAGING"}' INT TERM EXIT
-
-    log "Installing Playwright skills via npx (@playwright/cli)..."
-    ( cd "$PW_STAGING" && npx -y @playwright/cli@latest install --skills ) \
-        || die "@playwright/cli install --skills failed"
-
-    local produced="${PW_STAGING}/.claude/skills"
-    [ -d "$produced" ] || die "@playwright/cli produced no skills under ${produced}"
-
+    parse_mcp_args playwright 1 "$@"
+    local rc=0
+    mcp_for_agents install_playwright_for "$MCP_AGENTS_SEL" "$MCP_SCOPE" || rc=1
+    if [ "$rc" = 0 ] && [ "$MCP_SCOPE" = global ]; then
+        remove_legacy_playwright_skills "$MCP_WRITTEN_AGENTS"
+    fi
+    warn_if_no_npx "The Playwright MCP server"
     log ""
-    log "Installing Playwright skills into store ${store_dir}"
-    mkdir -p "$store_dir" || die "cannot create store ${store_dir}"
-    local skill name dest count=0
-    for skill in "$produced"/*/; do
-        [ -d "$skill" ] || continue
-        name="$(basename "$skill")"
-        dest="${store_dir}/${name}"
-        write_dest "$skill" "$dest" "$name"
-        count=$((count + 1))
-    done
-    [ "$count" -gt 0 ] || die "no Playwright skill folders found under ${produced}"
-    emit_change "$([ "$store_existed" -eq 1 ] && printf updated || printf created)" dir "$store_dir"
-
-    log ""
-    log "Linking store skills into agent dirs"
-    local agent rel agent_dir seen=" "
-    for agent in $agents; do
-        rel="$(agent_symlink_rel "$agent")"
-        case "$seen" in
-            *" ${rel} "*) continue ;;
-        esac
-        seen="${seen}${rel} "
-        agent_dir="${root}/${rel}"
-        local agent_dir_existed=0
-        [ -d "$agent_dir" ] && agent_dir_existed=1
-        link_skills_into_dir "$agent_dir" "$store_dir"
-        emit_change "$([ "$agent_dir_existed" -eq 1 ] && printf updated || printf created)" dir "$agent_dir"
-        log "  Linked skills into ${agent_dir}"
-    done
-
-    log ""
-    log "Done. Installed Playwright skills store at ${store_dir} and linked: $(printf '%s' "$agents" | tr ' ' ',' | sed 's/,/, /g')"
+    mcp_followups "$MCP_AGENTS_SEL" "$MCP_SCOPE"
+    return $rc
 }
 
 # =================================================================
@@ -1139,6 +1586,14 @@ wizard_pick_agent() {
     printf 'skip'
 }
 
+# Prints the scope of an MCP step: "local" (default) or "global".
+wizard_mcp_scope() {
+    case "$(prompt 'Register in: (l)ocal project config or (g)lobal user config' 'l')" in
+        g|G|global|GLOBAL) printf 'global' ;;
+        *) printf 'local' ;;
+    esac
+}
+
 cmd_wizard() {
     local _argc=-1
     while [ $# -gt 0 ]; do
@@ -1179,14 +1634,7 @@ cmd_wizard() {
             root="${HOME}"; store_dir="${HOME}/.agents/.jmix/skills/${RESOLVED_VERSION_DIR}"
         fi
         install_skills_to_store "$store_dir" || true
-        local agent rel agent_dir seen=" "
-        for agent in $sel; do
-            rel="$(agent_symlink_rel "$agent")"
-            case "$seen" in *" ${rel} "*) continue ;; esac
-            seen="${seen}${rel} "
-            agent_dir="${root}/${rel}"
-            link_skills_into_dir "$agent_dir" "$store_dir" || true
-        done
+        link_store_into_agents "$root" "$store_dir" "$sel" || true
         summary_skills="$sel (${scope})"
     fi
 
@@ -1202,47 +1650,38 @@ cmd_wizard() {
         fi
     fi
 
+    # Steps 3-5 reuse the subcommands: their only exits are argument errors,
+    # which cannot happen with the values passed here.
+    local scope_mcp
+
     # Step 3: JetBrains MCP
     sel="$(wizard_pick_agent skip '[3/5] Connect agent to IntelliJ IDEA via JetBrains MCP?' "$JETBRAINS_AGENTS")"
     if [ "$sel" != "skip" ]; then
-        local agent
-        for agent in $sel; do
-            install_jetbrains_for "$agent" || true
-        done
-        summary_jetbrains="$sel"
+        scope_mcp="$(wizard_mcp_scope)"
+        cmd_mcp_jetbrains --agents "$(printf '%s' "$sel" | tr ' ' ',')" --scope "$scope_mcp" || true
+        summary_jetbrains="$sel (${scope_mcp})"
     fi
 
     # Step 4: Context7 MCP
-    sel="$(wizard_pick_agent skip '[4/5] Connect agent to library docs via Context7 MCP?' "$CONTEXT7_AGENTS")"
+    sel="$(wizard_pick_agent skip '[4/5] Connect agent to library docs via Context7 MCP?' "$ALL_AGENTS")"
     if [ "$sel" != "skip" ]; then
         local key
         key="$(prompt 'Context7 API key' '')"
-        if [ -n "$key" ]; then
-            local agent
-            for agent in $sel; do
-                install_context7_for "$agent" "$key" || true
-            done
-            summary_context7="$sel"
+        if context7_key_ok "$key"; then
+            cmd_mcp_context7 --agents "$(printf '%s' "$sel" | tr ' ' ',')" --context7-key "$key" || true
+            summary_context7="$sel (user level)"
         else
-            log "API key not provided, skipping Context7 setup."
+            log "API key missing or malformed, skipping Context7 setup."
             summary_context7="skipped (no key)"
         fi
     fi
 
-    # Step 5: Playwright
-    sel="$(wizard_pick_agent skip '[5/5] Install Playwright? (requires npx)' "$ALL_AGENTS")"
+    # Step 5: Playwright MCP
+    sel="$(wizard_pick_agent skip '[5/5] Connect agent to a browser via Playwright MCP?' "$ALL_AGENTS")"
     if [ "$sel" != "skip" ]; then
-        if ! command -v npx >/dev/null 2>&1; then
-            # Pre-check npx so the wizard skips gracefully. cmd_playwright -> require_npx
-            # would otherwise `exit 1` (not catchable by `|| true`) and abort the summary.
-            log "Skipping Playwright: npx (Node.js) not found on PATH."
-            summary_playwright="skipped (no npx)"
-        else
-            local pw_csv
-            pw_csv="$(printf '%s' "$sel" | tr ' ' ',' | sed 's/^,//;s/,$//')"
-            cmd_playwright --agents "$pw_csv" || true
-            summary_playwright="$sel"
-        fi
+        scope_mcp="$(wizard_mcp_scope)"
+        cmd_playwright --agents "$(printf '%s' "$sel" | tr ' ' ',')" --scope "$scope_mcp" || true
+        summary_playwright="$sel (${scope_mcp})"
     fi
 
     log ""
@@ -1274,6 +1713,12 @@ while [ $# -gt 0 ]; do
 done
 set -- ${_args[@]+"${_args[@]}"}
 debug_env
+
+# The port is spliced into URLs, JSON and TOML.
+case "$JB_PORT" in
+    ''|*[!0-9]*) die "JMIX_IDE_MCP_PORT must be a port number (got '${JB_PORT}')" ;;
+esac
+[ "$JB_PORT" -ge 1 ] && [ "$JB_PORT" -le 65535 ] || die "JMIX_IDE_MCP_PORT must be between 1 and 65535 (got ${JB_PORT})"
 
 if [ $# -eq 0 ]; then
     cmd_wizard
