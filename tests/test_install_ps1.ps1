@@ -578,6 +578,67 @@ if ($linkType) {
 }
 Remove-Item -LiteralPath (Join-Path $proj '.junie') -Recurse -Force
 
+if ($linkType) {
+    # Without an agent that reads .agents/skills nothing replaces those links, so
+    # they stay: removing them would leave Junie with no Jmix skills.
+    New-Item -ItemType Directory -Force -Path $oldJunieSkills | Out-Null
+    $oldLink = Join-Path $oldJunieSkills $skill
+    New-Item -ItemType $linkType -Path $oldLink -Target (Join-Path $proj ".skills/$skill") | Out-Null
+    $null = Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'local', '-Source', $Source)
+    $oldItem = Get-Item -LiteralPath $oldLink -Force -ErrorAction SilentlyContinue
+    Check ($null -ne $oldItem -and [bool]$oldItem.LinkType) `
+        'skills(local): old Junie links kept when no agent reads .agents/skills'
+    Remove-Item -LiteralPath $junieDir -Recurse -Force
+
+    # A .junie/skills that is the same dir as an agent skills dir holds the links
+    # this run just created: the cleanup leaves it alone.
+    New-Item -ItemType Directory -Force -Path $junieDir | Out-Null
+    New-Item -ItemType $linkType -Path $oldJunieSkills -Target (Join-Path $proj '.agents/skills') | Out-Null
+    $out = Invoke-InstallerCapture @('skills', '-Agents', 'codex,junie', '-Scope', 'local', '-Source', $Source)
+    Check (Test-Path (Join-Path $proj ".agents/skills/$skill/SKILL.md")) `
+        'skills(local): links kept through a .junie/skills -> .agents/skills link'
+    Check ($out -notmatch 'Removed old Junie skill link') 'skills(local): nothing removed from a shared .junie/skills'
+    if (Get-Item -LiteralPath $oldJunieSkills -Force -ErrorAction SilentlyContinue) {
+        [System.IO.Directory]::Delete($oldJunieSkills, $false)
+    }
+    Remove-Item -LiteralPath $junieDir -Recurse -Force
+
+    # An agent skills dir that is the store itself already has the skills; linking
+    # them into it would replace every skill with a link to itself.
+    # A store an earlier version already turned into such links is repaired.
+    $selfProj = Join-Path $work 'self-link-project'
+    New-Item -ItemType Directory -Force -Path (Join-Path $selfProj '.claude'), (Join-Path $selfProj '.skills') | Out-Null
+    New-Item -ItemType $linkType -Path (Join-Path $selfProj '.claude/skills') -Target (Join-Path $selfProj '.skills') | Out-Null
+    if ($linkType -eq 'SymbolicLink') {
+        New-Item -ItemType SymbolicLink -Path (Join-Path $selfProj ".skills/$skill") -Target "./$skill" | Out-Null
+    }
+    Push-Location $selfProj
+    $runs = @(1, 2 | ForEach-Object { Invoke-InstallerResult @('skills', '-Agents', 'claude', '-Scope', 'local', '-Source', $Source) })
+    Pop-Location
+    Check (@($runs | Where-Object { $_.Code -ne 0 }).Count -eq 0) 'skills(local): runs succeed with .claude/skills linked to the store'
+    Check ($runs[1].Output -match 'is the skills store itself' -and $runs[1].Output -notmatch 'Linked skills into') `
+        'skills(local): reports that .claude/skills is the store instead of linking'
+    $selfSkill = Get-Item -LiteralPath (Join-Path $selfProj ".skills/$skill") -Force -ErrorAction SilentlyContinue
+    Check ($null -ne $selfSkill -and -not $selfSkill.LinkType -and (Test-Path (Join-Path $selfProj ".skills/$skill/SKILL.md"))) `
+        'skills(local): store kept when .claude/skills is the store'
+    [System.IO.Directory]::Delete((Join-Path $selfProj '.claude/skills'), $false)
+    Remove-Item -LiteralPath $selfProj -Recurse -Force
+}
+
+# Store backups (-BackupExistingFiles) are not skills: they are not linked,
+# and a link to one that an earlier version made is removed.
+if ($linkType) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $proj ".skills/$skill.bak") | Out-Null
+    New-Item -ItemType $linkType -Path (Join-Path $proj ".claude/skills/$skill.bak") -Target (Join-Path $proj ".skills/$skill.bak") | Out-Null
+}
+$null = Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'local', '-BackupExistingFiles', '-Source', $Source)
+Check (@(Get-ChildItem -LiteralPath (Join-Path $proj '.skills') -Directory -Filter "$skill.bak*" |
+        Where-Object { Test-Path (Join-Path $_.FullName 'SKILL.md') }).Count -gt 0) `
+    'skills(local): -BackupExistingFiles made a store backup'
+Check (@(Get-ChildItem -LiteralPath (Join-Path $proj '.claude/skills') -Force -Filter '*.bak*').Count -eq 0) `
+    'skills(local): store backups not linked as skills'
+Get-ChildItem -LiteralPath (Join-Path $proj '.skills') -Force -Filter '*.bak*' | Remove-Item -Recurse -Force
+
 # Regression guard: on a Windows session without symlink privilege the link must
 # still be created -- as a junction, which needs no Developer Mode / admin.
 if ($onWindows -and -not (Test-SymlinkCapable)) {
@@ -618,6 +679,20 @@ if (Test-SymlinkCapable) {
     Remove-Item -LiteralPath $ownSkill -Recurse -Force
 } else {
     Write-Host 'skip: no symlink privilege, skipping the symlinked ~/.agents/skills case'
+}
+
+# The other way round, ~/.agents/skills -> ~/.junie/skills: the old-Junie-link
+# cleanup must not delete the links just created through ~/.agents/skills.
+if (Test-SymlinkCapable) {
+    $agentsSkills = Join-Path $homeDir '.agents/skills'
+    New-Item -ItemType Directory -Force -Path (Join-Path $homeDir '.junie/skills') | Out-Null
+    New-Item -ItemType SymbolicLink -Path $agentsSkills -Target ([System.IO.Path]::Combine('..', '.junie', 'skills')) | Out-Null
+    $null = Invoke-Installer @('skills', '-Agents', 'codex', '-Scope', 'global', '-Source', $Source)
+    Check (Test-Path (Join-Path $agentsSkills "$skill/SKILL.md")) `
+        'skills(global): links kept through ~/.agents/skills -> ~/.junie/skills'
+    # A broken cleanup removes ~/.junie/skills too, leaving the link dangling.
+    try { [System.IO.Directory]::Delete($agentsSkills, $false) } catch { [System.IO.File]::Delete($agentsSkills) }
+    Remove-Item -LiteralPath (Join-Path $homeDir '.junie') -Recurse -Force
 }
 
 # Studio can pin a feature branch independently of the release default.
@@ -900,16 +975,50 @@ $isUnixUser = -not $onWindows -and ((& id -u) -ne '0')
 #     url+command mix: the other layer is brought to the same transport.
 $codexDir = Join-Path $mcpProj '.codex'
 Remove-Item -LiteralPath $codexDir -Recurse -Force
-Set-TestFile $userCodex ("[mcp_servers.jetbrains]`ncommand = `"java`"`nargs = [`"-cp`", `"x`"]`n" + [System.IO.File]::ReadAllText($userCodex))
-$r = Invoke-InstallerResult @('mcp-jetbrains', '-Agents', 'codex', '-Scope', 'local')
-Check ($r.Code -eq 0) 'mcp-jetbrains: exits 0 with a stdio jetbrains entry at user level'
+$userCodexOrig = [System.IO.File]::ReadAllText($userCodex)
+Set-TestFile $userCodex ("[mcp_servers.playwright]`nurl = `"http://old-playwright`"`n" + $userCodexOrig)
+$r = Invoke-InstallerResult @('playwright', '-Agents', 'codex', '-Scope', 'local')
+Check ($r.Code -eq 0) 'playwright: exits 0 with an HTTP playwright entry at user level'
 Check ($r.Output -match 'another transport, which Codex cannot merge; updating it too') `
-    'mcp-jetbrains: reports aligning the other Codex layer'
+    'playwright: reports aligning the other Codex layer'
+Check ($r.Output -match 'Other projects') 'playwright: notes that other projects may need a re-run'
 $userToml = [System.IO.File]::ReadAllText($userCodex)
-$jbUser = [regex]::Match($userToml, '(?ms)^\[mcp_servers\.jetbrains\]\n(.*?)(?=^\[|\z)').Groups[1].Value
-Check ($jbUser -cmatch '(?m)^url = "http://127\.0\.0\.1:9/stream"$' -and $jbUser -cnotmatch '(?m)^command') `
-    "mcp-jetbrains: user-level Codex jetbrains aligned with the project's transport"
-Check ($userToml.Contains('Authorization = "Bearer ctx7sk-TESTKEY"')) 'mcp-jetbrains: aligning the user layer kept its other servers'
+$pwUser = [regex]::Match($userToml, '(?ms)^\[mcp_servers\.playwright\]\n(.*?)(?=^\[|\z)').Groups[1].Value
+Check ($pwUser -cmatch '(?m)^command = "npx"$' -and $pwUser -cnotmatch '(?m)^url') `
+    "playwright: user-level Codex playwright aligned with the project's transport"
+Check ($userToml.Contains('Authorization = "Bearer ctx7sk-TESTKEY"')) 'playwright: aligning the user layer kept its other servers'
+
+# 3i2. With the IDE unreachable the transport is a guess: a user-level
+#      jetbrains entry with the other transport is not overwritten by it.
+Remove-Item -LiteralPath $codexDir -Recurse -Force
+Set-TestFile $userCodex ("[mcp_servers.jetbrains]`ncommand = `"npx`"`nargs = [`"-y`", `"mcp-remote`", `"http://127.0.0.1:9/sse`", `"--transport`", `"sse-only`"]`n`n" + $userCodexOrig)
+$userBefore = Get-Sha $userCodex
+Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex', '-Scope', 'local')) -ne 0) `
+    'mcp-jetbrains: a guessed transport does not replace the user-level SSE bridge'
+Check ((Get-Sha $userCodex) -eq $userBefore -and -not (Test-Path $codexCfg)) `
+    'mcp-jetbrains: the refused alignment left both Codex layers alone'
+
+# 3i3. A triple-quoted string in the other layer matters only when that
+#      layer has to be rewritten.
+$tripleQuoted = "developer_instructions = `"`"`"`nBe terse.`n`"`"`"`n`n"
+Set-TestFile $userCodex ($tripleQuoted + "[mcp_servers.playwright]`ncommand = `"npx`"`n`n" + $userCodexOrig)
+Check ((Invoke-Installer @('playwright', '-Agents', 'codex', '-Scope', 'local')) -eq 0 -and (Test-Path $codexCfg)) `
+    'playwright: a triple-quoted string in the untouched user layer does not fail the step'
+Remove-Item -LiteralPath $codexDir -Recurse -Force
+Set-TestFile $userCodex ($tripleQuoted + "[mcp_servers.playwright]`nurl = `"http://old-playwright`"`n`n" + $userCodexOrig)
+Check ((Invoke-Installer @('playwright', '-Agents', 'codex', '-Scope', 'local')) -ne 0 -and -not (Test-Path $codexCfg)) `
+    'playwright: a user layer to rewrite that holds a triple-quoted string fails before any write'
+
+# 3i4. Run from HOME the project and user layers are one file; an old stdio
+#      context7 entry there is simply replaced.
+Set-TestFile $userCodex "[mcp_servers.context7]`ncommand = `"npx`"`nargs = [`"-y`", `"@upstash/context7-mcp`", `"--api-key`", `"old`"]`n"
+Push-Location $homeDir
+$code = Invoke-Installer @('mcp-context7', '-Agents', 'codex', '-Context7Key', 'ctx7sk-TESTKEY')
+Pop-Location
+$userToml = [System.IO.File]::ReadAllText($userCodex)
+Check ($code -eq 0 -and $userToml -cmatch '(?m)^url = "https://mcp\.context7\.com/mcp"$' -and $userToml -cnotmatch '(?m)^command') `
+    'mcp-context7: run from HOME replaces the old stdio entry'
+Set-TestFile $userCodex $userCodexOrig
 
 New-Item -ItemType Directory -Force -Path $codexDir | Out-Null
 Set-TestFile $codexCfg "[mcp_servers.context7]`ncommand = `"npx`"`n"
@@ -1025,9 +1134,9 @@ foreach ($entry in "[mcp_servers]`njetbrains = { command = `"java`", args = [] }
     Check ((Get-Sha $safeLocal) -eq $localBefore -and (Get-Sha $safeUser) -eq $userBefore) `
         'toml: unsupported other-layer entry leaves both layers untouched'
 }
-Set-TestFile $safeUser "[mcp_servers.jetbrains]`n`"command`" = `"java`"`nargs = []`n"
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -eq 0) 'toml: quoted command key aligned'
-Check (-not ([System.IO.File]::ReadAllText($safeUser).Contains('java'))) 'toml: quoted old command removed'
+Set-TestFile $safeUser "[mcp_servers.playwright]`n`"url`" = `"http://old-playwright`"`n"
+Check ((Invoke-Installer @('playwright', '-Agents', 'codex')) -eq 0) 'toml: quoted url key aligned'
+Check (-not ([System.IO.File]::ReadAllText($safeUser).Contains('old-playwright'))) 'toml: quoted old url removed'
 
 # 3r. Ancestor transport conflicts fail before any layer is written.
 New-Item -ItemType Directory -Force -Path (Join-Path $safeProj '.git'), (Join-Path $safeProj 'app') | Out-Null

@@ -113,6 +113,8 @@ $script:AllAgents = @('claude', 'codex', 'opencode', 'junie')
 $script:JbPort = if ($env:JMIX_IDE_MCP_PORT) { $env:JMIX_IDE_MCP_PORT } else { '64342' }
 # 'stream' (IntelliJ 2026.1+) or 'sse' (2025.2/2025.3); see Resolve-JetbrainsTransport.
 $script:JbTransport = 'stream'
+# True when the IDE did not answer and JbTransport is only assumed.
+$script:JbGuessed = $false
 $script:Context7Url = 'https://mcp.context7.com/mcp'
 $script:PlaywrightMcpPkg = '@playwright/mcp@latest'
 # Set by any MCP agent step that fails; the MCP subcommands then exit 1.
@@ -393,11 +395,18 @@ function Get-AgentSymlinkRel {
 
 # Earlier versions also linked the skills into .junie/skills. Junie reads
 # .agents/skills now, and its CLI reads ~/.junie/skills first, so links left
-# there would shadow newer skills: the toolkit's own links are removed.
+# there would shadow newer skills: the toolkit's own links are removed. Only
+# when this run linked .agents/skills (otherwise Junie would be left with no
+# skills), and never from a .junie/skills that is the same folder as an agent
+# skills dir: its links are the ones this run just created.
 function Remove-OldJunieSkillLinks {
-    param([string]$Root)
+    param([string]$Root, [string[]]$Agents)
     $dir = Join-Path $Root '.junie/skills'
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return }
+    if (-not ($Agents | Where-Object { $_ -in 'codex', 'opencode', 'junie' })) { return }
+    foreach ($rel in '.agents/skills', '.claude/skills') {
+        if (Test-SameDirectory -Path (Join-Path $Root $rel) -Other $dir) { return }
+    }
     foreach ($item in Get-ChildItem -LiteralPath $dir -Force) {
         if (-not $item.LinkType -or $item.Name -notmatch '^jmix(-|$)') { continue }
         # Only links into a toolkit store: ~/.agents/.jmix/skills/... or <project>/.skills/...
@@ -505,18 +514,51 @@ function Remove-Link {
     else { [System.IO.File]::Delete($Item.FullName) }
 }
 
+# True when folders $Path and $Other are the same folder, through any symlink
+# or junction: a marker file created in $Path shows up in $Other. Windows
+# PowerShell 5.1 cannot resolve link targets, so this works on every version.
+# ponytail: writes a marker; fails safe (false) where $Path is not writable.
+function Test-SameDirectory {
+    param([string]$Path, [string]$Other)
+    if (-not (Test-Path -LiteralPath $Path -PathType Container) -or
+        -not (Test-Path -LiteralPath $Other -PathType Container)) { return $false }
+    $name = '.jmix-same-dir.' + [guid]::NewGuid().ToString('N')
+    $marker = Join-Path $Path $name
+    try { [System.IO.File]::WriteAllBytes($marker, [byte[]]@()) } catch { return $false }
+    try { return (Test-Path -LiteralPath (Join-Path $Other $name)) }
+    finally { Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue }
+}
+
 # Per-skill symlinks: link each store skill folder into the agent skills dir,
-# so Jmix skills coexist with other skills already present there.
+# so Jmix skills coexist with other skills already present there. Only the
+# skills being installed are linked: the store also keeps the backups that
+# -BackupExistingFiles makes there. An agent dir that is the store itself
+# (e.g. .claude/skills -> ../.skills) already holds the skills; links there
+# would point at themselves.
 function New-SkillSymlinks {
     param([string]$AgentDir, [string]$StoreDir)
+    $existed = Test-Path $AgentDir
     # Clear a broken-symlink agent base/dir (e.g. ~/.junie -> missing) so creation works.
     Clear-DanglingSymlink -Path (Split-Path -Parent $AgentDir)
     Clear-DanglingSymlink -Path $AgentDir
     if (-not (Test-Path $AgentDir)) { New-Item -ItemType Directory -Path $AgentDir -Force | Out-Null }
-    foreach ($skill in Get-ChildItem -Path $StoreDir -Directory) {
-        $link = Join-Path $AgentDir $skill.Name
-        New-DirSymlink -Link $link -Target $skill.FullName
+    if (Test-SameDirectory -Path $AgentDir -Other $StoreDir) {
+        Write-Info "  $AgentDir is the skills store itself; nothing to link"
+        return
     }
+    foreach ($skill in Get-ChildItem -Path $script:SourceSkillsDir -Directory) {
+        $link = Join-Path $AgentDir $skill.Name
+        New-DirSymlink -Link $link -Target (Join-Path $StoreDir $skill.Name)
+    }
+    # Earlier versions linked those store backups too; their links go.
+    foreach ($item in Get-ChildItem -LiteralPath $AgentDir -Force -Filter '*.bak*') {
+        if (-not $item.LinkType) { continue }
+        $target = Resolve-LinkTarget -Link $item.FullName -Target ([string](@($item.Target) | Select-Object -First 1))
+        if ((Split-Path -Leaf $target) -eq $item.Name -and
+            (Test-SameDirectory -Path (Split-Path -Parent $target) -Other $StoreDir)) { Remove-Link -Item $item }
+    }
+    Write-ChangeMarker -Action $(if ($existed) { 'updated' } else { 'created' }) -Type 'dir' -Path $AgentDir
+    Write-Info "  Linked skills into $AgentDir"
 }
 
 function Invoke-CmdSkills {
@@ -544,13 +586,9 @@ function Invoke-CmdSkills {
         $rel = Get-AgentSymlinkRel -Agent $a
         if ($seen.ContainsKey($rel)) { continue }
         $seen[$rel] = $true
-        $agentDir = Join-Path $root $rel
-        $agentDirExisted = Test-Path $agentDir
-        New-SkillSymlinks -AgentDir $agentDir -StoreDir $storeDir
-        Write-ChangeMarker -Action $(if ($agentDirExisted) { 'updated' } else { 'created' }) -Type 'dir' -Path $agentDir
-        Write-Info "  Linked skills into $agentDir"
+        New-SkillSymlinks -AgentDir (Join-Path $root $rel) -StoreDir $storeDir
     }
-    Remove-OldJunieSkillLinks -Root $root
+    Remove-OldJunieSkillLinks -Root $root -Agents $agents
 
     Write-Info ''
     Write-Info "Done. Installed $resolvedScope skills store at $storeDir and linked: $($agents -join ', ')"
@@ -1131,10 +1169,12 @@ function Get-TomlWithTable {
 # in the file's line-ending style. Fails, leaving the file alone, when $Table is
 # defined another way.
 function Set-McpTomlTable {
-    param([string]$File, [string]$Table, [string[]]$Body, [switch]$Private, [switch]$Check)
+    param([string]$File, [string]$Table, [string[]]$Body, [switch]$Private, [switch]$Check, [switch]$Scan)
     $original = Read-McpConfigText -File $File -Raw
     # shortcut: refuse triple-quoted content; use a TOML parser to edit it safely.
-    if ($original -match '"{3}|''{3}') {
+    # -Scan only checks how [$Table] is defined, for a file that is read but
+    # not written: triple-quoted strings elsewhere do not matter then.
+    if (-not $Scan -and $original -match '"{3}|''{3}') {
         throw "cannot update ${File}: multi-line TOML strings are not supported. Add [$Table] manually, see README."
     }
     $newline = "`n"
@@ -1147,7 +1187,7 @@ function Set-McpTomlTable {
     if ($null -eq $result) {
         throw "cannot update ${File}: [$Table] is defined there in a form this installer does not edit. Change it manually, see README."
     }
-    if ($Check) { return }
+    if ($Check -or $Scan) { return }
     $text = ($result -join $newline) + $newline
     Save-McpConfig -File $File -Raw $text -Unchanged:($text -ceq $original) -Private:$Private
 }
@@ -1175,14 +1215,18 @@ function Get-CodexTransport {
 # and refuses its whole configuration when the result mixes url (HTTP) and
 # command (stdio). When the other layer defines the server with the other
 # transport, it gets the same entry -- unless the entry carries the Context7
-# key, which never goes into a project file.
+# key, which never goes into a project file, or the JetBrains transport is only
+# assumed (IDE not reachable), which must not replace a working entry.
 # $Scope - the scope to write; -Check preflights without changing either layer.
 function Sync-CodexOtherLayer {
     param([string]$Scope, [string]$Name, [string[]]$Body, [switch]$Check)
     $otherScope = if ($Scope -eq 'global') { 'local' } else { 'global' }
     $other  = Get-McpConfigFiles -Agent 'codex' -Scope $otherScope
     $own = Get-McpConfigFiles -Agent 'codex' -Scope $Scope
-    Set-McpTomlTable -File $other -Table "mcp_servers.$Name" -Body $Body -Check
+    # Run from the user's home, the project layer is the user layer (also when
+    # a symlink in the path makes the two spellings differ).
+    if ($other -eq $own -or (Test-SameDirectory -Path (Split-Path -Parent $other) -Other (Split-Path -Parent $own))) { return }
+    Set-McpTomlTable -File $other -Table "mcp_servers.$Name" -Body $Body -Scan
     $mine   = if ($Body[0] -clike 'url*') { 'url' } else { 'command' }
     # Parent project configs are inherited too; never rewrite their settings.
     $dir = (Get-Location).Path
@@ -1191,7 +1235,7 @@ function Sync-CodexOtherLayer {
         if (-not $dir) { break }
         $inherited = [System.IO.Path]::Combine($dir, '.codex', 'config.toml')
         if ($inherited -eq $own -or $inherited -eq $other) { continue }
-        Set-McpTomlTable -File $inherited -Table "mcp_servers.$Name" -Body $Body -Check
+        Set-McpTomlTable -File $inherited -Table "mcp_servers.$Name" -Body $Body -Scan
         $theirs = Get-CodexTransport -File $inherited -Table "mcp_servers.$Name"
         if ($theirs -and $theirs -ne $mine) {
             throw "$inherited defines inherited [mcp_servers.$Name] with another transport; change it manually before re-running."
@@ -1202,8 +1246,18 @@ function Sync-CodexOtherLayer {
     if ($script:McpPrivate) {
         throw "$other defines [mcp_servers.$Name] with another transport, and Codex cannot merge the two: remove that table there."
     }
-    if ($Check) { return }
+    if ($Name -eq 'jetbrains' -and $script:JbGuessed) {
+        throw "$other defines [mcp_servers.jetbrains] with another transport, and IntelliJ IDEA is not reachable to tell which one it serves. Start it with its MCP server enabled and re-run."
+    }
+    # The other layer is rewritten below, so the preflight checks it can be.
+    if ($Check) {
+        Set-McpTomlTable -File $other -Table "mcp_servers.$Name" -Body $Body -Check
+        return
+    }
     Write-Info "  $other defines [mcp_servers.$Name] with another transport, which Codex cannot merge; updating it too."
+    if ($otherScope -eq 'global') {
+        Write-Info "  Other projects with their own [mcp_servers.$Name] of the old transport need this step re-run there."
+    }
     Set-McpTomlTable -File $other -Table "mcp_servers.$Name" -Body $Body -Private:($otherScope -eq 'global')
 }
 
@@ -1354,6 +1408,7 @@ function Resolve-JetbrainsTransport {
         }
     }
     $script:JbTransport = 'stream'
+    $script:JbGuessed = ($code -eq 0)
     if ($code -eq 404) {
         $script:JbTransport = 'sse'
         Write-Info "IntelliJ IDEA MCP server on port $($script:JbPort) has no /stream endpoint (IntelliJ IDEA before 2026.1): using SSE."
@@ -1665,11 +1720,9 @@ function Invoke-Wizard {
                 $rel = Get-AgentSymlinkRel -Agent $a
                 if ($wizSeen.ContainsKey($rel)) { continue }
                 $wizSeen[$rel] = $true
-                $agentDir = Join-Path $wizRoot $rel
-                New-SkillSymlinks -AgentDir $agentDir -StoreDir $wizStoreDir
-                Write-Info "  Linked skills into $agentDir"
+                New-SkillSymlinks -AgentDir (Join-Path $wizRoot $rel) -StoreDir $wizStoreDir
             }
-            Remove-OldJunieSkillLinks -Root $wizRoot
+            Remove-OldJunieSkillLinks -Root $wizRoot -Agents $sel
         } catch { Write-Info "error: $($_.Exception.Message)" }
         $summaryStrings.skills = "$($sel -join ', ') ($resolvedScope)"
     }

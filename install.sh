@@ -39,6 +39,8 @@ JETBRAINS_AGENTS="claude codex opencode"
 JB_PORT="${JMIX_IDE_MCP_PORT:-64342}"
 # "stream" (IntelliJ 2026.1+) or "sse" (2025.2/2025.3); see detect_jetbrains_transport.
 JB_TRANSPORT="stream"
+# 1 when the IDE did not answer and JB_TRANSPORT is only assumed.
+JB_GUESSED=0
 CONTEXT7_URL="https://mcp.context7.com/mcp"
 # 1 while writing entries that carry the Context7 key; see commit_config.
 MCP_PRIVATE=0
@@ -122,7 +124,8 @@ write_dest() {
     local dest="$2"
     local label="$3"
     local existed=0
-    [ -e "$dest" ] && existed=1
+    # A dangling dest symlink counts too: cp would write through it.
+    { [ -e "$dest" ] || [ -L "$dest" ]; } && existed=1
     local backup_info=""
     if [ "$existed" -eq 1 ]; then
         if [ "$BACKUP_EXISTING" -eq 1 ]; then
@@ -361,11 +364,18 @@ agent_symlink_rel() {
 
 # Earlier versions also linked the skills into .junie/skills. Junie reads
 # .agents/skills now, and its CLI reads ~/.junie/skills first, so links left
-# there would shadow newer skills: the toolkit's own links are removed.
-# $1 - scope root (the user home or the project dir)
+# there would shadow newer skills: the toolkit's own links are removed. Only
+# when this run linked .agents/skills (otherwise Junie would be left with no
+# skills), and never from a .junie/skills that is the same dir as an agent
+# skills dir: its links are the ones this run just created.
+# $1 - scope root (the user home or the project dir)   $2 - agents of this run
 remove_old_junie_skill_links() {
     local dir="$1/.junie/skills" link
     [ -d "$dir" ] || return 0
+    case " $2 " in *" codex "*|*" opencode "*|*" junie "*) ;; *) return 0 ;; esac
+    if [ "$dir" -ef "$1/.agents/skills" ] || [ "$dir" -ef "$1/.claude/skills" ]; then
+        return 0
+    fi
     for link in "$dir"/jmix "$dir"/jmix-*; do
         [ -L "$link" ] || continue
         case "$(readlink "$link")" in
@@ -459,6 +469,8 @@ prepare_agent_dir() {
 # Per-skill symlinks: link each store skill folder into the agent skills dir,
 # so Jmix skills coexist with other skills already present there. The link target
 # is relative to the agent dir (see relpath) so links stay valid after a clone.
+# Only the skills being installed are linked: the store also keeps the backups
+# that --backup-existing-files makes there.
 # $1 - physical agent skills dir (kept as a real dir), see prepare_agent_dir
 # $2 - store dir holding the skill folders
 link_skills_into_dir() {
@@ -466,10 +478,17 @@ link_skills_into_dir() {
     local store_dir="$2"
     local rel_store skill name
     rel_store="$(relpath "$agent_dir" "$(cd "$store_dir" && pwd -P)")"
-    for skill in "$store_dir"/*/; do
+    for skill in "$SOURCE_SKILLS_DIR"/*/; do
         [ -d "$skill" ] || continue
         name="$(basename "$skill")"
         create_symlink "${agent_dir}/${name}" "${rel_store}/${name}"
+    done
+    # Earlier versions linked those store backups too; their links go.
+    for skill in "$agent_dir"/*.bak*; do
+        [ -L "$skill" ] || continue
+        case "$(readlink "$skill")" in
+            "${rel_store}/$(basename "$skill")") rm -f "$skill" ;;
+        esac
     done
 }
 
@@ -488,11 +507,17 @@ link_store_into_agents() {
             *" ${phys} "*) continue ;;
         esac
         seen="${seen}${phys} "
+        # An agent dir that is the store (e.g. .claude/skills -> ../.skills)
+        # already holds the skills; links there would point at themselves.
+        if [ "$phys" -ef "$store_dir" ]; then
+            log "  ${agent_dir} is the skills store itself; nothing to link"
+            continue
+        fi
         link_skills_into_dir "$phys" "$store_dir"
         emit_change "$([ "$existed" -eq 1 ] && printf updated || printf created)" dir "$agent_dir"
         log "  Linked skills into ${agent_dir}"
     done
-    remove_old_junie_skill_links "$root"
+    remove_old_junie_skill_links "$root" "$agents"
 }
 
 agent_label() {
@@ -1035,7 +1060,9 @@ json_set_entry() {
 # sub-tables) is replaced where it stands, otherwise the table is appended.
 # Fails, leaving the file alone, when $2 is defined another way (dotted keys,
 # or inline in a parent) that this line-based edit cannot replace.
-# $4 - mode for a newly created file; $5=check validates without committing.
+# $4 - mode for a newly created file; $5=check validates a write without
+# committing it, $5=scan only checks how [$2] is defined, for a file that is
+# read but not written (triple-quoted strings elsewhere do not matter then).
 toml_set_table() {
     local file="$1" table="$2" body="$3" mode="$4" check="${5:-}" dir tmp rc=0
     if { [ -e "$file" ] || [ -L "$file" ]; } && [ ! -f "$file" ]; then
@@ -1047,12 +1074,12 @@ toml_set_table() {
         return 1
     fi
     # shortcut: refuse triple-quoted content; use a TOML parser to edit it safely.
-    if [ -f "$file" ] && grep -Eq "\"\"\"|'''" "$file"; then
+    if [ "$check" != scan ] && [ -f "$file" ] && grep -Eq "\"\"\"|'''" "$file"; then
         err "cannot update ${file}: multi-line TOML strings are not supported. Add [${table}] manually, see README."
         return 1
     fi
-    [ "$check" = check ] && [ ! -f "$file" ] && return 0
-    if [ "$check" = check ]; then
+    [ -n "$check" ] && [ ! -f "$file" ] && return 0
+    if [ -n "$check" ]; then
         # In particular, never stage a Context7 key in a project directory.
         tmp=/dev/null
     else
@@ -1109,11 +1136,11 @@ toml_set_table() {
         printf '[%s]\n%s\n' "$table" "$body" > "$tmp"
     fi
     if [ "$rc" -ne 0 ]; then
-        [ "$check" = check ] || rm -f "$tmp"
+        [ -n "$check" ] || rm -f "$tmp"
         err "cannot update ${file}: [${table}] is defined there in a form this installer does not edit. Change it manually, see README."
         return 1
     fi
-    [ "$check" = check ] && return 0
+    [ -n "$check" ] && return 0
     commit_config "$tmp" "$file" "$mode"
 }
 
@@ -1134,14 +1161,19 @@ codex_transport() {
 # and refuses its whole configuration when the result mixes url (HTTP) and
 # command (stdio). When the other layer defines the server with the other
 # transport, it gets the same entry -- unless the entry carries the Context7
-# key, which never goes into a project file.
+# key, which never goes into a project file, or the JetBrains transport is only
+# assumed (IDE not reachable), which must not replace a working entry.
 # $1 - scope to write   $2 - server name   $3 - TOML body; $4=check preflights.
 codex_align_other_layer() {
     local other_scope=global other mine theirs mode=600 dir inherited own
     [ "$1" = global ] && { other_scope=local; mode=644; }
     other="$(mcp_config_file codex "$other_scope")"
     own="$(mcp_config_file codex "$1")"
-    toml_set_table "$other" "mcp_servers.$2" "$3" "$mode" check || return 1
+    # Run from the user's home, the project layer is the user layer.
+    if [ "$other" = "$own" ] || [ "$other" -ef "$own" ]; then
+        return 0
+    fi
+    toml_set_table "$other" "mcp_servers.$2" "$3" "$mode" scan || return 1
     case "$3" in url*) mine="url" ;; *) mine="command" ;; esac
     # Parent project configs are inherited too; never rewrite their settings.
     dir="$(pwd -P)"
@@ -1150,7 +1182,7 @@ codex_align_other_layer() {
         inherited="${dir}/.codex/config.toml"
         if [ "$inherited" = "$own" ] || [ "$inherited" = "$other" ] \
             || [ "$inherited" -ef "$own" ] || [ "$inherited" -ef "$other" ]; then continue; fi
-        toml_set_table "$inherited" "mcp_servers.$2" "$3" 644 check || return 1
+        toml_set_table "$inherited" "mcp_servers.$2" "$3" 644 scan || return 1
         theirs="$(codex_transport "$inherited" "mcp_servers.$2")" || return 1
         if [ -n "$theirs" ] && [ "$theirs" != "$mine" ]; then
             err "${inherited} defines inherited [mcp_servers.$2] with another transport; change it manually before re-running."
@@ -1163,8 +1195,19 @@ codex_align_other_layer() {
         err "${other} defines [mcp_servers.$2] with another transport, and Codex cannot merge the two: remove that table there."
         return 1
     fi
-    [ "${4:-}" = check ] && return 0
+    if [ "$2" = jetbrains ] && [ "$JB_GUESSED" = 1 ]; then
+        err "${other} defines [mcp_servers.jetbrains] with another transport, and IntelliJ IDEA is not reachable to tell which one it serves. Start it with its MCP server enabled and re-run."
+        return 1
+    fi
+    # The other layer is rewritten below, so the preflight checks it can be.
+    if [ "${4:-}" = check ]; then
+        toml_set_table "$other" "mcp_servers.$2" "$3" "$mode" check
+        return
+    fi
     log "  ${other} defines [mcp_servers.$2] with another transport, which Codex cannot merge; updating it too."
+    if [ "$other_scope" = global ]; then
+        log "  Other projects with their own [mcp_servers.$2] of the old transport need this step re-run there."
+    fi
     toml_set_table "$other" "mcp_servers.$2" "$3" "$mode"
 }
 
@@ -1317,6 +1360,7 @@ detect_jetbrains_transport() {
             log "IntelliJ IDEA MCP server on port ${JB_PORT} has no /stream endpoint (IntelliJ IDEA before 2026.1): using SSE." ;;
         ''|000)
             JB_TRANSPORT=stream
+            JB_GUESSED=1
             log "IntelliJ IDEA MCP server is not reachable on port ${JB_PORT}; assuming IntelliJ IDEA 2026.1+."
             log "Enable it in Settings | Tools | MCP Server. On IntelliJ IDEA 2025.x, re-run this step once it is enabled." ;;
         *)

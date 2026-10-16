@@ -445,6 +445,59 @@ case "$out" in *"Removed old Junie skill link"*) ;; *) fail "skills(local): remo
 rm -rf "${PROJECT}/.junie"
 pass "skills removes the old .junie/skills links and keeps foreign skills"
 
+# Without an agent that reads .agents/skills nothing replaces those links, so
+# they stay: removing them would leave Junie with no Jmix skills.
+mkdir -p "${PROJECT}/.junie/skills"
+ln -s ../../.skills/jmix-create-entity "${PROJECT}/.junie/skills/jmix-create-entity"
+bash "$INSTALL" skills --agents claude --scope local --source "$SOURCE" >/dev/null
+[ -L "${PROJECT}/.junie/skills/jmix-create-entity" ] \
+    || fail "skills(local): old Junie links removed although no agent re-linked .agents/skills"
+rm -rf "${PROJECT}/.junie"
+pass "skills keeps the old .junie/skills links when no agent reads .agents/skills"
+
+# A .junie/skills that is the same dir as an agent skills dir holds the links
+# this run just created: the cleanup leaves it alone.
+mkdir -p "${PROJECT}/.junie"
+ln -s ../.agents/skills "${PROJECT}/.junie/skills"
+out="$(bash "$INSTALL" skills --agents codex,junie --scope local --source "$SOURCE")"
+[ -e "${PROJECT}/.agents/skills/${SKILL}/SKILL.md" ] \
+    || fail "skills(local): links deleted through a .junie/skills -> .agents/skills symlink"
+case "$out" in *"Removed old Junie skill link"*) fail "skills(local): removed links from a .junie/skills shared with .agents/skills" ;; esac
+rm -rf "${PROJECT}/.junie"
+pass "skills keeps the links of a .junie/skills shared with .agents/skills"
+
+# Store backups (--backup-existing-files) are not skills: they are not linked,
+# and a link to one that an earlier version made is removed.
+ln -s "../../.skills/${SKILL}.bak" "${PROJECT}/.claude/skills/${SKILL}.bak"
+bash "$INSTALL" skills --agents claude --scope local --backup-existing-files --source "$SOURCE" >/dev/null
+[ -d "${PROJECT}/.skills/${SKILL}.bak" ] || fail "skills(local): --backup-existing-files made no store backup"
+for link in "${PROJECT}/.claude/skills"/*.bak*; do
+    [ ! -e "$link" ] && [ ! -L "$link" ] || fail "skills(local): store backup $(basename "$link") linked as a skill"
+done
+rm -rf "${PROJECT}/.skills"/*.bak*
+pass "skills does not link store backups as skills"
+
+# An agent skills dir that is the store itself already has the skills; linking
+# them into it would replace every skill with a link to itself.
+# A store an earlier version already turned into such links is repaired.
+SELF_PROJ="${WORK}/self-link-project"
+mkdir -p "${SELF_PROJ}/.claude" "${SELF_PROJ}/.skills"
+ln -s ../.skills "${SELF_PROJ}/.claude/skills"
+ln -s "./${SKILL}" "${SELF_PROJ}/.skills/${SKILL}"
+for run in 1 2; do
+    out="$(cd "$SELF_PROJ" && bash "$INSTALL" skills --agents claude --scope local --source "$SOURCE")" \
+        || fail "skills(local): run ${run} failed with .claude/skills -> ../.skills"
+done
+case "$out" in
+    *"Linked skills into"*) fail "skills(local): reported linking into the store itself" ;;
+    *"is the skills store itself"*) ;;
+    *) fail "skills(local): no note that .claude/skills is the store" ;;
+esac
+[ -f "${SELF_PROJ}/.skills/${SKILL}/SKILL.md" ] && [ ! -L "${SELF_PROJ}/.skills/${SKILL}" ] \
+    || fail "skills(local): store destroyed when .claude/skills is the store"
+rm -rf "$SELF_PROJ"
+pass "skills leaves the store alone when an agent skills dir is the store"
+
 # ---------------------------------------------------------------------------
 # 3. skills, global scope (under $HOME) -- store keyed by the branch (CONTENT_REF)
 # ---------------------------------------------------------------------------
@@ -464,6 +517,17 @@ for link in "${HOME}/.claude/skills"/jmix*; do
 done
 rm -f "${HOME}/.agents/skills"
 pass "skills(global) links resolve when ~/.agents/skills is a symlink to ~/.claude/skills"
+
+# The other way round, ~/.agents/skills -> ~/.junie/skills: the old-Junie-link
+# cleanup must not delete the links just created through ~/.agents/skills.
+mkdir -p "${HOME}/.junie/skills"
+ln -s ../.junie/skills "${HOME}/.agents/skills"
+bash "$INSTALL" skills --agents codex --scope global --source "$SOURCE" >/dev/null
+[ -e "${HOME}/.agents/skills/${SKILL}/SKILL.md" ] \
+    || fail "skills(global): links deleted through ~/.agents/skills -> ~/.junie/skills"
+rm -f "${HOME}/.agents/skills"
+rm -rf "${HOME}/.junie"
+pass "skills(global) keeps the links when ~/.agents/skills is a symlink to ~/.junie/skills"
 
 if bash "$INSTALL" skills --agents claude-desktop --scope global --source "$SOURCE" >/dev/null 2>&1; then
     fail "skills: claude-desktop takes no skills and should be rejected"
@@ -683,18 +747,59 @@ PY
     # 5i. Codex merges the user and project tables key by key and refuses a
     #     url+command mix: the other layer is brought to the same transport.
     rm -rf .codex
-    printf '[mcp_servers.jetbrains]\ncommand = "java"\nargs = ["-cp", "x"]\n' > "${HOME}/.codex/config.toml.jb"
-    cat "${HOME}/.codex/config.toml" >> "${HOME}/.codex/config.toml.jb"
-    mv "${HOME}/.codex/config.toml.jb" "${HOME}/.codex/config.toml"
-    PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents codex --scope local >/dev/null \
-        || fail "mcp-jetbrains: non-zero exit with a stdio jetbrains entry at user level"
-    awk '/^\[mcp_servers.jetbrains\]/{f=1;next} /^\[/{f=0} f' "${HOME}/.codex/config.toml" > "${WORK}/jb-user"
-    grep -q '^url = "http://127.0.0.1:9/stream"$' "${WORK}/jb-user" && ! grep -q '^command' "${WORK}/jb-user" \
-        || fail "mcp-jetbrains: user-level Codex jetbrains not aligned with the project's transport"
-    grep -q 'Authorization = "Bearer ctx7sk-TESTKEY"' "${HOME}/.codex/config.toml" \
-        || fail "mcp-jetbrains: aligning the user layer lost its other servers"
-    pass "mcp-jetbrains aligns the transport of the other Codex layer"
+    USER_CODEX="${HOME}/.codex/config.toml"
+    cp "$USER_CODEX" "${WORK}/user-codex.orig"
+    { printf '[mcp_servers.playwright]\nurl = "http://old-playwright"\n'; cat "${WORK}/user-codex.orig"; } > "$USER_CODEX"
+    out="$(PATH="$BIN_PATH" bash "$INSTALL" playwright --agents codex --scope local)" \
+        || fail "playwright: non-zero exit with an HTTP playwright entry at user level"
+    awk '/^\[mcp_servers.playwright\]/{f=1;next} /^\[/{f=0} f' "$USER_CODEX" > "${WORK}/pw-user"
+    grep -q '^command = "npx"$' "${WORK}/pw-user" && ! grep -q '^url' "${WORK}/pw-user" \
+        || fail "playwright: user-level Codex playwright not aligned with the project's transport"
+    grep -q 'Authorization = "Bearer ctx7sk-TESTKEY"' "$USER_CODEX" \
+        || fail "playwright: aligning the user layer lost its other servers"
+    case "$out" in *"Other projects"*) ;; *) fail "playwright: no note that other projects may need a re-run" ;; esac
+    pass "playwright aligns the transport of the other Codex layer"
 
+    # 5i2. With the IDE unreachable the transport is a guess: a user-level
+    #      jetbrains entry with the other transport is not overwritten by it.
+    rm -rf .codex
+    { printf '[mcp_servers.jetbrains]\ncommand = "npx"\nargs = ["-y", "mcp-remote", "http://127.0.0.1:9/sse", "--transport", "sse-only"]\n\n'
+      cat "${WORK}/user-codex.orig"; } > "$USER_CODEX"
+    cp "$USER_CODEX" "${WORK}/user-codex.bridge"
+    if PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --agents codex --scope local >/dev/null 2>&1; then
+        fail "mcp-jetbrains: a guessed transport should not replace the user-level SSE bridge"
+    fi
+    cmp -s "$USER_CODEX" "${WORK}/user-codex.bridge" || fail "mcp-jetbrains: a guessed transport rewrote the user-level bridge"
+    [ ! -e .codex/config.toml ] || fail "mcp-jetbrains: a refused alignment still wrote the project config"
+    pass "mcp-jetbrains keeps the user-level Codex bridge when the IDE is unreachable"
+
+    # 5i3. A triple-quoted string in the other layer matters only when that
+    #      layer has to be rewritten.
+    { printf 'developer_instructions = """\nBe terse.\n"""\n\n[mcp_servers.playwright]\ncommand = "npx"\n\n'
+      cat "${WORK}/user-codex.orig"; } > "$USER_CODEX"
+    PATH="$BIN_PATH" bash "$INSTALL" playwright --agents codex --scope local >/dev/null \
+        || fail "playwright: a triple-quoted string in the untouched user layer failed the step"
+    grep -q '^\[mcp_servers.playwright\]$' .codex/config.toml || fail "playwright: project Codex config not written"
+    rm -rf .codex
+    { printf 'developer_instructions = """\nBe terse.\n"""\n\n[mcp_servers.playwright]\nurl = "http://old-playwright"\n\n'
+      cat "${WORK}/user-codex.orig"; } > "$USER_CODEX"
+    if PATH="$BIN_PATH" bash "$INSTALL" playwright --agents codex --scope local >/dev/null 2>&1; then
+        fail "playwright: a user layer that needs rewriting but holds a triple-quoted string should fail"
+    fi
+    [ ! -e .codex/config.toml ] || fail "playwright: the project config was written before the user layer was refused"
+    pass "a triple-quoted string blocks only a Codex layer that has to be rewritten"
+
+    # 5i4. Run from $HOME the project and user layers are one file; an old
+    #      stdio context7 entry there is simply replaced.
+    printf '[mcp_servers.context7]\ncommand = "npx"\nargs = ["-y", "@upstash/context7-mcp", "--api-key", "old"]\n' > "$USER_CODEX"
+    (cd "$HOME" && bash "$INSTALL" mcp-context7 --agents codex --context7-key ctx7sk-TESTKEY >/dev/null) \
+        || fail "mcp-context7: run from \$HOME failed on its own user-level stdio entry"
+    grep -q '^url = "https://mcp.context7.com/mcp"$' "$USER_CODEX" && ! grep -q '^command' "$USER_CODEX" \
+        || fail "mcp-context7: run from \$HOME did not replace the stdio entry"
+    cp "${WORK}/user-codex.orig" "$USER_CODEX"
+    pass "mcp-context7 run from \$HOME replaces the old stdio entry"
+
+    mkdir -p .codex
     printf '[mcp_servers.context7]\ncommand = "npx"\n' > .codex/config.toml
     if bash "$INSTALL" mcp-context7 --agents codex --context7-key ctx7sk-TESTKEY >/dev/null 2>&1; then
         fail "mcp-context7: a project stdio context7 next to the user url entry should fail the step"
@@ -829,9 +934,9 @@ mcp_servers.jetbrains.args = []'; do
             fail "toml: unsupported other-layer syntax changed a Codex layer"
         fi
     done
-    printf '[mcp_servers.jetbrains]\n"command" = "java"\nargs = []\n' > "$CODEX_HOME/config.toml"
-    bash "$INSTALL" mcp-jetbrains --agents codex >/dev/null || fail "toml: quoted command key was not aligned"
-    ! grep -q java "$CODEX_HOME/config.toml" || fail "toml: quoted command key survived alignment"
+    printf '[mcp_servers.playwright]\n"url" = "http://old-playwright"\n' > "$CODEX_HOME/config.toml"
+    bash "$INSTALL" playwright --agents codex >/dev/null || fail "toml: quoted url key was not aligned"
+    ! grep -q old-playwright "$CODEX_HOME/config.toml" || fail "toml: quoted url key survived alignment"
     pass "Codex layer preflight rejects inline/dotted entries and aligns quoted keys"
 
     mkdir -p .git app
