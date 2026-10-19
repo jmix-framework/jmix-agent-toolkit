@@ -91,24 +91,8 @@
       {
         "id": "jetbrainsMcp",
         "title": "JetBrains MCP",
-        "message": "🔌 Register the <code>JetBrains MCP</code> server with the selected agents. <br>📁 <i>Local</i> writes the project files (<code>.mcp.json</code>, <code>.codex/config.toml</code>, <code>opencode.json</code>); <i>Global</i> writes the user config. With Claude Code, an installed Claude Desktop is set up too. <br>⚙️ Enable the server in <i>Settings | Tools | MCP Server</i> before you continue: the installer asks it which endpoint to use. <br>⏭️ Click <i>Skip</i> to opt out.",
+        "message": "🔌 Register the <code>JetBrains MCP</code> server in the user config of the selected agents, for all their projects. With Claude Code, an installed Claude Desktop is set up too. <br>⚙️ Enable the server in <i>Settings | Tools | MCP Server</i> before you continue: the installer asks it which endpoint to use. <br>⏭️ Click <i>Skip</i> to opt out.",
         "inputs": [
-          {
-            "id": "jetbrainsMcpScope",
-            "label": "Registration scope",
-            "type": "options",
-            "choices": [
-              {
-                "value": "local",
-                "label": "Local (project files)",
-                "default": true
-              },
-              {
-                "value": "global",
-                "label": "Global (user config)"
-              }
-            ]
-          },
           {
             "id": "jetbrainsMcpAgents",
             "label": "🤖 Agents",
@@ -134,9 +118,9 @@
           }
         ],
         "command": {
-          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) mcp-jetbrains -ContentRef \"${guidelinesBranch}\" -Agents \"${jetbrainsMcpAgents}\" -Scope \"${jetbrainsMcpScope}\"",
-          "macos": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- mcp-jetbrains --content-ref \"${guidelinesBranch}\" --agents \"${jetbrainsMcpAgents}\" --scope \"${jetbrainsMcpScope}\"",
-          "linux": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- mcp-jetbrains --content-ref \"${guidelinesBranch}\" --agents \"${jetbrainsMcpAgents}\" --scope \"${jetbrainsMcpScope}\""
+          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) mcp-jetbrains -ContentRef \"${guidelinesBranch}\" -Agents \"${jetbrainsMcpAgents}\"",
+          "macos": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- mcp-jetbrains --content-ref \"${guidelinesBranch}\" --agents \"${jetbrainsMcpAgents}\"",
+          "linux": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- mcp-jetbrains --content-ref \"${guidelinesBranch}\" --agents \"${jetbrainsMcpAgents}\""
         }
       },
       {
@@ -190,24 +174,8 @@
       {
         "id": "playwright",
         "title": "Playwright",
-        "message": "🔌 Register the <code>Playwright MCP</code> server (browser automation) with the selected agents. <br>📁 <i>Local</i> writes the project files, <i>Global</i> the user config. <br>📦 The server starts through <b>npx</b>: Node.js 20+ must be installed. <br>🖥️ With Claude Code, an installed Claude Desktop is set up too. <br>⏭️ Click <i>Skip</i> to opt out.",
+        "message": "🔌 Register the <code>Playwright MCP</code> server (browser automation) in the user config of the selected agents, for all their projects. <br>📦 The server starts through <b>npx</b>: Node.js 20+ must be installed. <br>🖥️ With Claude Code, an installed Claude Desktop is set up too. <br>⏭️ Click <i>Skip</i> to opt out.",
         "inputs": [
-          {
-            "id": "playwrightScope",
-            "label": "Registration scope",
-            "type": "options",
-            "choices": [
-              {
-                "value": "local",
-                "label": "Local (project files)",
-                "default": true
-              },
-              {
-                "value": "global",
-                "label": "Global (user config)"
-              }
-            ]
-          },
           {
             "id": "playwrightAgents",
             "label": "🤖 Agents",
@@ -238,9 +206,9 @@
           }
         ],
         "command": {
-          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) playwright -ContentRef \"${guidelinesBranch}\" -Agents \"${playwrightAgents}\" -Scope \"${playwrightScope}\"",
-          "macos": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- playwright --content-ref \"${guidelinesBranch}\" --agents \"${playwrightAgents}\" --scope \"${playwrightScope}\"",
-          "linux": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- playwright --content-ref \"${guidelinesBranch}\" --agents \"${playwrightAgents}\" --scope \"${playwrightScope}\""
+          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) playwright -ContentRef \"${guidelinesBranch}\" -Agents \"${playwrightAgents}\"",
+          "macos": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- playwright --content-ref \"${guidelinesBranch}\" --agents \"${playwrightAgents}\"",
+          "linux": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- playwright --content-ref \"${guidelinesBranch}\" --agents \"${playwrightAgents}\""
         }
       }
     ]

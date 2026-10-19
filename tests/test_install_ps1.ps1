@@ -703,17 +703,18 @@ Check (Test-Path (Join-Path $homeDir '.agents/.jmix/skills/no-agents-md-test')) 
     'skills(global): content-ref override keys the store'
 
 # ---------------------------------------------------------------------------
-# 3. MCP servers. Files are merged in place, no agent CLI needed.
+# 3. MCP servers. They go into each agent's user config (the isolated HOME);
+#    files are merged in place, the project is never written.
 # ---------------------------------------------------------------------------
 $mcpProj = Join-Path $work 'mcp-project'
 $binDir  = Join-Path $work 'bin'
-New-Item -ItemType Directory -Force -Path $mcpProj, $binDir | Out-Null
+# .git ends the walk over parent project configs that Codex merges in.
+New-Item -ItemType Directory -Force -Path (Join-Path $mcpProj '.git'), $binDir | Out-Null
 Set-Location $mcpProj
 $claudeLog = Join-Path $work 'claude.log'
 $codexLog  = Join-Path $work 'codex.log'
-# Fake agent CLIs. Local scope must not call them; Claude at user scope goes
-# through `claude mcp add`, whose arguments the fake records (and echoes, like
-# the real one does).
+# Fake agent CLIs. Only Claude Code goes through its CLI (`claude mcp add`),
+# whose arguments the fake records (and echoes, like the real one does).
 if ($onWindows) {
     [System.IO.File]::WriteAllText((Join-Path $binDir 'claude.cmd'), "@echo off`r`necho %* >>`"$claudeLog`"`r`necho added: %*`r`n")
     [System.IO.File]::WriteAllText((Join-Path $binDir 'codex.cmd'), "@echo off`r`necho called >>`"$codexLog`"`r`nexit /b 99`r`n")
@@ -729,9 +730,11 @@ $barePath = if ($onWindows) { Join-Path $env:SystemRoot 'System32' } else { '/us
 $desktopDir = if ($onWindows) { Join-Path $env:APPDATA 'Claude' }
               elseif ($IsMacOS) { Join-Path $homeDir 'Library/Application Support/Claude' }
               else { Join-Path $homeDir '.config/Claude' }
-$mcpJson  = Join-Path $mcpProj '.mcp.json'
-$codexCfg = Join-Path $mcpProj '.codex/config.toml'
-$ocJson   = Join-Path $mcpProj 'opencode.json'
+$userCodex = Join-Path $homeDir '.codex/config.toml'
+$userOc    = Join-Path $homeDir '.config/opencode/opencode.json'
+$userJunie = Join-Path $homeDir '.junie/mcp/mcp.json'
+# Root can read and write anything, so the permission cases need a normal user.
+$isUnixUser = -not $onWindows -and ((& id -u) -ne '0')
 
 function Set-TestFile {
     param([string]$Path, [string]$Text)
@@ -751,20 +754,29 @@ function Get-Sha {
     param([string]$Path)
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
 }
+# The arguments the fake claude CLI got so far (cmd.exe keeps the quotes).
+function Get-ClaudeCalls {
+    if (Test-Path $claudeLog) { return ([System.IO.File]::ReadAllText($claudeLog) -replace '"', '') }
+    return ''
+}
+# True when the MCP steps left the project as it was (only .git in it).
+function Test-ProjectUntouched {
+    return (@(Get-ChildItem -LiteralPath $mcpProj -Force | Where-Object { $_.Name -ne '.git' }).Count -eq 0)
+}
 
 $env:PATH = $binPath
 
-# 3a. Local scope, IDE MCP server not reachable -> Streamable HTTP (/stream).
-#     Foreign servers and keys survive; an old [mcp_servers.jetbrains] table
-#     and its sub-table are replaced.
-Set-TestFile $mcpJson @'
+# 3a. IDE MCP server not reachable -> Streamable HTTP (/stream). Foreign
+#     servers and keys survive; an old [mcp_servers.jetbrains] table and its
+#     sub-table are replaced; nothing lands in the project.
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $userCodex), (Split-Path -Parent $userOc) | Out-Null
+Set-TestFile $userOc @'
 {
   "$schema": "keep-me",
-  "mcpServers": {"mine": {"type": "http", "url": "http://mine"}}
+  "mcp": {"mine": {"type": "remote", "url": "http://mine"}}
 }
 '@
-New-Item -ItemType Directory -Force -Path (Join-Path $mcpProj '.codex') | Out-Null
-Set-TestFile $codexCfg @'
+Set-TestFile $userCodex @'
 model = "o3"
 
 [mcp_servers.jetbrains]
@@ -776,48 +788,46 @@ IJ_MCP_SERVER_PORT = "64342"
 [mcp_servers.mine]
 url = "http://mine"
 '@
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'claude,codex,opencode,junie', '-Scope', 'local')) -eq 0) `
-    'mcp-jetbrains(local) exits 0'
-Check (-not (Test-Path $claudeLog) -and -not (Test-Path $codexLog)) 'mcp-jetbrains(local): no agent CLI called'
-$json = Read-Json $mcpJson
-Check ((Test-JsonEqual $json.mcpServers.jetbrains '{"type":"http","url":"http://127.0.0.1:9/stream"}') -and
-       $json.mcpServers.mine.url -eq 'http://mine' -and $json.'$schema' -eq 'keep-me') `
-    'mcp-jetbrains(local): .mcp.json entry added, other content kept'
-$toml = [System.IO.File]::ReadAllText($codexCfg)
-Check ($toml -cmatch '(?m)^model = "o3"$' -and $toml -cmatch '(?m)^\[mcp_servers\.mine\]$') `
-    'mcp-jetbrains(local): other Codex config kept'
+Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'claude,codex,opencode,junie')) -eq 0) 'mcp-jetbrains exits 0'
+Check ((Get-ClaudeCalls).Contains('mcp add --scope user --transport http jetbrains http://127.0.0.1:9/stream')) `
+    'mcp-jetbrains: claude mcp add arguments'
+Check (-not (Test-Path $codexLog)) 'mcp-jetbrains: the codex CLI is not called'
+$toml = [System.IO.File]::ReadAllText($userCodex)
+Check ($toml -cmatch '(?m)^model = "o3"$' -and $toml -cmatch '(?m)^\[mcp_servers\.mine\]$') 'mcp-jetbrains: other Codex config kept'
 Check (([regex]::Matches($toml, '(?m)^\[mcp_servers\.jetbrains')).Count -eq 1 -and -not $toml.Contains('IJ_MCP_SERVER_PORT')) `
-    'mcp-jetbrains(local): old Codex jetbrains table replaced'
-Check ($toml -cmatch '(?m)^url = "http://127\.0\.0\.1:9/stream"$') 'mcp-jetbrains(local): Codex url'
-Check (Test-JsonEqual (Read-Json $ocJson).mcp.jetbrains '{"type":"remote","url":"http://127.0.0.1:9/stream","enabled":true}') `
-    'mcp-jetbrains(local): OpenCode entry'
-Check (-not (Test-Path (Join-Path $mcpProj '.junie/mcp/mcp.json'))) 'mcp-jetbrains(local): Junie got no JetBrains MCP entry'
+    'mcp-jetbrains: old Codex jetbrains table replaced'
+Check ($toml -cmatch '(?m)^url = "http://127\.0\.0\.1:9/stream"$') 'mcp-jetbrains: Codex url'
+$json = Read-Json $userOc
+Check ((Test-JsonEqual $json.mcp.jetbrains '{"type":"remote","url":"http://127.0.0.1:9/stream","enabled":true}') -and
+       $json.mcp.mine.url -eq 'http://mine' -and $json.'$schema' -eq 'keep-me') 'mcp-jetbrains: OpenCode entry added, other content kept'
+Check (-not (Test-Path $userJunie)) 'mcp-jetbrains: Junie got no JetBrains MCP entry'
+Check (Test-ProjectUntouched) 'mcp-jetbrains: nothing written into the project'
 
 # 3b. A re-run changes nothing.
-$hashes = @((Get-Sha $mcpJson), (Get-Sha $codexCfg), (Get-Sha $ocJson))
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'claude,codex,opencode', '-Scope', 'local')) -eq 0) `
-    'mcp-jetbrains(local): re-run exits 0'
-Check ((@((Get-Sha $mcpJson), (Get-Sha $codexCfg), (Get-Sha $ocJson)) -join ',') -eq ($hashes -join ',')) `
-    'mcp-jetbrains(local): re-run leaves the files unchanged'
+$hashes = @((Get-Sha $userCodex), (Get-Sha $userOc))
+$r = Invoke-InstallerResult @('mcp-jetbrains', '-Agents', 'codex,opencode')
+Check ($r.Code -eq 0) 'mcp-jetbrains: re-run exits 0'
+Check ((@((Get-Sha $userCodex), (Get-Sha $userOc)) -join ',') -eq ($hashes -join ',') -and $r.Output -notmatch 'Updated: |Created: ') `
+    'mcp-jetbrains: re-run leaves the files unchanged'
 
 # 3c. A file the merge cannot parse (JSONC) is left alone and the step fails;
-#     the other agents are still configured.
-Set-TestFile $ocJson "{`n  // mine`n  `"theme`": `"dark`"`n}`n"
-$ocHash = Get-Sha $ocJson
-Remove-Item -LiteralPath $mcpJson -Force
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'opencode,claude')) -ne 0) `
-    'mcp-jetbrains: a JSONC opencode.json fails the step'
-Check ((Get-Sha $ocJson) -eq $ocHash) 'mcp-jetbrains: JSONC opencode.json untouched'
-Check (Test-Path $mcpJson) 'mcp-jetbrains: a failed agent does not stop the agents after it'
-Remove-Item -LiteralPath $ocJson -Force
+#     the agents after it are still configured.
+$savedOc = [System.IO.File]::ReadAllText($userOc)
+Set-TestFile $userOc "{`n  // mine`n  `"theme`": `"dark`"`n}`n"
+$ocHash = Get-Sha $userOc
+Remove-Item -LiteralPath $claudeLog -Force -ErrorAction SilentlyContinue
+Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'opencode,claude')) -ne 0) 'mcp-jetbrains: a JSONC opencode.json fails the step'
+Check ((Get-Sha $userOc) -eq $ocHash) 'mcp-jetbrains: JSONC opencode.json untouched'
+Check ((Get-ClaudeCalls).Contains('jetbrains')) 'mcp-jetbrains: a failed agent does not stop the agents after it'
+Set-TestFile $userOc $savedOc
 
 # 3d. A server defined inline (not as a [table]) is refused, not duplicated.
-Set-TestFile $codexCfg "[mcp_servers]`njetbrains = { url = `"http://mine`" }`n"
-$codexHash = Get-Sha $codexCfg
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -ne 0) `
-    'mcp-jetbrains: an inline Codex jetbrains entry fails the step'
-Check ((Get-Sha $codexCfg) -eq $codexHash) 'mcp-jetbrains: inline Codex entry untouched'
-Remove-Item -LiteralPath (Join-Path $mcpProj '.codex') -Recurse -Force
+$savedCodex = [System.IO.File]::ReadAllText($userCodex)
+Set-TestFile $userCodex "[mcp_servers]`njetbrains = { url = `"http://mine`" }`n"
+$codexHash = Get-Sha $userCodex
+Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -ne 0) 'mcp-jetbrains: an inline Codex jetbrains entry fails the step'
+Check ((Get-Sha $userCodex) -eq $codexHash) 'mcp-jetbrains: inline Codex entry untouched'
+Set-TestFile $userCodex $savedCodex
 
 # 3e. IntelliJ IDEA before 2026.1 answers 404 on /stream: SSE for Claude and
 #     OpenCode, a stdio bridge for Codex (no SSE transport there). A local
@@ -857,13 +867,11 @@ if ($port) {
     Remove-Item Env:HTTP_PROXY
     $env:JMIX_IDE_MCP_PORT = '9'
     $sse = "http://127.0.0.1:$port/sse"
-    Check (Test-JsonEqual (Read-Json $mcpJson).mcpServers.jetbrains "{`"type`":`"sse`",`"url`":`"$sse`"}") `
-        'mcp-jetbrains(sse): Claude entry is SSE'
-    Check ([System.IO.File]::ReadAllText($codexCfg) -cmatch ('(?m)^args = \["-y", "mcp-remote", "' + [regex]::Escape($sse) + '", "--transport", "sse-only"\]$')) `
+    Check ((Get-ClaudeCalls).Contains("mcp add --scope user --transport sse jetbrains $sse")) 'mcp-jetbrains(sse): Claude entry is SSE'
+    Check ([System.IO.File]::ReadAllText($userCodex) -cmatch ('(?m)^args = \["-y", "mcp-remote", "' + [regex]::Escape($sse) + '", "--transport", "sse-only"\]$')) `
         'mcp-jetbrains(sse): Codex gets the mcp-remote bridge'
-    Check ((Read-Json $ocJson).mcp.jetbrains.url -eq $sse) 'mcp-jetbrains(sse): OpenCode entry is SSE'
-    Remove-Item -LiteralPath $mcpJson, $ocJson -Force
-    Remove-Item -LiteralPath (Join-Path $mcpProj '.codex') -Recurse -Force
+    Check ((Read-Json $userOc).mcp.jetbrains.url -eq $sse) 'mcp-jetbrains(sse): OpenCode entry is SSE'
+    Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex,opencode')) -eq 0) 'mcp-jetbrains: switching back to /stream exits 0'
 } else {
     Check $false 'mcp-jetbrains(sse): local 404 server did not start'
 }
@@ -907,17 +915,13 @@ if ($onWindows) {
     Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'Packages') -Recurse -Force
 }
 
-# 3g. Context7 is always user level; the key never reaches the output or the
-#     project, and the user files holding it are private.
+# 3g. Context7: the key never reaches the output or the project, and the user
+#     files holding it are private.
 $r = Invoke-InstallerResult @('mcp-context7', '-Agents', 'claude,codex,opencode,junie', '-Context7Key', 'ctx7sk-TESTKEY')
 Check ($r.Code -eq 0) 'mcp-context7 exits 0'
 Check (-not ($r.Output -match 'TESTKEY')) 'mcp-context7: the API key is not printed'
-$claudeCalls = if (Test-Path $claudeLog) { [System.IO.File]::ReadAllText($claudeLog) -replace '"', '' } else { '' }
-Check ($claudeCalls.Contains('mcp add --scope user --transport http context7 https://mcp.context7.com/mcp --header Authorization: Bearer ctx7sk-TESTKEY')) `
+Check ((Get-ClaudeCalls).Contains('mcp add --scope user --transport http context7 https://mcp.context7.com/mcp --header Authorization: Bearer ctx7sk-TESTKEY')) `
     'mcp-context7: claude mcp add arguments'
-$userCodex = Join-Path $homeDir '.codex/config.toml'
-$userOc    = Join-Path $homeDir '.config/opencode/opencode.json'
-$userJunie = Join-Path $homeDir '.junie/mcp/mcp.json'
 Check ([System.IO.File]::ReadAllText($userCodex).Contains('http_headers = { Authorization = "Bearer ctx7sk-TESTKEY" }')) `
     'mcp-context7: Codex user config entry'
 Check ((Read-Json $userOc).mcp.context7.headers.Authorization -eq 'Bearer ctx7sk-TESTKEY') 'mcp-context7: OpenCode user config entry'
@@ -925,146 +929,200 @@ Check ((Read-Json $userJunie).mcpServers.context7.env.CONTEXT7_API_KEY -eq 'ctx7
 $json = Read-Json $desktopCfg
 Check ($json.mcpServers.context7.env.CONTEXT7_API_KEY -eq 'ctx7sk-TESTKEY' -and $json.preferences.keep -eq $true) `
     'mcp-context7: Claude Desktop entry'
-Check (-not (Get-ChildItem -LiteralPath $mcpProj -Recurse -File -Force | Select-String -SimpleMatch 'TESTKEY' -List)) `
-    'mcp-context7: the API key stays out of the project'
+Check (Test-ProjectUntouched) 'mcp-context7: nothing written into the project'
 if (-not $onWindows) {
-    foreach ($f in $userCodex, $userOc, $userJunie) {
+    foreach ($f in $userCodex, $userOc, $userJunie, $desktopCfg) {
         Check ((Get-Item -LiteralPath $f).UnixMode -eq '-rw-------') "mcp-context7: $f holds the key and is 0600"
     }
 }
 Check ((Invoke-Installer @('mcp-context7', '-Agents', 'codex', '-Context7Key', 'bad/key')) -ne 0) `
     'mcp-context7: a key with characters that need escaping is rejected'
-Check ((Invoke-Installer @('mcp-context7', '-Agents', 'codex', '-Context7Key', 'k', '-Scope', 'local')) -ne 0) `
-    'mcp-context7: -Scope is rejected'
 
-# 3h. A local registration keeps the global skills for other projects.
-#     Old install.ps1 links had absolute
-#     targets (junctions on Windows).
+# 3h. There is no project scope any more; the claude CLI is also found where
+#     its installer puts it, off PATH (an IDE started from the desktop often
+#     lacks ~/.local/bin).
+foreach ($sub in 'mcp-jetbrains', 'playwright') {
+    $r = Invoke-InstallerResult @($sub, '-Agents', 'codex', '-Scope', 'local')
+    Check ($r.Code -ne 0 -and $r.Output -match 'always registered in the user config') "${sub}: -Scope is rejected"
+}
+Check ((Invoke-Installer @('mcp-context7', '-Agents', 'codex', '-Context7Key', 'ctx7sk-TESTKEY', '-Scope', 'global')) -ne 0) `
+    'mcp-context7: -Scope is rejected'
+$env:PATH = $barePath
+$r = Invoke-InstallerResult @('playwright', '-Agents', 'claude')
+$env:PATH = $binPath
+Check ($r.Code -eq 0 -and $r.Output -match "Skipped: 'claude' CLI not found") 'playwright: a missing claude CLI is a skip, not a failure'
+if (-not $onWindows) {
+    $localBin = Join-Path $homeDir '.local/bin'
+    $localLog = Join-Path $work 'claude-local.log'
+    New-Item -ItemType Directory -Force -Path $localBin | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $localBin 'claude'), "#!/bin/sh`necho `"`$*`" >> '$localLog'`n")
+    & chmod +x (Join-Path $localBin 'claude')
+    $env:PATH = $barePath
+    $code = Invoke-Installer @('playwright', '-Agents', 'claude')
+    $env:PATH = $binPath
+    Check ($code -eq 0 -and (Test-Path $localLog) -and
+           [System.IO.File]::ReadAllText($localLog).Contains('mcp add --scope user playwright -- npx -y @playwright/mcp@latest')) `
+        'playwright: the claude CLI in ~/.local/bin is used off PATH'
+    Remove-Item -LiteralPath (Join-Path $homeDir '.local') -Recurse -Force
+    $oldDir = Join-Path $homeDir '.claude/local'
+    $oldLog = Join-Path $work 'claude-old.log'
+    New-Item -ItemType Directory -Force -Path $oldDir | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $oldDir 'claude'), "#!/bin/sh`necho `"`$*`" >> '$oldLog'`n")
+    & chmod +x (Join-Path $oldDir 'claude')
+    $env:PATH = $barePath
+    $code = Invoke-Installer @('playwright', '-Agents', 'claude')
+    $env:PATH = $binPath
+    Check ($code -eq 0 -and (Test-Path $oldLog)) 'playwright: the claude CLI in ~/.claude/local is used off PATH'
+    Remove-Item -LiteralPath $oldDir -Recurse -Force
+}
+
+# 3i. Playwright for every agent. The old playwright-cli skills go only after
+#     all four agents have the server; links elsewhere stay. Old install.ps1
+#     links had absolute targets (junctions on Windows).
 $oldStore = Join-Path $homeDir '.agents/.playwright/skills/playwright-cli'
 $userSkills = Join-Path $homeDir '.claude/skills'
-New-Item -ItemType Directory -Force -Path $oldStore, (Join-Path $userSkills 'my-skill') | Out-Null
+$sharedSkills = Join-Path $homeDir '.agents/skills'
 $oldLink = Join-Path $userSkills 'playwright-cli'
+$sharedOldLink = Join-Path $sharedSkills 'playwright-cli'
 $linkType = if ($onWindows) { 'Junction' } else { 'SymbolicLink' }
+New-Item -ItemType Directory -Force -Path $oldStore, (Join-Path $userSkills 'my-skill'), $sharedSkills | Out-Null
 New-Item -ItemType $linkType -Path $oldLink -Target $oldStore | Out-Null
-Check ((Invoke-Installer @('playwright', '-Agents', 'claude,codex,opencode,junie', '-Scope', 'local')) -eq 0) `
-    'playwright(local) exits 0'
-Check (Test-JsonEqual (Read-Json $mcpJson).mcpServers.playwright '{"type":"stdio","command":"npx","args":["-y","@playwright/mcp@latest"]}') `
-    'playwright(local): Claude entry'
-Check ([System.IO.File]::ReadAllText($codexCfg) -cmatch '(?m)^args = \["-y", "@playwright/mcp@latest"\]$') 'playwright(local): Codex entry'
-Check (Test-JsonEqual (Read-Json $ocJson).mcp.playwright.command '["npx","-y","@playwright/mcp@latest"]') 'playwright(local): OpenCode entry'
-Check (Test-JsonEqual (Read-Json (Join-Path $mcpProj '.junie/mcp/mcp.json')).mcpServers.playwright.args '["-y","@playwright/mcp@latest"]') `
-    'playwright(local): Junie entry'
-Check ((Test-Path $oldLink) -and (Test-Path (Join-Path $homeDir '.agents/.playwright'))) `
-    'playwright: local registration keeps global skills'
-Check (Test-Path (Join-Path $userSkills 'my-skill')) 'playwright: foreign skill kept'
-
-Check ((Invoke-Installer @('playwright', '-Agents', 'claude', '-Scope', 'global')) -eq 0) 'playwright(global) exits 0'
-Check (([System.IO.File]::ReadAllText($claudeLog) -replace '"', '').Contains('mcp add --scope user playwright -- npx -y @playwright/mcp@latest')) `
-    'playwright(global): claude mcp add arguments'
+New-Item -ItemType $linkType -Path $sharedOldLink -Target $oldStore | Out-Null
+Check ((Invoke-Installer @('playwright', '-Agents', 'claude,codex')) -eq 0) 'playwright: a partial run exits 0'
+Check ((Test-Path $oldLink) -and (Test-Path $sharedOldLink)) 'playwright: a partial run keeps skills the other agents still use'
 $env:PATH = $barePath
-$r = Invoke-InstallerResult @('playwright', '-Agents', 'claude', '-Scope', 'global')
+$r = Invoke-InstallerResult @('playwright', '-Agents', 'claude,codex,opencode,junie')
 $env:PATH = $binPath
-Check ($r.Code -eq 0) 'playwright(global): a missing claude CLI is a skip, not a failure'
-Check ($r.Output -match "Skipped: 'claude' CLI not found" -and $r.Output -notmatch 'Scope local') 'playwright(global): skip message'
-Check ((Invoke-Installer @('playwright', '-Agents', 'codex', '-Scope', 'nowhere')) -ne 0) 'playwright: an invalid -Scope fails'
+Check ($r.Code -eq 0) 'playwright: a missing claude CLI does not stop the other agents'
+Check (Test-Path $oldLink) 'playwright: a skipped agent is not counted as migrated'
+$savedOc = [System.IO.File]::ReadAllText($userOc)
+Set-TestFile $userOc '{ broken json'
+Check ((Invoke-Installer @('playwright', '-Agents', 'claude,codex,opencode,junie')) -ne 0) 'playwright: a malformed user config fails'
+Check (Test-Path $oldLink) 'playwright: a failed run keeps old skills'
+Set-TestFile $userOc $savedOc
+Check ((Invoke-Installer @('playwright', '-Agents', 'claude,codex,opencode,junie')) -eq 0) 'playwright exits 0'
+Check ((Get-ClaudeCalls).Contains('mcp add --scope user playwright -- npx -y @playwright/mcp@latest')) 'playwright: claude mcp add arguments'
+Check ([System.IO.File]::ReadAllText($userCodex) -cmatch '(?m)^args = \["-y", "@playwright/mcp@latest"\]$') 'playwright: Codex entry'
+Check (Test-JsonEqual (Read-Json $userOc).mcp.playwright.command '["npx","-y","@playwright/mcp@latest"]') 'playwright: OpenCode entry'
+Check (Test-JsonEqual (Read-Json $userJunie).mcpServers.playwright.args '["-y","@playwright/mcp@latest"]') 'playwright: Junie entry'
+Check (-not (Test-Path $oldLink) -and -not (Test-Path $sharedOldLink) -and
+       -not (Test-Path (Join-Path $homeDir '.agents/.playwright'))) 'playwright: old skills removed after all agents migrated'
+Check (Test-Path (Join-Path $userSkills 'my-skill')) 'playwright: foreign skill kept'
+Check (Test-ProjectUntouched) 'playwright: nothing written into the project'
 
-# Root can read and write anything, so the permission cases need a normal user.
-$isUnixUser = -not $onWindows -and ((& id -u) -ne '0')
-
-# 3i. Codex merges the user and project tables key by key and refuses a
-#     url+command mix: the other layer is brought to the same transport.
-$codexDir = Join-Path $mcpProj '.codex'
-Remove-Item -LiteralPath $codexDir -Recurse -Force
-$userCodexOrig = [System.IO.File]::ReadAllText($userCodex)
-Set-TestFile $userCodex ("[mcp_servers.playwright]`nurl = `"http://old-playwright`"`n" + $userCodexOrig)
-$r = Invoke-InstallerResult @('playwright', '-Agents', 'codex', '-Scope', 'local')
-Check ($r.Code -eq 0) 'playwright: exits 0 with an HTTP playwright entry at user level'
-Check ($r.Output -match 'another transport, which Codex cannot merge; updating it too') `
-    'playwright: reports aligning the other Codex layer'
-Check ($r.Output -match 'Other projects') 'playwright: notes that other projects may need a re-run'
-$userToml = [System.IO.File]::ReadAllText($userCodex)
-$pwUser = [regex]::Match($userToml, '(?ms)^\[mcp_servers\.playwright\]\n(.*?)(?=^\[|\z)').Groups[1].Value
-Check ($pwUser -cmatch '(?m)^command = "npx"$' -and $pwUser -cnotmatch '(?m)^url') `
-    "playwright: user-level Codex playwright aligned with the project's transport"
-Check ($userToml.Contains('Authorization = "Bearer ctx7sk-TESTKEY"')) 'playwright: aligning the user layer kept its other servers'
-
-# 3i2. With the IDE unreachable the transport is a guess: a user-level
-#      jetbrains entry with the other transport is not overwritten by it.
-Remove-Item -LiteralPath $codexDir -Recurse -Force
-Set-TestFile $userCodex ("[mcp_servers.jetbrains]`ncommand = `"npx`"`nargs = [`"-y`", `"mcp-remote`", `"http://127.0.0.1:9/sse`", `"--transport`", `"sse-only`"]`n`n" + $userCodexOrig)
+# 3j. Codex merges the project configs of the current dir up to its git root
+#     into the user config: one with the other transport fails the step; they
+#     are read, never written.
 $userBefore = Get-Sha $userCodex
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex', '-Scope', 'local')) -ne 0) `
-    'mcp-jetbrains: a guessed transport does not replace the user-level SSE bridge'
-Check ((Get-Sha $userCodex) -eq $userBefore -and -not (Test-Path $codexCfg)) `
-    'mcp-jetbrains: the refused alignment left both Codex layers alone'
+$projCodexDir = Join-Path $mcpProj '.codex'
+$projCodex = Join-Path $projCodexDir 'config.toml'
+$appDir = Join-Path $mcpProj 'app'
+New-Item -ItemType Directory -Force -Path $projCodexDir, $appDir | Out-Null
+Set-TestFile $projCodex "[mcp_servers.playwright]`nurl = `"http://project`"`n"
+$projBefore = Get-Sha $projCodex
+foreach ($dir in $mcpProj, $appDir) {
+    Set-Location $dir
+    Check ((Invoke-Installer @('playwright', '-Agents', 'codex')) -ne 0) "codex: a project table with another transport fails the step (from $dir)"
+    Check ((Get-Sha $userCodex) -eq $userBefore -and (Get-Sha $projCodex) -eq $projBefore) 'codex: the project conflict changed no config'
+}
+Check (-not (Test-Path (Join-Path $appDir '.codex'))) 'codex: no project config written'
+Set-TestFile $projCodex "notes = `"`"`"`nmulti`nline`n`"`"`"`n`n[mcp_servers.playwright]`ncommand = `"npx`"`n"
+$projBefore = Get-Sha $projCodex
+Set-Location $appDir
+Check ((Invoke-Installer @('playwright', '-Agents', 'codex')) -eq 0) `
+    'codex: a same-transport project table (with a triple-quoted string) is accepted'
+Check ((Get-Sha $projCodex) -eq $projBefore) 'codex: the project config is not rewritten'
+foreach ($entry in "[mcp_servers]`nplaywright = { url = `"http://project`" }`n", "mcp_servers.playwright.url = `"http://project`"`n") {
+    Set-TestFile $projCodex $entry
+    $projBefore = Get-Sha $projCodex
+    $r = Invoke-InstallerResult @('playwright', '-Agents', 'codex')
+    Check ($r.Code -ne 0 -and $r.Output -match 'cannot check') "codex: an unreadable project definition fails the step: $($entry.Split("`n")[0])"
+    Check ((Get-Sha $projCodex) -eq $projBefore -and (Get-Sha $userCodex) -eq $userBefore) 'codex: an unreadable project definition changed no config'
+}
+# With the IDE unreachable the transport is a guess: the error points at the
+# IDE, not at a project bridge that may well be right.
+Set-TestFile $projCodex "[mcp_servers.jetbrains]`ncommand = `"npx`"`n"
+$r = Invoke-InstallerResult @('mcp-jetbrains', '-Agents', 'codex')
+Check ($r.Code -ne 0 -and $r.Output -match 'not reachable to tell') 'codex: a guessed-transport conflict points at the IDE'
+Set-Location $mcpProj
+Remove-Item -LiteralPath $projCodexDir, $appDir -Recurse -Force
+# Outside a git repository Codex reads only the current directory's config.
+$noGit = Join-Path $work 'nogit'
+New-Item -ItemType Directory -Force -Path (Join-Path $noGit '.codex'), (Join-Path $noGit 'child') | Out-Null
+Set-TestFile (Join-Path $noGit '.codex/config.toml') "[mcp_servers.playwright]`nurl = `"http://parent`"`n"
+Set-Location (Join-Path $noGit 'child')
+Check ((Invoke-Installer @('playwright', '-Agents', 'codex')) -eq 0) 'codex: a parent config outside a git repository is ignored'
+Set-Location $mcpProj
+Remove-Item -LiteralPath $noGit -Recurse -Force
 
-# 3i3. A triple-quoted string in the other layer matters only when that
-#      layer has to be rewritten.
-$tripleQuoted = "developer_instructions = `"`"`"`nBe terse.`n`"`"`"`n`n"
-Set-TestFile $userCodex ($tripleQuoted + "[mcp_servers.playwright]`ncommand = `"npx`"`n`n" + $userCodexOrig)
-Check ((Invoke-Installer @('playwright', '-Agents', 'codex', '-Scope', 'local')) -eq 0 -and (Test-Path $codexCfg)) `
-    'playwright: a triple-quoted string in the untouched user layer does not fail the step'
-Remove-Item -LiteralPath $codexDir -Recurse -Force
-Set-TestFile $userCodex ($tripleQuoted + "[mcp_servers.playwright]`nurl = `"http://old-playwright`"`n`n" + $userCodexOrig)
-Check ((Invoke-Installer @('playwright', '-Agents', 'codex', '-Scope', 'local')) -ne 0 -and -not (Test-Path $codexCfg)) `
-    'playwright: a user layer to rewrite that holds a triple-quoted string fails before any write'
-
-# 3i4. Run from HOME the project and user layers are one file; an old stdio
-#      context7 entry there is simply replaced.
+# 3k. Run from HOME, the project config is the user config: an old stdio
+#     context7 entry there is simply replaced.
+$savedCodex = [System.IO.File]::ReadAllText($userCodex)
 Set-TestFile $userCodex "[mcp_servers.context7]`ncommand = `"npx`"`nargs = [`"-y`", `"@upstash/context7-mcp`", `"--api-key`", `"old`"]`n"
 Push-Location $homeDir
 $code = Invoke-Installer @('mcp-context7', '-Agents', 'codex', '-Context7Key', 'ctx7sk-TESTKEY')
 Pop-Location
-$userToml = [System.IO.File]::ReadAllText($userCodex)
-Check ($code -eq 0 -and $userToml -cmatch '(?m)^url = "https://mcp\.context7\.com/mcp"$' -and $userToml -cnotmatch '(?m)^command') `
+$toml = [System.IO.File]::ReadAllText($userCodex)
+Check ($code -eq 0 -and $toml -cmatch '(?m)^url = "https://mcp\.context7\.com/mcp"$' -and $toml -cnotmatch '(?m)^command') `
     'mcp-context7: run from HOME replaces the old stdio entry'
-Set-TestFile $userCodex $userCodexOrig
 
-New-Item -ItemType Directory -Force -Path $codexDir | Out-Null
-Set-TestFile $codexCfg "[mcp_servers.context7]`ncommand = `"npx`"`n"
-Check ((Invoke-Installer @('mcp-context7', '-Agents', 'codex', '-Context7Key', 'ctx7sk-TESTKEY')) -ne 0) `
-    'mcp-context7: a project stdio context7 next to the user url entry fails the step'
-Check (-not [System.IO.File]::ReadAllText($codexCfg).Contains('TESTKEY')) 'mcp-context7: the key was not written into the project'
-
-# 3j. A table is replaced where it stands: the order and the comment that
+# 3l. A table is replaced where it stands: the order and the comment that
 #     introduces the next table stay, and alternating steps converge.
-Set-TestFile $codexCfg "[mcp_servers.jetbrains]`nurl = `"old`"`n`n# my own server`n[mcp_servers.mine]`nurl = `"http://mine`"`n"
+Set-TestFile $userCodex "[mcp_servers.jetbrains]`nurl = `"old`"`n`n# my own server`n[mcp_servers.mine]`nurl = `"http://mine`"`n"
 Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -eq 0) 'toml: exits 0'
-$toml = [System.IO.File]::ReadAllText($codexCfg)
+$toml = [System.IO.File]::ReadAllText($userCodex)
 Check ($toml.StartsWith("[mcp_servers.jetbrains]`n")) 'toml: a replaced table stays where it stood'
 Check ($toml -cmatch '(?m)^# my own server$') 'toml: the comment before the next table kept'
 $null = Invoke-Installer @('playwright', '-Agents', 'codex')
-$tomlHash = Get-Sha $codexCfg
+$tomlHash = Get-Sha $userCodex
 $out = (Invoke-InstallerCapture @('mcp-jetbrains', '-Agents', 'codex')) + (Invoke-InstallerCapture @('playwright', '-Agents', 'codex'))
-Check ((Get-Sha $codexCfg) -eq $tomlHash) 'toml: alternating steps converge'
+Check ((Get-Sha $userCodex) -eq $tomlHash) 'toml: alternating steps converge'
 Check ($out -notmatch 'Updated: ') 'toml: an unchanged config.toml is not reported as updated'
 
-# 3k. A root inline mcp_servers table is refused; a BOM before the first header
-#     does not duplicate the table, and stays.
-Set-TestFile $codexCfg "mcp_servers = { jetbrains = { url = `"x`" } }`n"
-$codexHash = Get-Sha $codexCfg
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -ne 0) 'toml: a root inline mcp_servers table fails the step'
-Check ((Get-Sha $codexCfg) -eq $codexHash) 'toml: a root inline table is left untouched'
-[System.IO.File]::WriteAllBytes($codexCfg, [byte[]](0xEF, 0xBB, 0xBF) + [System.Text.Encoding]::ASCII.GetBytes("[mcp_servers.jetbrains]`nurl = `"old`"`n"))
+# 3m. Unsupported TOML is refused and the file kept: a triple-quoted string (in
+#     a file the step has to write), a root inline table, dotted keys. A quoted
+#     key is fine, and a BOM before the first header does not duplicate the
+#     table, and stays.
+foreach ($entry in "notes = `"`"`"`nmulti`n`"`"`"`n", "notes = '''`nmulti`n'''`n",
+                   "mcp_servers = { jetbrains = { url = `"x`" } }`n",
+                   "[mcp_servers]`njetbrains = { command = `"java`", args = [] }`n",
+                   "mcp_servers.jetbrains.command = `"java`"`n") {
+    Set-TestFile $userCodex $entry
+    $codexHash = Get-Sha $userCodex
+    $label = $entry.Split("`n")[0]
+    Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -ne 0) "toml: unsupported syntax fails the step: $label"
+    Check ((Get-Sha $userCodex) -eq $codexHash) "toml: unsupported syntax is left untouched: $label"
+}
+Set-TestFile $userCodex "[mcp_servers.jetbrains]`n`"url`" = `"http://old`"`n"
+Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -eq 0) 'toml: a quoted key exits 0'
+Check (-not [System.IO.File]::ReadAllText($userCodex).Contains('http://old')) 'toml: a quoted url key is replaced'
+[System.IO.File]::WriteAllBytes($userCodex, [byte[]](0xEF, 0xBB, 0xBF) + [System.Text.Encoding]::ASCII.GetBytes("[mcp_servers.jetbrains]`nurl = `"old`"`n"))
 Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -eq 0) 'toml: a file with a BOM exits 0'
-$afterBytes = [System.IO.File]::ReadAllBytes($codexCfg)
+$afterBytes = [System.IO.File]::ReadAllBytes($userCodex)
 Check ($afterBytes[0] -eq 0xEF -and $afterBytes[1] -eq 0xBB -and $afterBytes[2] -eq 0xBF) 'toml: the leading BOM kept'
 Check (([regex]::Matches([System.Text.Encoding]::UTF8.GetString($afterBytes), 'mcp_servers\.jetbrains')).Count -eq 1) `
     'toml: a BOM before the header does not duplicate the table'
-Remove-Item -LiteralPath $codexDir -Recurse -Force
+Set-TestFile $userCodex $savedCodex
 
-# 3l. An unreadable config is reported and kept, never replaced.
+# 3n. An unreadable config, or a directory at its path, is reported and kept,
+#     never replaced.
 if ($isUnixUser) {
-    Set-TestFile $mcpJson '{"mcpServers": {"mine": {"command": "keep-me"}}}'
-    & chmod 000 $mcpJson
-    $r = Invoke-InstallerResult @('playwright', '-Agents', 'claude')
-    & chmod 644 $mcpJson
-    Check ($r.Code -ne 0 -and $r.Output -match 'cannot read') 'json: an unreadable .mcp.json fails the step'
-    Check ([System.IO.File]::ReadAllText($mcpJson).Contains('keep-me')) 'json: an unreadable .mcp.json is kept'
-    Remove-Item -LiteralPath $mcpJson -Force
+    & chmod 000 $userOc
+    $r = Invoke-InstallerResult @('playwright', '-Agents', 'opencode')
+    & chmod 600 $userOc
+    Check ($r.Code -ne 0 -and $r.Output -match 'cannot read') 'json: an unreadable opencode.json fails the step'
+    Check ($null -ne (Read-Json $userOc).mcp.mine) 'json: an unreadable opencode.json is kept'
 }
+$savedOcPath = Join-Path $work 'opencode.saved.json'
+Move-Item -LiteralPath $userOc -Destination $savedOcPath
+New-Item -ItemType Directory -Path $userOc | Out-Null
+$r = Invoke-InstallerResult @('playwright', '-Agents', 'opencode')
+Check ($r.Code -ne 0 -and $r.Output -match 'not a regular file') 'json: a directory at the config path fails the step'
+Check (-not (Get-ChildItem -LiteralPath $userOc -Force)) 'json: the config directory is left empty'
+Remove-Item -LiteralPath $userOc -Force
+Move-Item -LiteralPath $savedOcPath -Destination $userOc
 
-# 3n. A user config that gets the Context7 key ends up private, also when it
+# 3o. A user config that gets the Context7 key ends up private, also when it
 #     already held the entry (Unchanged) or is rewritten.
 if (-not $onWindows) {
     & chmod 644 $userOc
@@ -1077,9 +1135,8 @@ if (-not $onWindows) {
     Check ((Get-Item -LiteralPath $userJunie).UnixMode -eq '-rw-------') 'mcp-context7: a rewritten 0644 mcp.json is made private'
 }
 
-# 3o. The old-store cleanup leaves other links alone and does not stop the
+# 3p. The old-store cleanup leaves other links alone and does not stop the
 #     step when the store cannot be removed.
-$oldStore = Join-Path $homeDir '.agents/.playwright/skills/playwright-cli'
 $otherTarget = Join-Path $work 'x.playwright/skills/mine'
 $otherLink = Join-Path $userSkills 'mine'
 New-Item -ItemType Directory -Force -Path $oldStore, $otherTarget | Out-Null
@@ -1088,7 +1145,7 @@ if ($isUnixUser) {
     [System.IO.File]::WriteAllText((Join-Path $oldStore 'SKILL.md'), '')
     & chmod 555 $oldStore
 }
-$r = Invoke-InstallerResult @('playwright', '-Agents', 'claude,codex,opencode,junie', '-Scope', 'global')
+$r = Invoke-InstallerResult @('playwright', '-Agents', 'claude,codex,opencode,junie')
 Check ($r.Code -eq 0) 'playwright: an old store that cannot be removed does not stop the step'
 Check ($null -ne (Get-Item -LiteralPath $otherLink -Force -ErrorAction SilentlyContinue)) `
     'playwright: a link that is not into the old store is kept'
@@ -1099,7 +1156,7 @@ if ($isUnixUser) {
 Remove-Item -LiteralPath (Join-Path $homeDir '.agents/.playwright') -Recurse -Force -ErrorAction SilentlyContinue
 [System.IO.Directory]::Delete($otherLink, $false)
 
-# 3p. A JMIX_IDE_MCP_PORT that is not a port is refused up front; -Source is
+# 3q. A JMIX_IDE_MCP_PORT that is not a port is refused up front; -Source is
 #     accepted by the MCP steps too.
 foreach ($badPort in '9"x', '70000', '0') {
     $env:JMIX_IDE_MCP_PORT = $badPort
@@ -1108,103 +1165,18 @@ foreach ($badPort in '9"x', '70000', '0') {
 $env:JMIX_IDE_MCP_PORT = '9'
 Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex', '-Source', $Source)) -eq 0) 'mcp-jetbrains: -Source is accepted'
 
-# 3q. Refuse unsupported TOML before changing either Codex layer.
-$safeProj = Join-Path $work 'safe-project'
-$env:CODEX_HOME = Join-Path $work 'safe-codex'
-New-Item -ItemType Directory -Force -Path (Join-Path $safeProj '.codex'), $env:CODEX_HOME | Out-Null
-Set-Location $safeProj
-$safeUser = Join-Path $env:CODEX_HOME 'config.toml'
-$safeLocal = Join-Path $safeProj '.codex/config.toml'
-foreach ($quotes in '"""', ("'" * 3)) {
-    Set-TestFile $safeLocal "developer_instructions = $quotes`n[mcp_servers.playwright]`ncommand = `"example`"`n$quotes`nmodel = `"keep-me`"`n"
-    Set-TestFile $safeUser "[mcp_servers.playwright]`nurl = `"http://keep-me`"`n"
-    $localBefore = Get-Sha $safeLocal
-    $userBefore = Get-Sha $safeUser
-    Check ((Invoke-Installer @('playwright', '-Agents', 'codex')) -ne 0) 'toml: multi-line instructions refused'
-    Check ((Get-Sha $safeLocal) -eq $localBefore -and (Get-Sha $safeUser) -eq $userBefore) `
-        'toml: multi-line refusal leaves both layers untouched'
-}
-foreach ($entry in "[mcp_servers]`njetbrains = { command = `"java`", args = [] }`n",
-                   "mcp_servers.jetbrains.command = `"java`"`nmcp_servers.jetbrains.args = []`n") {
-    Set-TestFile $safeUser $entry
-    Set-TestFile $safeLocal "model = `"keep-me`"`n"
-    $localBefore = Get-Sha $safeLocal
-    $userBefore = Get-Sha $safeUser
-    Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -ne 0) 'toml: unsupported other-layer entry refused'
-    Check ((Get-Sha $safeLocal) -eq $localBefore -and (Get-Sha $safeUser) -eq $userBefore) `
-        'toml: unsupported other-layer entry leaves both layers untouched'
-}
-Set-TestFile $safeUser "[mcp_servers.playwright]`n`"url`" = `"http://old-playwright`"`n"
-Check ((Invoke-Installer @('playwright', '-Agents', 'codex')) -eq 0) 'toml: quoted url key aligned'
-Check (-not ([System.IO.File]::ReadAllText($safeUser).Contains('old-playwright'))) 'toml: quoted old url removed'
-
-# 3r. Ancestor transport conflicts fail before any layer is written.
-New-Item -ItemType Directory -Force -Path (Join-Path $safeProj '.git'), (Join-Path $safeProj 'app') | Out-Null
-Set-TestFile $safeLocal "[mcp_servers.jetbrains]`ncommand = `"java`"`n"
-Set-TestFile $safeUser "model = `"keep-me`"`n"
-$localBefore = Get-Sha $safeLocal
-$userBefore = Get-Sha $safeUser
-Set-Location (Join-Path $safeProj 'app')
-foreach ($scope in 'local', 'global') {
-    Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex', '-Scope', $scope)) -ne 0) `
-        "toml: conflicting ancestor refused ($scope)"
-    Check ((Get-Sha $safeLocal) -eq $localBefore -and (Get-Sha $safeUser) -eq $userBefore -and
-           -not (Test-Path '.codex/config.toml')) 'toml: ancestor refusal leaves all layers untouched'
-}
-Set-TestFile $safeLocal "[mcp_servers.jetbrains]`nurl = `"http://ancestor`"`n"
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -eq 0) 'toml: same-transport ancestor allowed'
-Check ([System.IO.File]::ReadAllText($safeLocal).Contains('ancestor')) 'toml: ancestor not overwritten'
-
-# 3s. Failed, skipped, local and partial global registrations retain old skills.
-$sharedSkills = Join-Path $homeDir '.agents/skills'
-$sharedOldLink = Join-Path $sharedSkills 'playwright-cli'
-New-Item -ItemType Directory -Force -Path $oldStore, $sharedSkills | Out-Null
-New-Item -ItemType $linkType -Path $oldLink -Target $oldStore | Out-Null
-New-Item -ItemType $linkType -Path $sharedOldLink -Target $oldStore | Out-Null
-$env:PATH = $barePath
-$r = Invoke-InstallerResult @('playwright', '-Agents', 'claude', '-Scope', 'global')
-$env:PATH = $binPath
-Check ($r.Code -eq 0 -and $r.Output -match "Skipped: 'claude'") 'playwright: missing CLI skipped'
-Check ((Test-Path $oldLink) -and (Test-Path $sharedOldLink)) 'playwright: skipped registration keeps old skills'
-$env:PATH = $barePath
-$r = Invoke-InstallerResult @('playwright', '-Agents', 'claude,codex,opencode,junie', '-Scope', 'global')
-$env:PATH = $binPath
-Check ($r.Code -eq 0) 'playwright: missing Claude CLI does not stop other agents'
-Check ((Test-Path $oldLink) -and (Test-Path $sharedOldLink)) 'playwright: skipped agent not counted as migrated'
-$savedOc = [System.IO.File]::ReadAllText($userOc)
-Set-TestFile $userOc '{ broken json'
-Check ((Invoke-Installer @('playwright', '-Agents', 'claude,codex,opencode,junie', '-Scope', 'global')) -ne 0) `
-    'playwright: failed global registration reported'
-Check ((Test-Path $oldLink) -and (Test-Path $sharedOldLink)) 'playwright: failed registration keeps old skills'
-Set-TestFile $userOc $savedOc
-Check ((Invoke-Installer @('playwright', '-Agents', 'claude', '-Scope', 'local')) -eq 0) 'playwright: local registration succeeds'
-Check ((Test-Path $oldLink) -and (Test-Path $sharedOldLink)) 'playwright: local registration keeps global skills'
-Check ((Invoke-Installer @('playwright', '-Agents', 'claude,codex', '-Scope', 'global')) -eq 0) `
-    'playwright: partial global registration succeeds'
-Check ((Test-Path $oldLink) -and (Test-Path $sharedOldLink)) 'playwright: shared skills kept for unselected agents'
-Check ((Invoke-Installer @('playwright', '-Agents', 'claude,codex,opencode,junie', '-Scope', 'global')) -eq 0) `
-    'playwright: complete global migration succeeds'
-Check (-not (Test-Path $oldLink) -and -not (Test-Path $sharedOldLink) -and
-       -not (Test-Path (Join-Path $homeDir '.agents/.playwright'))) 'playwright: fully migrated global skills cleaned up'
-
-# 3t. A directory at a config path fails without moving staged data into it.
-New-Item -ItemType Directory -Path 'opencode.json' | Out-Null
-$r = Invoke-InstallerResult @('playwright', '-Agents', 'opencode')
-Check ($r.Code -ne 0 -and $r.Output -match 'not a regular file') 'json: config directory refused'
-Check (-not (Get-ChildItem -LiteralPath 'opencode.json' -Force)) 'json: config directory left empty'
-
-# 3u. Checking a read-only project layer never stages the Context7 key there.
-$projectCodex = Join-Path (Get-Location).Path '.codex/config.toml'
-Set-TestFile $projectCodex ([System.IO.File]::ReadAllText($projectCodex) + "[mcp_servers.context7]`nurl = `"https://mcp.context7.com/mcp`"`n")
-$localBefore = Get-Sha $projectCodex
-if (-not $onWindows) { & chmod 555 (Split-Path -Parent $projectCodex) }
+# 3r. Checking a read-only project config never stages the Context7 key there.
+New-Item -ItemType Directory -Force -Path $projCodexDir | Out-Null
+Set-TestFile $projCodex "[mcp_servers.context7]`nurl = `"https://mcp.context7.com/mcp`"`n"
+$projBefore = Get-Sha $projCodex
+if (-not $onWindows) { & chmod 555 $projCodexDir }
 $r = Invoke-InstallerResult @('mcp-context7', '-Agents', 'codex', '-Context7Key', 'ctx7sk-TESTKEY')
-if (-not $onWindows) { & chmod 755 (Split-Path -Parent $projectCodex) }
-Check ($r.Code -eq 0) 'mcp-context7: matching project layer needs no write permission'
-Check ((Get-Sha $projectCodex) -eq $localBefore) 'mcp-context7: project layer is unchanged'
-Check (-not (Get-ChildItem -LiteralPath (Get-Location).Path -Recurse -File -Force | Select-String -SimpleMatch 'TESTKEY' -List)) `
+if (-not $onWindows) { & chmod 755 $projCodexDir }
+Check ($r.Code -eq 0) 'mcp-context7: a matching project config needs no write permission'
+Check ((Get-Sha $projCodex) -eq $projBefore) 'mcp-context7: the project config is unchanged'
+Check (-not (Get-ChildItem -LiteralPath $mcpProj -Recurse -File -Force | Select-String -SimpleMatch 'TESTKEY' -List)) `
     'mcp-context7: no key or staged file left in the project'
-Remove-Item Env:CODEX_HOME
+Remove-Item -LiteralPath $projCodexDir -Recurse -Force
 
 $env:PATH = $origPath
 Set-Location $proj
