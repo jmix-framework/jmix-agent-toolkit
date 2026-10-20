@@ -61,12 +61,12 @@
             "choices": [
               {
                 "value": "agents",
-                "label": "AGENTS.md — Codex, OpenCode, Junie, etc.",
+                "label": "AGENTS.md (Codex, OpenCode, etc)",
                 "default": true
               },
               {
                 "value": "claude",
-                "label": "CLAUDE.md — Claude Code",
+                "label": "CLAUDE.md",
                 "default": true
               }
             ]
