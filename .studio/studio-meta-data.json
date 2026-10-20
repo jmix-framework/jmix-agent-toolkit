@@ -31,12 +31,12 @@
             "choices": [
               {
                 "value": "agents",
-                "label": ".agents/skills — Codex, OpenCode, Junie and other agents",
+                "label": ".agents/ — Codex, OpenCode, Junie, etc.",
                 "default": true
               },
               {
                 "value": "claude",
-                "label": ".claude/skills — Claude Code",
+                "label": ".claude/ — Claude Code",
                 "default": true
               }
             ]
@@ -61,7 +61,7 @@
             "choices": [
               {
                 "value": "agents",
-                "label": "AGENTS.md — Codex, OpenCode, Junie and other agents",
+                "label": "AGENTS.md — Codex, OpenCode, Junie, etc.",
                 "default": true
               },
               {
@@ -81,7 +81,7 @@
       {
         "id": "mcp",
         "title": "MCP servers",
-        "message": "🔌 Connect the agents to MCP servers: <b>JetBrains</b> lets them use IntelliJ IDEA's code insight (enable it in <i>Settings | Tools | MCP Server</i> first), <b>Context7</b> gives library docs (get a key on <a href=\"https://context7.com\" target=\"_blank\">context7.com</a> or keep <code>skip</code>), <b>Playwright</b> drives a browser. Playwright and some setups start through <b>npx</b>: install Node.js 20+. <br>📁 <i>Local</i> writes the project files, <i>Global</i> each agent's user config; a key in project files must stay out of version control. <br>⏭️ Click <i>Skip</i> to opt out.",
+        "message": "🔌 Connect the agents to MCP servers:<br>🧩 <b>JetBrains</b>: enable the MCP server in IntelliJ IDEA (<i>Settings | Tools | MCP Server</i>).<br>📚 <b>Context7</b>: get a key on <a href=\"https://context7.com\" target=\"_blank\">context7.com</a>. With <i>Local</i>, it is saved in the project files: keep them out of Git.<br>🎭 <b>Playwright</b>: needs Node.js 20+.<br>⏭️ Click <i>Skip</i> to opt out.",
         "inputs": [
           {
             "id": "mcpServers",
@@ -91,17 +91,17 @@
             "choices": [
               {
                 "value": "jetbrains",
-                "label": "JetBrains (IntelliJ IDEA)",
+                "label": "JetBrains",
                 "default": true
               },
               {
                 "value": "context7",
-                "label": "Context7 (library docs)",
+                "label": "Context7",
                 "default": true
               },
               {
                 "value": "playwright",
-                "label": "Playwright (browser)",
+                "label": "Playwright",
                 "default": true
               }
             ]
@@ -114,7 +114,7 @@
             "choices": [
               {
                 "value": "claude",
-                "label": "Claude Code (and Claude Desktop, when installed)",
+                "label": "Claude Code",
                 "default": true
               },
               {
