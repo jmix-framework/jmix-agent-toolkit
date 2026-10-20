@@ -31,12 +31,12 @@
             "choices": [
               {
                 "value": "agents",
-                "label": ".agents/ — Codex, OpenCode, Junie, etc.",
+                "label": ".agents (Codex, OpenCode, etc)",
                 "default": true
               },
               {
                 "value": "claude",
-                "label": ".claude/ — Claude Code",
+                "label": ".claude",
                 "default": true
               }
             ]
