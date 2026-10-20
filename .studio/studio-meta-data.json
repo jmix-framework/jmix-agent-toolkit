@@ -84,6 +84,22 @@
         "message": "🔌 Connect the agents to MCP servers:<br>🧩 <b>JetBrains</b>: enable the MCP server in IntelliJ IDEA (<i>Settings | Tools | MCP Server</i>).<br>📚 <b>Context7</b>: get a key on <a href=\"https://context7.com\" target=\"_blank\">context7.com</a>. With <i>Local</i>, it is saved in the project files: keep them out of Git.<br>🎭 <b>Playwright</b>: needs Node.js 20+.<br>⏭️ Click <i>Skip</i> to opt out.",
         "inputs": [
           {
+            "id": "mcpScope",
+            "label": "Scope",
+            "type": "options",
+            "choices": [
+              {
+                "value": "local",
+                "label": "Local (project files)",
+                "default": true
+              },
+              {
+                "value": "global",
+                "label": "Global (user config)"
+              }
+            ]
+          },
+          {
             "id": "mcpServers",
             "label": "🔌 Servers",
             "type": "options",
@@ -131,22 +147,6 @@
                 "value": "junie",
                 "label": "Junie",
                 "default": true
-              }
-            ]
-          },
-          {
-            "id": "mcpScope",
-            "label": "Registration scope",
-            "type": "options",
-            "choices": [
-              {
-                "value": "local",
-                "label": "Local (project files)",
-                "default": true
-              },
-              {
-                "value": "global",
-                "label": "Global (user config)"
               }
             ]
           },
