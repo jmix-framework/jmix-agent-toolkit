@@ -118,6 +118,22 @@ Check (([System.IO.File]::ReadAllText($agentsMd)) -eq $blockText) `
 Check (-not (Test-Path (Join-Path $junieDir 'guidelines.md'))) `
     'agents-md: Junie got no .junie/guidelines.md it would not read'
 
+# 1a2. -Conventions names the files instead of the agents: agents (AGENTS.md)
+#      and claude (CLAUDE.md); an unknown one is refused.
+Remove-Item -LiteralPath $claudeMd, $agentsMd -Force
+$null = Invoke-Installer @('agents-md', '-Conventions', 'agents', '-Source', $Source)
+Check ((Test-Path $agentsMd) -and -not (Test-Path $claudeMd)) 'agents-md: -Conventions agents writes AGENTS.md alone'
+$null = Invoke-Installer @('agents-md', '-Conventions', 'claude,agents', '-Source', $Source)
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText -and ([System.IO.File]::ReadAllText($agentsMd)) -eq $blockText) `
+    'agents-md: -Conventions claude,agents writes both files'
+# Values are case-insensitive, as in install.sh, the agent names too.
+Remove-Item -LiteralPath $claudeMd, $agentsMd -Force
+$null = Invoke-Installer @('agents-md', '-Conventions', 'Claude,AGENTS', '-Source', $Source)
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText -and ([System.IO.File]::ReadAllText($agentsMd)) -eq $blockText) `
+    'agents-md: -Conventions is case-insensitive'
+Check ((Invoke-Installer @('agents-md', '-Agents', 'Codex', '-Source', $Source)) -eq 0) 'agents-md: -Agents Codex means agents'
+Check ((Invoke-Installer @('agents-md', '-Conventions', 'cursor', '-Source', $Source)) -ne 0) 'agents-md: an unknown convention fails'
+
 # 1b. An up-to-date file is left completely alone: no rewrite, no backup (issue #22).
 $mtimeBefore = (Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc
 Start-Sleep -Seconds 1
@@ -511,6 +527,7 @@ $afterText = [System.Text.Encoding]::UTF8.GetString($afterBytes, 3, $afterBytes.
 Check ($afterText -ceq ($blockText + "`n" + $sharedText)) `
     'agents-md: the block is on top of an unmarked AGENTS.md, developer content below it'
 Check (Test-Path "$agentsMd.bak") 'agents-md: AGENTS.md backed up'
+Check (-not (Test-Path $claudeMd)) 'agents-md: -Agents codex leaves CLAUDE.md alone'
 
 # 1u. Codex: a block past 32 KiB and an AGENTS.override.md are reported.
 Reset-Guidelines
@@ -530,9 +547,9 @@ $junieAgents = Join-Path $junieDir 'AGENTS.md'
 $legacyJunie = Join-Path $junieDir 'guidelines.md'
 [System.IO.File]::WriteAllText($junieAgents, "# Junie rules`n")
 [System.IO.File]::WriteAllText($legacyJunie, "# Old Junie rules`n")
-$null = Invoke-Installer @('agents-md', '-Agents', 'junie', '-Source', $Source)
-Check ((Test-Path $agentsMd) -and ([System.IO.File]::ReadAllText($agentsMd) -eq $blockText)) `
-    "agents-md: Junie's block written to the root AGENTS.md"
+$null = Invoke-Installer @('agents-md', '-Agents', 'opencode,junie', '-Source', $Source)
+Check ((Test-Path $agentsMd) -and ([System.IO.File]::ReadAllText($agentsMd) -eq $blockText) -and -not (Test-Path $claudeMd)) `
+    "agents-md: Junie's block written to the root AGENTS.md alone"
 Check (([System.IO.File]::ReadAllText($junieAgents) -eq "# Junie rules`n") -and
        ([System.IO.File]::ReadAllText($legacyJunie) -eq "# Old Junie rules`n")) `
     'agents-md: .junie guidelines files untouched'
@@ -556,6 +573,17 @@ Check (Test-Path (Join-Path $proj '.skills'))                        'skills(loc
 Check (Test-Path (Join-Path $proj ".claude/skills/$skill/SKILL.md")) 'skills(local): claude link resolves'
 Check (Test-Path (Join-Path $proj ".agents/skills/$skill/SKILL.md")) 'skills(local): agents link resolves'
 Check (-not (Test-Path (Join-Path $proj '.junie/skills')))         'skills(local): no .junie/skills; Junie reads .agents/skills'
+
+$convProj = Join-Path $work 'conventions-project'
+New-Item -ItemType Directory -Force -Path $convProj | Out-Null
+Push-Location $convProj
+$codeClaude = Invoke-Installer @('skills', '-Conventions', 'claude', '-Scope', 'local', '-Source', $Source)
+Check ($codeClaude -eq 0 -and (Test-Path (Join-Path $convProj ".claude/skills/$skill/SKILL.md")) -and
+       -not (Test-Path (Join-Path $convProj '.agents'))) 'skills: -Conventions claude links .claude/skills alone'
+$codeAgents = Invoke-Installer @('skills', '-Conventions', 'agents', '-Scope', 'local', '-Source', $Source)
+Check ($codeAgents -eq 0 -and (Test-Path (Join-Path $convProj ".agents/skills/$skill/SKILL.md"))) 'skills: -Conventions agents links .agents/skills'
+Pop-Location
+Remove-Item -LiteralPath $convProj -Recurse -Force
 
 # Links an earlier version put into .junie/skills are removed (Junie's CLI reads
 # that dir first, so they would shadow newer skills); other skills stay.
@@ -658,6 +686,20 @@ Check ((Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'global', '-
     'skills(global) exits 0'
 Check (Test-Path (Join-Path $homeDir '.agents/.jmix/skills/v3')) 'skills(global): v3 store created'
 
+# Windows: global skills go to USERPROFILE, next to the agents' user configs,
+# also when HOMEDRIVE+HOMEPATH (the $HOME of Windows PowerShell) is elsewhere.
+if ($onWindows) {
+    $otherHome = Join-Path $work 'home-drive'
+    New-Item -ItemType Directory -Force -Path $otherHome | Out-Null
+    $savedHomePath = $env:HOMEPATH
+    $env:HOMEPATH = $otherHome.Substring($env:HOMEDRIVE.Length)
+    $code = Invoke-Installer @('skills', '-Conventions', 'claude', '-Scope', 'global', '-Source', $Source)
+    $env:HOMEPATH = $savedHomePath
+    Check ($code -eq 0 -and (Test-Path (Join-Path $homeDir ".claude/skills/$skill/SKILL.md")) -and
+           -not (Test-Path (Join-Path $otherHome '.claude'))) 'skills(global): Windows links the skills under USERPROFILE'
+    Remove-Item -LiteralPath $otherHome -Recurse -Force
+}
+
 # An agent skills dir that is a relative symlink to another agent's dir (a
 # common way to share skills, here ~/.agents/skills -> ../.claude/skills) is
 # kept: its target is resolved from the link's folder, not the current one, so
@@ -703,8 +745,8 @@ Check (Test-Path (Join-Path $homeDir '.agents/.jmix/skills/no-agents-md-test')) 
     'skills(global): content-ref override keys the store'
 
 # ---------------------------------------------------------------------------
-# 3. MCP servers. They go into each agent's user config (the isolated HOME);
-#    files are merged in place, the project is never written.
+# 3. MCP servers. 3a-3q: at user level (-Scope global) in the isolated HOME;
+#    3r on: in the project (-Scope local, the default). Files are merged in place.
 # ---------------------------------------------------------------------------
 $mcpProj = Join-Path $work 'mcp-project'
 $binDir  = Join-Path $work 'bin'
@@ -788,7 +830,7 @@ IJ_MCP_SERVER_PORT = "64342"
 [mcp_servers.mine]
 url = "http://mine"
 '@
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'claude,codex,opencode,junie')) -eq 0) 'mcp-jetbrains exits 0'
+Check ((Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'claude,codex,opencode,junie')) -eq 0) 'mcp-jetbrains exits 0'
 Check ((Get-ClaudeCalls).Contains('mcp add --scope user --transport http jetbrains http://127.0.0.1:9/stream')) `
     'mcp-jetbrains: claude mcp add arguments'
 Check (-not (Test-Path $codexLog)) 'mcp-jetbrains: the codex CLI is not called'
@@ -805,7 +847,7 @@ Check (Test-ProjectUntouched) 'mcp-jetbrains: nothing written into the project'
 
 # 3b. A re-run changes nothing.
 $hashes = @((Get-Sha $userCodex), (Get-Sha $userOc))
-$r = Invoke-InstallerResult @('mcp-jetbrains', '-Agents', 'codex,opencode')
+$r = Invoke-InstallerResult @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'codex,opencode')
 Check ($r.Code -eq 0) 'mcp-jetbrains: re-run exits 0'
 Check ((@((Get-Sha $userCodex), (Get-Sha $userOc)) -join ',') -eq ($hashes -join ',') -and $r.Output -notmatch 'Updated: |Created: ') `
     'mcp-jetbrains: re-run leaves the files unchanged'
@@ -816,7 +858,7 @@ $savedOc = [System.IO.File]::ReadAllText($userOc)
 Set-TestFile $userOc "{`n  // mine`n  `"theme`": `"dark`"`n}`n"
 $ocHash = Get-Sha $userOc
 Remove-Item -LiteralPath $claudeLog -Force -ErrorAction SilentlyContinue
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'opencode,claude')) -ne 0) 'mcp-jetbrains: a JSONC opencode.json fails the step'
+Check ((Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'opencode,claude')) -ne 0) 'mcp-jetbrains: a JSONC opencode.json fails the step'
 Check ((Get-Sha $userOc) -eq $ocHash) 'mcp-jetbrains: JSONC opencode.json untouched'
 Check ((Get-ClaudeCalls).Contains('jetbrains')) 'mcp-jetbrains: a failed agent does not stop the agents after it'
 Set-TestFile $userOc $savedOc
@@ -825,7 +867,7 @@ Set-TestFile $userOc $savedOc
 $savedCodex = [System.IO.File]::ReadAllText($userCodex)
 Set-TestFile $userCodex "[mcp_servers]`njetbrains = { url = `"http://mine`" }`n"
 $codexHash = Get-Sha $userCodex
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -ne 0) 'mcp-jetbrains: an inline Codex jetbrains entry fails the step'
+Check ((Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'codex')) -ne 0) 'mcp-jetbrains: an inline Codex jetbrains entry fails the step'
 Check ((Get-Sha $userCodex) -eq $codexHash) 'mcp-jetbrains: inline Codex entry untouched'
 Set-TestFile $userCodex $savedCodex
 
@@ -863,7 +905,7 @@ for ($i = 0; $i -lt 60 -and -not $port; $i++) {
 if ($port) {
     $env:JMIX_IDE_MCP_PORT = $port
     $env:HTTP_PROXY = 'http://127.0.0.1:9'
-    Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'claude,codex,opencode')) -eq 0) 'mcp-jetbrains(sse) exits 0'
+    Check ((Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'claude,codex,opencode')) -eq 0) 'mcp-jetbrains(sse) exits 0'
     Remove-Item Env:HTTP_PROXY
     $env:JMIX_IDE_MCP_PORT = '9'
     $sse = "http://127.0.0.1:$port/sse"
@@ -871,7 +913,7 @@ if ($port) {
     Check ([System.IO.File]::ReadAllText($userCodex) -cmatch ('(?m)^args = \["-y", "mcp-remote", "' + [regex]::Escape($sse) + '", "--transport", "sse-only"\]$')) `
         'mcp-jetbrains(sse): Codex gets the mcp-remote bridge'
     Check ((Read-Json $userOc).mcp.jetbrains.url -eq $sse) 'mcp-jetbrains(sse): OpenCode entry is SSE'
-    Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex,opencode')) -eq 0) 'mcp-jetbrains: switching back to /stream exits 0'
+    Check ((Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'codex,opencode')) -eq 0) 'mcp-jetbrains: switching back to /stream exits 0'
 } else {
     Check $false 'mcp-jetbrains(sse): local 404 server did not start'
 }
@@ -881,23 +923,23 @@ Remove-Job $server -Force
 # 3f. Claude Desktop is set up together with claude, and only when it is
 #     installed (its config folder exists); its own settings are kept and the
 #     restart reminder appears only when its file changed.
-$r = Invoke-InstallerResult @('mcp-jetbrains', '-Agents', 'claude')
+$r = Invoke-InstallerResult @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'claude')
 Check ($r.Code -eq 0) 'mcp-jetbrains: a missing Claude Desktop does not fail the step'
 Check (-not (Test-Path $desktopDir)) 'mcp-jetbrains: no Claude Desktop config folder created'
 Check ($r.Output -notmatch 'Claude Desktop') 'mcp-jetbrains: a Claude Desktop that is not installed is not mentioned'
 $desktopCfg = Join-Path $desktopDir 'claude_desktop_config.json'
 New-Item -ItemType Directory -Force -Path $desktopDir | Out-Null
 Set-TestFile $desktopCfg '{"preferences": {"keep": true}}'
-$r = Invoke-InstallerResult @('mcp-jetbrains', '-Agents', 'claude')
+$r = Invoke-InstallerResult @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'claude')
 Check ($r.Code -eq 0) 'mcp-jetbrains(desktop) exits 0'
 Check ($r.Output -match 'Quit Claude Desktop') 'mcp-jetbrains(desktop): restart reminder after writing its config'
 $json = Read-Json $desktopCfg
 Check ($json.preferences.keep -eq $true -and
        (Test-JsonEqual $json.mcpServers.jetbrains '{"command":"npx","args":["-y","mcp-remote","http://127.0.0.1:9/sse","--transport","sse-only"]}')) `
     'mcp-jetbrains(desktop): stdio bridge added, preferences kept'
-$r = Invoke-InstallerResult @('mcp-jetbrains', '-Agents', 'claude')
+$r = Invoke-InstallerResult @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'claude')
 Check ($r.Output -notmatch 'Quit Claude Desktop') 'mcp-jetbrains(desktop): no restart reminder for an unchanged file'
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'claude-desktop')) -ne 0) `
+Check ((Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'claude-desktop')) -ne 0) `
     'mcp-jetbrains: claude-desktop is no longer a separate agent'
 
 # Windows: the Store build of Claude Desktop reads a per-package copy. A package
@@ -907,17 +949,17 @@ if ($onWindows) {
     $pkgDir = Join-Path $env:LOCALAPPDATA 'Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude'
     $pkgCfg = Join-Path $pkgDir 'claude_desktop_config.json'
     New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
-    $null = Invoke-Installer @('mcp-jetbrains', '-Agents', 'claude')
+    $null = Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'claude')
     Check (-not (Test-Path $pkgCfg)) 'mcp-jetbrains(desktop): no shadowing config created in the package folder'
     Set-TestFile $pkgCfg '{}'
-    $null = Invoke-Installer @('mcp-jetbrains', '-Agents', 'claude')
+    $null = Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'claude')
     Check ((Read-Json $pkgCfg).mcpServers.jetbrains.command -eq 'npx') 'mcp-jetbrains(desktop): package config updated too'
     Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'Packages') -Recurse -Force
 }
 
 # 3g. Context7: the key never reaches the output or the project, and the user
 #     files holding it are private.
-$r = Invoke-InstallerResult @('mcp-context7', '-Agents', 'claude,codex,opencode,junie', '-Context7Key', 'ctx7sk-TESTKEY')
+$r = Invoke-InstallerResult @('mcp-context7', '-Scope', 'global', '-Agents', 'claude,codex,opencode,junie', '-Context7Key', 'ctx7sk-TESTKEY')
 Check ($r.Code -eq 0) 'mcp-context7 exits 0'
 Check (-not ($r.Output -match 'TESTKEY')) 'mcp-context7: the API key is not printed'
 Check ((Get-ClaudeCalls).Contains('mcp add --scope user --transport http context7 https://mcp.context7.com/mcp --header Authorization: Bearer ctx7sk-TESTKEY')) `
@@ -935,20 +977,15 @@ if (-not $onWindows) {
         Check ((Get-Item -LiteralPath $f).UnixMode -eq '-rw-------') "mcp-context7: $f holds the key and is 0600"
     }
 }
-Check ((Invoke-Installer @('mcp-context7', '-Agents', 'codex', '-Context7Key', 'bad/key')) -ne 0) `
+Check ((Invoke-Installer @('mcp-context7', '-Scope', 'global', '-Agents', 'codex', '-Context7Key', 'bad/key')) -ne 0) `
     'mcp-context7: a key with characters that need escaping is rejected'
 
-# 3h. There is no project scope any more; the claude CLI is also found where
-#     its installer puts it, off PATH (an IDE started from the desktop often
-#     lacks ~/.local/bin).
-foreach ($sub in 'mcp-jetbrains', 'playwright') {
-    $r = Invoke-InstallerResult @($sub, '-Agents', 'codex', '-Scope', 'local')
-    Check ($r.Code -ne 0 -and $r.Output -match 'always registered in the user config') "${sub}: -Scope is rejected"
-}
-Check ((Invoke-Installer @('mcp-context7', '-Agents', 'codex', '-Context7Key', 'ctx7sk-TESTKEY', '-Scope', 'global')) -ne 0) `
-    'mcp-context7: -Scope is rejected'
+# 3h. An invalid -Scope is refused; the claude CLI is also found where its
+#     installers put it, off PATH (an IDE started from the desktop often lacks
+#     ~/.local/bin).
+Check ((Invoke-Installer @('playwright', '-Agents', 'codex', '-Scope', 'nowhere')) -ne 0) 'playwright: an invalid -Scope fails'
 $env:PATH = $barePath
-$r = Invoke-InstallerResult @('playwright', '-Agents', 'claude')
+$r = Invoke-InstallerResult @('playwright', '-Scope', 'global', '-Agents', 'claude')
 $env:PATH = $binPath
 Check ($r.Code -eq 0 -and $r.Output -match "Skipped: 'claude' CLI not found") 'playwright: a missing claude CLI is a skip, not a failure'
 if (-not $onWindows) {
@@ -958,7 +995,7 @@ if (-not $onWindows) {
     [System.IO.File]::WriteAllText((Join-Path $localBin 'claude'), "#!/bin/sh`necho `"`$*`" >> '$localLog'`n")
     & chmod +x (Join-Path $localBin 'claude')
     $env:PATH = $barePath
-    $code = Invoke-Installer @('playwright', '-Agents', 'claude')
+    $code = Invoke-Installer @('playwright', '-Scope', 'global', '-Agents', 'claude')
     $env:PATH = $binPath
     Check ($code -eq 0 -and (Test-Path $localLog) -and
            [System.IO.File]::ReadAllText($localLog).Contains('mcp add --scope user playwright -- npx -y @playwright/mcp@latest')) `
@@ -970,44 +1007,29 @@ if (-not $onWindows) {
     [System.IO.File]::WriteAllText((Join-Path $oldDir 'claude'), "#!/bin/sh`necho `"`$*`" >> '$oldLog'`n")
     & chmod +x (Join-Path $oldDir 'claude')
     $env:PATH = $barePath
-    $code = Invoke-Installer @('playwright', '-Agents', 'claude')
+    $code = Invoke-Installer @('playwright', '-Scope', 'global', '-Agents', 'claude')
     $env:PATH = $binPath
     Check ($code -eq 0 -and (Test-Path $oldLog)) 'playwright: the claude CLI in ~/.claude/local is used off PATH'
     Remove-Item -LiteralPath $oldDir -Recurse -Force
 }
 
-# 3i. Playwright for every agent. The old playwright-cli skills go only after
-#     all four agents have the server; links elsewhere stay. Old install.ps1
-#     links had absolute targets (junctions on Windows).
+# 3i. Playwright for every agent. The playwright-cli skills of earlier versions
+#     are left alone (old install.ps1 links had absolute targets, junctions on
+#     Windows).
 $oldStore = Join-Path $homeDir '.agents/.playwright/skills/playwright-cli'
 $userSkills = Join-Path $homeDir '.claude/skills'
-$sharedSkills = Join-Path $homeDir '.agents/skills'
 $oldLink = Join-Path $userSkills 'playwright-cli'
-$sharedOldLink = Join-Path $sharedSkills 'playwright-cli'
 $linkType = if ($onWindows) { 'Junction' } else { 'SymbolicLink' }
-New-Item -ItemType Directory -Force -Path $oldStore, (Join-Path $userSkills 'my-skill'), $sharedSkills | Out-Null
+New-Item -ItemType Directory -Force -Path $oldStore, $userSkills | Out-Null
 New-Item -ItemType $linkType -Path $oldLink -Target $oldStore | Out-Null
-New-Item -ItemType $linkType -Path $sharedOldLink -Target $oldStore | Out-Null
-Check ((Invoke-Installer @('playwright', '-Agents', 'claude,codex')) -eq 0) 'playwright: a partial run exits 0'
-Check ((Test-Path $oldLink) -and (Test-Path $sharedOldLink)) 'playwright: a partial run keeps skills the other agents still use'
-$env:PATH = $barePath
-$r = Invoke-InstallerResult @('playwright', '-Agents', 'claude,codex,opencode,junie')
-$env:PATH = $binPath
-Check ($r.Code -eq 0) 'playwright: a missing claude CLI does not stop the other agents'
-Check (Test-Path $oldLink) 'playwright: a skipped agent is not counted as migrated'
-$savedOc = [System.IO.File]::ReadAllText($userOc)
-Set-TestFile $userOc '{ broken json'
-Check ((Invoke-Installer @('playwright', '-Agents', 'claude,codex,opencode,junie')) -ne 0) 'playwright: a malformed user config fails'
-Check (Test-Path $oldLink) 'playwright: a failed run keeps old skills'
-Set-TestFile $userOc $savedOc
-Check ((Invoke-Installer @('playwright', '-Agents', 'claude,codex,opencode,junie')) -eq 0) 'playwright exits 0'
+Check ((Invoke-Installer @('playwright', '-Scope', 'global', '-Agents', 'claude,codex,opencode,junie')) -eq 0) 'playwright exits 0'
 Check ((Get-ClaudeCalls).Contains('mcp add --scope user playwright -- npx -y @playwright/mcp@latest')) 'playwright: claude mcp add arguments'
 Check ([System.IO.File]::ReadAllText($userCodex) -cmatch '(?m)^args = \["-y", "@playwright/mcp@latest"\]$') 'playwright: Codex entry'
 Check (Test-JsonEqual (Read-Json $userOc).mcp.playwright.command '["npx","-y","@playwright/mcp@latest"]') 'playwright: OpenCode entry'
 Check (Test-JsonEqual (Read-Json $userJunie).mcpServers.playwright.args '["-y","@playwright/mcp@latest"]') 'playwright: Junie entry'
-Check (-not (Test-Path $oldLink) -and -not (Test-Path $sharedOldLink) -and
-       -not (Test-Path (Join-Path $homeDir '.agents/.playwright'))) 'playwright: old skills removed after all agents migrated'
-Check (Test-Path (Join-Path $userSkills 'my-skill')) 'playwright: foreign skill kept'
+Check ((Test-Path $oldLink) -and (Test-Path (Join-Path $homeDir '.agents/.playwright'))) 'playwright: the old playwright-cli skills are kept'
+[System.IO.Directory]::Delete($oldLink, $false)
+Remove-Item -LiteralPath (Join-Path $homeDir '.agents/.playwright') -Recurse -Force
 Check (Test-ProjectUntouched) 'playwright: nothing written into the project'
 
 # 3j. Codex merges the project configs of the current dir up to its git root
@@ -1022,27 +1044,27 @@ Set-TestFile $projCodex "[mcp_servers.playwright]`nurl = `"http://project`"`n"
 $projBefore = Get-Sha $projCodex
 foreach ($dir in $mcpProj, $appDir) {
     Set-Location $dir
-    Check ((Invoke-Installer @('playwright', '-Agents', 'codex')) -ne 0) "codex: a project table with another transport fails the step (from $dir)"
+    Check ((Invoke-Installer @('playwright', '-Scope', 'global', '-Agents', 'codex')) -ne 0) "codex: a project table with another transport fails the step (from $dir)"
     Check ((Get-Sha $userCodex) -eq $userBefore -and (Get-Sha $projCodex) -eq $projBefore) 'codex: the project conflict changed no config'
 }
 Check (-not (Test-Path (Join-Path $appDir '.codex'))) 'codex: no project config written'
 Set-TestFile $projCodex "notes = `"`"`"`nmulti`nline`n`"`"`"`n`n[mcp_servers.playwright]`ncommand = `"npx`"`n"
 $projBefore = Get-Sha $projCodex
 Set-Location $appDir
-Check ((Invoke-Installer @('playwright', '-Agents', 'codex')) -eq 0) `
+Check ((Invoke-Installer @('playwright', '-Scope', 'global', '-Agents', 'codex')) -eq 0) `
     'codex: a same-transport project table (with a triple-quoted string) is accepted'
 Check ((Get-Sha $projCodex) -eq $projBefore) 'codex: the project config is not rewritten'
 foreach ($entry in "[mcp_servers]`nplaywright = { url = `"http://project`" }`n", "mcp_servers.playwright.url = `"http://project`"`n") {
     Set-TestFile $projCodex $entry
     $projBefore = Get-Sha $projCodex
-    $r = Invoke-InstallerResult @('playwright', '-Agents', 'codex')
+    $r = Invoke-InstallerResult @('playwright', '-Scope', 'global', '-Agents', 'codex')
     Check ($r.Code -ne 0 -and $r.Output -match 'cannot check') "codex: an unreadable project definition fails the step: $($entry.Split("`n")[0])"
     Check ((Get-Sha $projCodex) -eq $projBefore -and (Get-Sha $userCodex) -eq $userBefore) 'codex: an unreadable project definition changed no config'
 }
 # With the IDE unreachable the transport is a guess: the error points at the
 # IDE, not at a project bridge that may well be right.
 Set-TestFile $projCodex "[mcp_servers.jetbrains]`ncommand = `"npx`"`n"
-$r = Invoke-InstallerResult @('mcp-jetbrains', '-Agents', 'codex')
+$r = Invoke-InstallerResult @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'codex')
 Check ($r.Code -ne 0 -and $r.Output -match 'not reachable to tell') 'codex: a guessed-transport conflict points at the IDE'
 Set-Location $mcpProj
 Remove-Item -LiteralPath $projCodexDir, $appDir -Recurse -Force
@@ -1051,7 +1073,7 @@ $noGit = Join-Path $work 'nogit'
 New-Item -ItemType Directory -Force -Path (Join-Path $noGit '.codex'), (Join-Path $noGit 'child') | Out-Null
 Set-TestFile (Join-Path $noGit '.codex/config.toml') "[mcp_servers.playwright]`nurl = `"http://parent`"`n"
 Set-Location (Join-Path $noGit 'child')
-Check ((Invoke-Installer @('playwright', '-Agents', 'codex')) -eq 0) 'codex: a parent config outside a git repository is ignored'
+Check ((Invoke-Installer @('playwright', '-Scope', 'global', '-Agents', 'codex')) -eq 0) 'codex: a parent config outside a git repository is ignored'
 Set-Location $mcpProj
 Remove-Item -LiteralPath $noGit -Recurse -Force
 
@@ -1060,7 +1082,7 @@ Remove-Item -LiteralPath $noGit -Recurse -Force
 $savedCodex = [System.IO.File]::ReadAllText($userCodex)
 Set-TestFile $userCodex "[mcp_servers.context7]`ncommand = `"npx`"`nargs = [`"-y`", `"@upstash/context7-mcp`", `"--api-key`", `"old`"]`n"
 Push-Location $homeDir
-$code = Invoke-Installer @('mcp-context7', '-Agents', 'codex', '-Context7Key', 'ctx7sk-TESTKEY')
+$code = Invoke-Installer @('mcp-context7', '-Scope', 'global', '-Agents', 'codex', '-Context7Key', 'ctx7sk-TESTKEY')
 Pop-Location
 $toml = [System.IO.File]::ReadAllText($userCodex)
 Check ($code -eq 0 -and $toml -cmatch '(?m)^url = "https://mcp\.context7\.com/mcp"$' -and $toml -cnotmatch '(?m)^command') `
@@ -1069,13 +1091,13 @@ Check ($code -eq 0 -and $toml -cmatch '(?m)^url = "https://mcp\.context7\.com/mc
 # 3l. A table is replaced where it stands: the order and the comment that
 #     introduces the next table stay, and alternating steps converge.
 Set-TestFile $userCodex "[mcp_servers.jetbrains]`nurl = `"old`"`n`n# my own server`n[mcp_servers.mine]`nurl = `"http://mine`"`n"
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -eq 0) 'toml: exits 0'
+Check ((Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'codex')) -eq 0) 'toml: exits 0'
 $toml = [System.IO.File]::ReadAllText($userCodex)
 Check ($toml.StartsWith("[mcp_servers.jetbrains]`n")) 'toml: a replaced table stays where it stood'
 Check ($toml -cmatch '(?m)^# my own server$') 'toml: the comment before the next table kept'
-$null = Invoke-Installer @('playwright', '-Agents', 'codex')
+$null = Invoke-Installer @('playwright', '-Scope', 'global', '-Agents', 'codex')
 $tomlHash = Get-Sha $userCodex
-$out = (Invoke-InstallerCapture @('mcp-jetbrains', '-Agents', 'codex')) + (Invoke-InstallerCapture @('playwright', '-Agents', 'codex'))
+$out = (Invoke-InstallerCapture @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'codex')) + (Invoke-InstallerCapture @('playwright', '-Scope', 'global', '-Agents', 'codex'))
 Check ((Get-Sha $userCodex) -eq $tomlHash) 'toml: alternating steps converge'
 Check ($out -notmatch 'Updated: ') 'toml: an unchanged config.toml is not reported as updated'
 
@@ -1090,14 +1112,14 @@ foreach ($entry in "notes = `"`"`"`nmulti`n`"`"`"`n", "notes = '''`nmulti`n'''`n
     Set-TestFile $userCodex $entry
     $codexHash = Get-Sha $userCodex
     $label = $entry.Split("`n")[0]
-    Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -ne 0) "toml: unsupported syntax fails the step: $label"
+    Check ((Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'codex')) -ne 0) "toml: unsupported syntax fails the step: $label"
     Check ((Get-Sha $userCodex) -eq $codexHash) "toml: unsupported syntax is left untouched: $label"
 }
 Set-TestFile $userCodex "[mcp_servers.jetbrains]`n`"url`" = `"http://old`"`n"
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -eq 0) 'toml: a quoted key exits 0'
+Check ((Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'codex')) -eq 0) 'toml: a quoted key exits 0'
 Check (-not [System.IO.File]::ReadAllText($userCodex).Contains('http://old')) 'toml: a quoted url key is replaced'
 [System.IO.File]::WriteAllBytes($userCodex, [byte[]](0xEF, 0xBB, 0xBF) + [System.Text.Encoding]::ASCII.GetBytes("[mcp_servers.jetbrains]`nurl = `"old`"`n"))
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -eq 0) 'toml: a file with a BOM exits 0'
+Check ((Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'codex')) -eq 0) 'toml: a file with a BOM exits 0'
 $afterBytes = [System.IO.File]::ReadAllBytes($userCodex)
 Check ($afterBytes[0] -eq 0xEF -and $afterBytes[1] -eq 0xBB -and $afterBytes[2] -eq 0xBF) 'toml: the leading BOM kept'
 Check (([regex]::Matches([System.Text.Encoding]::UTF8.GetString($afterBytes), 'mcp_servers\.jetbrains')).Count -eq 1) `
@@ -1108,7 +1130,7 @@ Set-TestFile $userCodex $savedCodex
 #     never replaced.
 if ($isUnixUser) {
     & chmod 000 $userOc
-    $r = Invoke-InstallerResult @('playwright', '-Agents', 'opencode')
+    $r = Invoke-InstallerResult @('playwright', '-Scope', 'global', '-Agents', 'opencode')
     & chmod 600 $userOc
     Check ($r.Code -ne 0 -and $r.Output -match 'cannot read') 'json: an unreadable opencode.json fails the step'
     Check ($null -ne (Read-Json $userOc).mcp.mine) 'json: an unreadable opencode.json is kept'
@@ -1116,7 +1138,7 @@ if ($isUnixUser) {
 $savedOcPath = Join-Path $work 'opencode.saved.json'
 Move-Item -LiteralPath $userOc -Destination $savedOcPath
 New-Item -ItemType Directory -Path $userOc | Out-Null
-$r = Invoke-InstallerResult @('playwright', '-Agents', 'opencode')
+$r = Invoke-InstallerResult @('playwright', '-Scope', 'global', '-Agents', 'opencode')
 Check ($r.Code -ne 0 -and $r.Output -match 'not a regular file') 'json: a directory at the config path fails the step'
 Check (-not (Get-ChildItem -LiteralPath $userOc -Force)) 'json: the config directory is left empty'
 Remove-Item -LiteralPath $userOc -Force
@@ -1126,51 +1148,175 @@ Move-Item -LiteralPath $savedOcPath -Destination $userOc
 #     already held the entry (Unchanged) or is rewritten.
 if (-not $onWindows) {
     & chmod 644 $userOc
-    $r = Invoke-InstallerResult @('mcp-context7', '-Agents', 'opencode', '-Context7Key', 'ctx7sk-TESTKEY')
+    $r = Invoke-InstallerResult @('mcp-context7', '-Scope', 'global', '-Agents', 'opencode', '-Context7Key', 'ctx7sk-TESTKEY')
     Check ($r.Code -eq 0 -and $r.Output -match 'Unchanged: ') 'mcp-context7: re-run finds opencode.json unchanged'
     Check ((Get-Item -LiteralPath $userOc).UnixMode -eq '-rw-------') 'mcp-context7: an unchanged 0644 opencode.json is made private'
     Set-TestFile $userJunie '{"mcpServers": {}}'
     & chmod 644 $userJunie
-    $null = Invoke-Installer @('mcp-context7', '-Agents', 'junie', '-Context7Key', 'ctx7sk-TESTKEY')
+    $null = Invoke-Installer @('mcp-context7', '-Scope', 'global', '-Agents', 'junie', '-Context7Key', 'ctx7sk-TESTKEY')
     Check ((Get-Item -LiteralPath $userJunie).UnixMode -eq '-rw-------') 'mcp-context7: a rewritten 0644 mcp.json is made private'
 }
-
-# 3p. The old-store cleanup leaves other links alone and does not stop the
-#     step when the store cannot be removed.
-$otherTarget = Join-Path $work 'x.playwright/skills/mine'
-$otherLink = Join-Path $userSkills 'mine'
-New-Item -ItemType Directory -Force -Path $oldStore, $otherTarget | Out-Null
-New-Item -ItemType $linkType -Path $otherLink -Target $otherTarget | Out-Null
-if ($isUnixUser) {
-    [System.IO.File]::WriteAllText((Join-Path $oldStore 'SKILL.md'), '')
-    & chmod 555 $oldStore
-}
-$r = Invoke-InstallerResult @('playwright', '-Agents', 'claude,codex,opencode,junie')
-Check ($r.Code -eq 0) 'playwright: an old store that cannot be removed does not stop the step'
-Check ($null -ne (Get-Item -LiteralPath $otherLink -Force -ErrorAction SilentlyContinue)) `
-    'playwright: a link that is not into the old store is kept'
-if ($isUnixUser) {
-    Check ($r.Output -match 'cannot fully remove') 'playwright: an old store that cannot be removed is reported'
-    & chmod -R u+w (Join-Path $homeDir '.agents/.playwright')
-}
-Remove-Item -LiteralPath (Join-Path $homeDir '.agents/.playwright') -Recurse -Force -ErrorAction SilentlyContinue
-[System.IO.Directory]::Delete($otherLink, $false)
 
 # 3q. A JMIX_IDE_MCP_PORT that is not a port is refused up front; -Source is
 #     accepted by the MCP steps too.
 foreach ($badPort in '9"x', '70000', '0') {
     $env:JMIX_IDE_MCP_PORT = $badPort
-    Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex')) -ne 0) "JMIX_IDE_MCP_PORT '$badPort' is refused"
+    Check ((Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'codex')) -ne 0) "JMIX_IDE_MCP_PORT '$badPort' is refused"
 }
 $env:JMIX_IDE_MCP_PORT = '9'
-Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex', '-Source', $Source)) -eq 0) 'mcp-jetbrains: -Source is accepted'
+Check ((Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'codex', '-Source', $Source)) -eq 0) 'mcp-jetbrains: -Source is accepted'
 
-# 3r. Checking a read-only project config never stages the Context7 key there.
+# 3r. Local scope (the default): the project files of every agent, merged in
+#     place; Claude Code needs no CLI there.
+$localProj = Join-Path $work 'local-project'
+New-Item -ItemType Directory -Force -Path (Join-Path $localProj '.git'), (Join-Path $localProj '.codex') | Out-Null
+Set-Location $localProj
+$localMcp = Join-Path $localProj '.mcp.json'
+$localCodex = Join-Path $localProj '.codex/config.toml'
+$localOc = Join-Path $localProj 'opencode.json'
+$localJunie = Join-Path $localProj '.junie/mcp/mcp.json'
+Set-TestFile $localMcp "{`n  `"`$schema`": `"keep-me`",`n  `"mcpServers`": {`"mine`": {`"type`": `"http`", `"url`": `"http://mine`"}}`n}`n"
+Set-TestFile $localCodex "model = `"o3`"`n`n[mcp_servers.mine]`nurl = `"http://mine`"`n"
+Remove-Item -LiteralPath $claudeLog -Force -ErrorAction SilentlyContinue
+$r = Invoke-InstallerResult @('mcp', '-Servers', 'playwright,jetbrains', '-Agents', 'claude,codex,opencode,junie')
+Check ($r.Code -eq 0) 'mcp(local) exits 0'
+Check (-not (Test-Path $claudeLog)) 'mcp(local): the claude CLI is not called'
+$json = Read-Json $localMcp
+Check ((Test-JsonEqual $json.mcpServers.jetbrains '{"type":"http","url":"http://127.0.0.1:9/stream"}') -and
+       (Test-JsonEqual $json.mcpServers.playwright '{"type":"stdio","command":"npx","args":["-y","@playwright/mcp@latest"]}') -and
+       $json.mcpServers.mine.url -eq 'http://mine' -and $json.'$schema' -eq 'keep-me') 'mcp(local): .mcp.json entries added, other content kept'
+$toml = [System.IO.File]::ReadAllText($localCodex)
+Check ($toml -cmatch '(?m)^model = "o3"$' -and $toml -cmatch '(?m)^url = "http://127\.0\.0\.1:9/stream"$' -and
+       $toml -cmatch '(?m)^\[mcp_servers\.playwright\]$') 'mcp(local): Codex project config'
+$json = Read-Json $localOc
+Check ($json.mcp.jetbrains.type -eq 'remote' -and $json.mcp.playwright.type -eq 'local') 'mcp(local): opencode.json'
+$json = Read-Json $localJunie
+Check ($json.mcpServers.playwright.command -eq 'npx' -and -not $json.mcpServers.PSObject.Properties['jetbrains']) 'mcp(local): Junie project config'
+Check ($r.Output -match 'approve the servers in \.mcp\.json' -and $r.Output -match 'trust this folder') 'mcp(local): follow-up notes'
+Check ($r.Output -match '(?s)\[JetBrains MCP\].*\[Playwright MCP\]') 'mcp(local): servers run in the documented order'
+$hashes = @((Get-Sha $localMcp), (Get-Sha $localCodex), (Get-Sha $localOc))
+$r = Invoke-InstallerResult @('mcp', '-Servers', 'jetbrains,playwright', '-Agents', 'claude,codex,opencode,junie')
+Check ($r.Code -eq 0 -and (@((Get-Sha $localMcp), (Get-Sha $localCodex), (Get-Sha $localOc)) -join ',') -eq ($hashes -join ',') -and
+       $r.Output -notmatch 'Updated: |Created: ') 'mcp(local): re-run leaves the files unchanged'
+
+# Context7 follows the scope: the key goes into the project files, which end up
+# private, and the step says to keep them out of version control.
+Remove-Item -LiteralPath (Join-Path $localProj '.junie') -Recurse -Force
+$r = Invoke-InstallerResult @('mcp', '-Servers', 'context7', '-Agents', 'claude,codex,opencode,junie', '-Context7Key', 'ctx7sk-TESTKEY')
+Check ($r.Code -eq 0) 'mcp-context7(local) exits 0'
+Check ($r.Output -notmatch 'TESTKEY') 'mcp-context7(local): the key is not printed'
+Check ($r.Output -match 'keep these files out of version control') 'mcp-context7(local): warns about the key in project files'
+Check (Test-JsonEqual (Read-Json $localMcp).mcpServers.context7 '{"type":"http","url":"https://mcp.context7.com/mcp","headers":{"Authorization":"Bearer ctx7sk-TESTKEY"}}') `
+    'mcp-context7(local): .mcp.json entry'
+Check ([System.IO.File]::ReadAllText($localCodex).Contains('http_headers = { Authorization = "Bearer ctx7sk-TESTKEY" }')) 'mcp-context7(local): Codex entry'
+Check ((Read-Json $localOc).mcp.context7.headers.Authorization -eq 'Bearer ctx7sk-TESTKEY') 'mcp-context7(local): OpenCode entry'
+Check ((Read-Json $localJunie).mcpServers.context7.env.CONTEXT7_API_KEY -eq 'ctx7sk-TESTKEY') 'mcp-context7(local): Junie entry'
+if (-not $onWindows) {
+    foreach ($f in $localMcp, $localCodex, $localOc, $localJunie) {
+        Check ((Get-Item -LiteralPath $f -Force).UnixMode -eq '-rw-------') "mcp-context7(local): $f holds the key and is 0600"
+    }
+}
+
+# Codex merges the user config into the project: one with the other transport
+# fails a local registration, and neither file changes.
+$userSaved = [System.IO.File]::ReadAllText($userCodex)
+Set-TestFile $userCodex "[mcp_servers.playwright]`nurl = `"http://user`"`n"
+$userBefore = Get-Sha $userCodex
+$projBefore = Get-Sha $localCodex
+$r = Invoke-InstallerResult @('playwright', '-Agents', 'codex')
+Check ($r.Code -ne 0 -and $r.Output.Contains("$userCodex defines [mcp_servers.playwright] with another transport")) `
+    'codex(local): a user table with another transport fails the step and is named'
+Check ((Get-Sha $userCodex) -eq $userBefore -and (Get-Sha $localCodex) -eq $projBefore) 'codex(local): the refused step changed no config'
+Set-TestFile $userCodex $userSaved
+
+# 3s. mcp: -Servers is required and checked; 'skip' leaves Context7 out; each
+#     option belongs to its steps.
+Check ((Invoke-Installer @('mcp', '-Agents', 'codex')) -ne 0) 'mcp: -Servers is required'
+Check ((Invoke-Installer @('mcp', '-Servers', 'jetbrains,bogus', '-Agents', 'codex')) -ne 0) 'mcp: an unknown server fails'
+$projBefore = Get-Sha $localCodex
+$userBefore = Get-Sha $userCodex
+$r = Invoke-InstallerResult @('mcp', '-Servers', 'context7', '-Agents', 'codex', '-Context7Key', 'skip')
+Check ($r.Code -eq 0 -and $r.Output -match '\[Context7 MCP\] Skipped') "mcp: 'skip' skips Context7"
+Check ((Get-Sha $localCodex) -eq $projBefore -and (Get-Sha $userCodex) -eq $userBefore) "mcp: 'skip' writes no config"
+$r = Invoke-InstallerResult @('mcp', '-Servers', 'Context7', '-Agents', 'CODEX', '-Scope', 'LOCAL', '-Context7Key', 'skip')
+Check ($r.Code -eq 0 -and $r.Output -match '\[Context7 MCP\] Skipped') 'mcp: values are case-insensitive'
+Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex', '-Servers', 'jetbrains')) -ne 0) 'mcp-jetbrains: -Servers is for mcp only'
+Check ((Invoke-Installer @('playwright', '-Agents', 'codex', '-Context7Key', 'x')) -ne 0) 'playwright: -Context7Key is for Context7 only'
+Set-Location $mcpProj
+Remove-Item -LiteralPath $localProj -Recurse -Force
+
+# 3u. Every Studio command runs: the placeholders filled in as Studio would,
+#     each against this checkout.
+$studioProj = Join-Path $work 'studio-project'
+New-Item -ItemType Directory -Force -Path (Join-Path $studioProj '.git') | Out-Null
+Set-Location $studioProj
+$studioMeta = [System.IO.File]::ReadAllText((Join-Path $Source '.studio/studio-meta-data.json')) | ConvertFrom-Json
+# Each input gets its Studio default: the default choices, or the default text.
+$studioValues = @{ guidelinesBranch = 'v3' }
+foreach ($inp in $studioMeta.'install-flow'.steps.inputs) {
+    $studioValues[$inp.id] = if ($inp.type -eq 'options') {
+        @($inp.choices | Where-Object { $_.default } | ForEach-Object { $_.value }) -join ','
+    } else { $inp.default }
+}
+foreach ($step in $studioMeta.'install-flow'.steps) {
+    $cmd = $step.command.windows
+    $argText = $cmd.Substring($cmd.IndexOf('.Content)) ') + '.Content)) '.Length)
+    foreach ($k in $studioValues.Keys) { $argText = $argText.Replace('${' + $k + '}', $studioValues[$k]) }
+    Check (-not $argText.Contains('${')) "studio: placeholders filled for the $($step.id) step"
+    & $pwshPath -NoProfile -Command "& '$install' $argText -Source '$Source'" *> $null
+    Check ($LASTEXITCODE -eq 0) "studio: the $($step.id) command runs"
+}
+foreach ($f in '.agents/skills', '.claude/skills', 'AGENTS.md', 'CLAUDE.md', '.mcp.json', '.codex/config.toml', 'opencode.json', '.junie/mcp/mcp.json') {
+    Check (Test-Path -LiteralPath (Join-Path $studioProj $f)) "studio: the default commands created $f"
+}
+$keyRegex = ($studioMeta.'install-flow'.steps.inputs | Where-Object { $_.id -eq 'context7Key' }).regex
+Check ((@('skip', 'ctx7sk-abcdefgh') | Where-Object { $_ -cmatch $keyRegex }).Count -eq 2 -and
+       -not (@('', 'skipx', 'short', 'bad key', 'a"b-cdefgh') | Where-Object { $_ -cmatch $keyRegex })) `
+    'studio: the context7Key regex accepts and rejects the right keys'
+Set-Location $mcpProj
+Remove-Item -LiteralPath $studioProj -Recurse -Force
+
+# 3w. Without a console a missing Context7 key fails that server only: the
+#     servers after it are still registered.
+$noKeyProj = Join-Path $work 'nokey-project'
+New-Item -ItemType Directory -Force -Path (Join-Path $noKeyProj '.git') | Out-Null
+Set-Location $noKeyProj
+$out = & $pwshPath -NoProfile -NonInteractive -File $install mcp -Servers 'context7,playwright' -Agents opencode 2>&1 | Out-String
+Check ($LASTEXITCODE -ne 0) 'mcp: a missing Context7 key fails the run'
+Check ($out -match 'Context7 API key is required') 'mcp: a missing Context7 key is reported'
+Check ((Test-Path 'opencode.json') -and (Get-Content -Raw 'opencode.json' | ConvertFrom-Json).mcp.playwright) `
+    'mcp: Playwright is registered after a missing Context7 key'
+Set-Location $mcpProj
+Remove-Item -LiteralPath $noKeyProj -Recurse -Force
+
+# 3x. The wizard reads its answers from stdin here. The MCP scope defaults to
+#     the skills scope, and an empty Context7 key skips Context7.
+$wizProj = Join-Path $work 'wizard-project'
+New-Item -ItemType Directory -Force -Path (Join-Path $wizProj '.git') | Out-Null
+Set-Location $wizProj
+$out = "1`nl`ns`n2,3`n2`n`n`n" | & $pwshPath -NoProfile -File $install -Source $Source 2>&1 | Out-String
+Check ($LASTEXITCODE -eq 0) 'wizard exits 0'
+Check ($out -match '\[Context7 MCP\] Skipped') 'wizard: an empty key skips Context7'
+Check ($out -match 'MCP:\s+context7, playwright for codex \(local\)') 'wizard: the summary names the choices'
+Check ((Test-Path '.agents/skills') -and -not (Test-Path '.claude/skills') -and -not (Test-Path 'AGENTS.md')) `
+    'wizard: skills and guidelines as chosen'
+$toml = Get-Content -Raw '.codex/config.toml'
+Check ($toml -match '(?m)^\[mcp_servers\.playwright\]' -and $toml -notmatch 'context7') 'wizard: local Codex config as chosen'
+# Global skills make global the default MCP scope.
+$ocBefore = if (Test-Path $userOc) { [System.IO.File]::ReadAllBytes($userOc) } else { $null }
+$out = "1`ng`ns`n3`n3`n`n" | & $pwshPath -NoProfile -File $install -Source $Source 2>&1 | Out-String
+Check ($LASTEXITCODE -eq 0 -and (Test-Path $userOc) -and (Get-Content -Raw $userOc | ConvertFrom-Json).mcp.playwright -and
+       -not (Test-Path 'opencode.json')) 'wizard: the MCP scope defaults to the global skills scope'
+if ($null -eq $ocBefore) { Remove-Item -LiteralPath $userOc -Force } else { [System.IO.File]::WriteAllBytes($userOc, $ocBefore) }
+Set-Location $mcpProj
+Remove-Item -LiteralPath $wizProj -Recurse -Force
+
+# 3v. Checking a read-only project config never stages the Context7 key there.
 New-Item -ItemType Directory -Force -Path $projCodexDir | Out-Null
 Set-TestFile $projCodex "[mcp_servers.context7]`nurl = `"https://mcp.context7.com/mcp`"`n"
 $projBefore = Get-Sha $projCodex
 if (-not $onWindows) { & chmod 555 $projCodexDir }
-$r = Invoke-InstallerResult @('mcp-context7', '-Agents', 'codex', '-Context7Key', 'ctx7sk-TESTKEY')
+$r = Invoke-InstallerResult @('mcp-context7', '-Scope', 'global', '-Agents', 'codex', '-Context7Key', 'ctx7sk-TESTKEY')
 if (-not $onWindows) { & chmod 755 $projCodexDir }
 Check ($r.Code -eq 0) 'mcp-context7: a matching project config needs no write permission'
 Check ((Get-Sha $projCodex) -eq $projBefore) 'mcp-context7: the project config is unchanged'
@@ -1185,9 +1331,9 @@ Set-Location $proj
 # 4. Negative cases
 # ---------------------------------------------------------------------------
 Check ((Invoke-Installer @('agents-md', '-Source', $Source)) -ne 0) `
-    'negative: agents-md without -Agents fails'
-Check ((Invoke-Installer @('skills', '-Agents', 'bogus', '-Scope', 'local', '-Source', $Source)) -ne 0) `
-    'negative: unknown agent fails'
+    'negative: agents-md without -Conventions fails'
+Check ((Invoke-Installer @('skills', '-Conventions', 'bogus', '-Scope', 'local', '-Source', $Source)) -ne 0) `
+    'negative: unknown convention fails'
 Check ((Invoke-Installer @('skills', '-Agents', 'claude-desktop', '-Scope', 'local', '-Source', $Source)) -ne 0) `
     'negative: skills rejects claude-desktop'
 Check ((Invoke-Installer @('agents-md', '-Agents', 'claude-desktop', '-Source', $Source)) -ne 0) `

@@ -2,11 +2,10 @@
 # Jmix AI Agents Toolkit installer.
 #
 # Default (no subcommand) launches an interactive wizard that guides through:
-#   1. Installing Jmix skills (globally or into the project) for one or all agents.
-#   2. Adding project-level guidelines (CLAUDE.md / AGENTS.md).
-#   3. Registering the JetBrains MCP server with the agent.
-#   4. Registering the Context7 MCP server with the agent.
-#   5. Registering the Playwright MCP server with the agent.
+#   1. Installing Jmix skills (globally or into the project) for the chosen
+#      conventions (.agents/skills, .claude/skills).
+#   2. Adding project-level guidelines (AGENTS.md / CLAUDE.md).
+#   3. Registering MCP servers (JetBrains, Context7, Playwright) with the agents.
 #
 # Subcommands are available for non-interactive use; see `install.sh --help`.
 
@@ -31,8 +30,11 @@ BACKUP_EXISTING=0
 VERBOSE=0
 
 ALL_AGENTS="claude codex opencode junie"
-# Junie works inside the IDE and needs no JetBrains MCP; the wizard does not offer it.
-JETBRAINS_AGENTS="claude codex opencode"
+# Where skills and guidelines go: "agents" -- .agents/skills and AGENTS.md
+# (Codex, OpenCode, Junie and other agents of those open conventions) --
+# and "claude" -- .claude/skills and CLAUDE.md (Claude Code).
+CONVENTIONS="agents claude"
+MCP_SERVERS_ALL="jetbrains context7 playwright"
 
 # IntelliJ IDEA's MCP server listens on 127.0.0.1 only. Its default port is
 # 64342; another JetBrains IDE started first moves it, hence the override.
@@ -153,29 +155,40 @@ emit_change() {
     printf '@@JMIX_CHANGE@@\taction=%s\ttype=%s\tpath=%s\n' "$1" "$2" "$3"
 }
 
-# Parses a comma-separated agents list. Single value (e.g. "claude") is allowed.
-# Validates each token. Emits a space-separated list to stdout.
-# $1 - csv string (may be empty)
-# $2 - subcommand name for the error message
-# $3 - space-separated valid agents (defaults to ALL_AGENTS)
-parse_agents_csv() {
-    local csv="$1"
-    local subcommand="$2"
-    local valid="${3:-$ALL_AGENTS}"
-    if [ -z "$csv" ]; then
-        die "${subcommand}: --agents is required (e.g. --agents claude,codex)"
-    fi
-    local result=""
-    local token
-    for token in $(printf '%s' "$csv" | tr ',' ' ' | tr -s ' ' ' '); do
+# Parses comma-separated list $1, given in option $3 of subcommand $2. Every
+# value must be one of $4 (space-separated), in any case. Prints them
+# space-separated, in $4's order, each once.
+parse_csv() {
+    local csv sub="$2" opt="$3" valid="$4" token result="" v
+    csv="$(printf '%s' "$1" | tr -d ' ' | tr '[:upper:]' '[:lower:]')"
+    [ -n "$csv" ] || die "${sub}: ${opt} is required (one or more of: $(printf '%s' "$valid" | tr ' ' ','))"
+    for token in $(printf '%s' "$csv" | tr ',' ' '); do
         case " ${valid} " in
-            *" ${token} "*) result="${result} ${token}" ;;
-            *) die "${subcommand}: unknown agent in --agents: '$token' (valid: $(printf '%s' "$valid" | tr ' ' ','))" ;;
+            *" ${token} "*) ;;
+            *) die "${sub}: unknown value '${token}' in ${opt} (valid: $(printf '%s' "$valid" | tr ' ' ','))" ;;
         esac
     done
-    result="$(printf '%s' "$result" | sed 's/^ //;s/ $//')"
-    [ -n "$result" ] || die "${subcommand}: --agents resolved to an empty list"
-    printf '%s' "$result"
+    for v in $valid; do
+        case ",${csv}," in *",${v},"*) result="${result} ${v}" ;; esac
+    done
+    printf '%s' "${result# }"
+}
+
+# Parses the --agents list $1 of subcommand $2.
+parse_agents_csv() {
+    parse_csv "$1" "$2" --agents "$ALL_AGENTS"
+}
+
+# Parses the --conventions list $1 of subcommand $2. Agent names (the --agents
+# of earlier releases) are accepted too: codex, opencode and junie follow the
+# agents convention.
+parse_conventions_csv() {
+    local token mapped=""
+    for token in $(printf '%s' "$1" | tr ',' ' ' | tr '[:upper:]' '[:lower:]'); do
+        case "$token" in codex|opencode|junie) token=agents ;; esac
+        mapped="${mapped},${token}"
+    done
+    parse_csv "${mapped#,}" "$2" --conventions "$CONVENTIONS"
 }
 
 # Reads a line from /dev/tty so prompts work under `curl ... | bash`.
@@ -222,12 +235,15 @@ usage() {
 Jmix AI Agents Toolkit installer.
 
 Usage:
-  install.sh                                                     # interactive wizard
-  install.sh skills        --agents CSV [--scope global|local]   # install skills into the canonical store and symlink agent dirs
-  install.sh agents-md     [options]                             # install project guidelines
-  install.sh mcp-jetbrains [options]                             # register JetBrains MCP (user level)
-  install.sh mcp-context7  [options] [--context7-key KEY]        # register Context7 MCP (user level)
-  install.sh playwright    [options]                             # register Playwright MCP (user level)
+  install.sh                                                  # interactive wizard
+  install.sh skills     --conventions CSV [--scope global|local]
+                                                              # install skills into a store and link them
+  install.sh agents-md  --conventions CSV                     # install project guidelines
+  install.sh mcp        --servers CSV --agents CSV [--scope local|global] [--context7-key KEY]
+                                                              # register MCP servers
+  install.sh mcp-jetbrains | mcp-context7 | playwright --agents CSV [--scope local|global]
+                                                              # register one MCP server
+                                                              # (mcp-context7 also takes --context7-key)
 
 Common options:
   --content-ref REF          Repository branch/ref to download and use. Defaults
@@ -236,12 +252,6 @@ Common options:
   --source DIR               Install from a local checkout of this repository
                              instead of downloading. Skips the network. Mainly
                              for CI and offline use.
-  --agents CSV               Comma-separated agent list. Accepts a single value
-                             too (e.g. "claude" or "claude,codex"). Required by
-                             every subcommand. Valid values:
-                             claude, codex, opencode, junie. In the MCP
-                             subcommands, claude also sets up Claude Desktop
-                             when it is installed here.
   --backup-existing-files    Rename overwritten files/dirs to <name>.bak
                              (deduped: .bak, .bak1, .bak2, ...) instead of
                              deleting them. Off by default. Project guidelines
@@ -257,18 +267,28 @@ Common options:
                              paths, tool versions) to help troubleshoot problems.
   -h, --help                 Show this help.
 
-skills options:
-  --scope global|local   Where to install skills. "global" (default) writes to
-                         the per-agent user-home dir; "local" writes to the
-                         matching dir under the current project (e.g.
-                         ./.claude/skills).
+skills / agents-md options:
+  --conventions CSV      Where the skills and guidelines go: "agents"
+                         (.agents/skills, AGENTS.md -- Codex, OpenCode, Junie
+                         and other agents of these conventions) and/or "claude"
+                         (.claude/skills, CLAUDE.md -- Claude Code). Agent names
+                         work too: codex, opencode and junie mean agents.
+  --scope global|local   skills: "global" (default) links the skills into the
+                         user home, "local" into the current project.
 
-mcp-jetbrains / mcp-context7 / playwright:
-  MCP servers are registered in each agent's user config, so they serve every
-  project; Claude Code's through the claude CLI. Project files are not written.
-
-mcp-context7 options:
-  --context7-key K   Context7 API key. Prompted interactively when missing.
+mcp / mcp-jetbrains / mcp-context7 / playwright options:
+  --agents CSV           claude, codex, opencode, junie. claude also sets up
+                         Claude Desktop when it is installed here.
+  --scope local|global   "local" (default) writes the project files in the
+                         current directory (.mcp.json, .codex/config.toml,
+                         opencode.json, .junie/mcp/mcp.json); "global" writes
+                         each agent's user config. Claude Desktop has only a
+                         user config.
+  --servers CSV          mcp: jetbrains, context7, playwright.
+  --context7-key K       mcp, mcp-context7: Context7 API key; prompted when
+                         missing, and "skip" leaves Context7 out. At local
+                         scope the key is written into the project files: keep
+                         them out of version control.
 
 Environment:
   JMIX_IDE_MCP_PORT  Port of the IntelliJ IDEA MCP server (default 64342).
@@ -339,20 +359,20 @@ ensure_tarball() {
 # Validates the install scope. Emits the normalized value ("global"/"local").
 # $1 - raw scope string   $2 - subcommand name for the error message
 parse_scope() {
-    case "$1" in
-        global|local) printf '%s' "$1" ;;
+    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+        global) printf 'global' ;;
+        local) printf 'local' ;;
         *) die "$2: --scope must be 'global' or 'local' (got '$1')" ;;
     esac
 }
 
-# Relative skills dir each agent reads, used as a whole-dir symlink to the store.
-# claude -> .claude/skills ; codex, opencode & junie -> .agents/skills (open
-# standard). Rooted at $HOME (global) or the project dir (local).
-agent_symlink_rel() {
+# Relative skills dir of convention $1, rooted at $HOME (global) or the project
+# dir (local).
+convention_skills_dir() {
     case "$1" in
-        claude)               printf '.claude/skills' ;;
-        codex|opencode|junie) printf '.agents/skills' ;;
-        *) die "unknown agent '$1'" ;;
+        agents) printf '.agents/skills' ;;
+        claude) printf '.claude/skills' ;;
+        *) die "unknown convention '$1'" ;;
     esac
 }
 
@@ -362,11 +382,11 @@ agent_symlink_rel() {
 # when this run linked .agents/skills (otherwise Junie would be left with no
 # skills), and never from a .junie/skills that is the same dir as an agent
 # skills dir: its links are the ones this run just created.
-# $1 - scope root (the user home or the project dir)   $2 - agents of this run
+# $1 - scope root (the user home or the project dir)   $2 - conventions of this run
 remove_old_junie_skill_links() {
     local dir="$1/.junie/skills" link
     [ -d "$dir" ] || return 0
-    case " $2 " in *" codex "*|*" opencode "*|*" junie "*) ;; *) return 0 ;; esac
+    case " $2 " in *" agents "*) ;; *) return 0 ;; esac
     if [ "$dir" -ef "$1/.agents/skills" ] || [ "$dir" -ef "$1/.claude/skills" ]; then
         return 0
     fi
@@ -486,14 +506,13 @@ link_skills_into_dir() {
     done
 }
 
-# Links the store into the skills dir of every agent in $3 under root $1.
-# Agents sharing a dir (codex/opencode), or dirs resolving to the same physical
-# dir, are linked once.
+# Links the store into the skills dir of every convention in $3 under root $1.
+# Dirs resolving to the same physical dir are linked once.
 link_store_into_agents() {
-    local root="$1" store_dir="$2" agents="$3"
-    local agent agent_dir phys existed seen=" "
-    for agent in $agents; do
-        agent_dir="${root}/$(agent_symlink_rel "$agent")"
+    local root="$1" store_dir="$2" conventions="$3"
+    local conv agent_dir phys existed seen=" "
+    for conv in $conventions; do
+        agent_dir="${root}/$(convention_skills_dir "$conv")"
         existed=0
         [ -d "$agent_dir" ] && existed=1
         phys="$(prepare_agent_dir "$agent_dir")" || return 1
@@ -511,7 +530,7 @@ link_store_into_agents() {
         emit_change "$([ "$existed" -eq 1 ] && printf updated || printf created)" dir "$agent_dir"
         log "  Linked skills into ${agent_dir}"
     done
-    remove_old_junie_skill_links "$root" "$agents"
+    remove_old_junie_skill_links "$root" "$conventions"
 }
 
 agent_label() {
@@ -524,8 +543,22 @@ agent_label() {
     esac
 }
 
+skills_label() {
+    case "$1" in
+        agents) printf '.agents/skills (Codex, OpenCode, Junie, ...)' ;;
+        claude) printf '.claude/skills (Claude Code)' ;;
+    esac
+}
+
+guidelines_label() {
+    case "$1" in
+        agents) printf 'AGENTS.md (Codex, OpenCode, Junie, ...)' ;;
+        claude) printf 'CLAUDE.md (Claude Code)' ;;
+    esac
+}
+
 cmd_skills() {
-    local agents_csv=""
+    local conventions_csv=""
     local scope="global"
 
     local _argc=-1
@@ -533,9 +566,9 @@ cmd_skills() {
         [ "$#" -ne "$_argc" ] || die "argument parser made no progress near: $1"
         _argc=$#
         case "$1" in
-            --agents)
-                [ $# -ge 2 ] || die "--agents requires an argument"
-                agents_csv="$2"; shift 2 ;;
+            --conventions|--agents)
+                [ $# -ge 2 ] || die "$1 requires an argument"
+                conventions_csv="$2"; shift 2 ;;
             --scope)
                 [ $# -ge 2 ] || die "--scope requires an argument"
                 scope="$2"; shift 2 ;;
@@ -549,8 +582,8 @@ cmd_skills() {
         esac
     done
 
-    local agents
-    agents="$(parse_agents_csv "$agents_csv" "skills")"
+    local conventions
+    conventions="$(parse_conventions_csv "$conventions_csv" skills)"
     scope="$(parse_scope "$scope" skills)"
 
     ensure_tarball
@@ -573,24 +606,22 @@ cmd_skills() {
 
     log ""
     log "Linking store skills into agent dirs"
-    link_store_into_agents "$root" "$store_dir" "$agents"
+    link_store_into_agents "$root" "$store_dir" "$conventions"
 
     log ""
-    log "Done. Installed ${scope} skills store at ${store_dir} and linked: $(printf '%s' "$agents" | tr ' ' ',' | sed 's/,/, /g')"
+    log "Done. Installed ${scope} skills store at ${store_dir} and linked: $(printf '%s' "$conventions" | tr ' ' ',' | sed 's/,/, /g')"
 }
 
 # =================================================================
 # agents-md install (project-level)
 # =================================================================
 
-agents_md_dest_for_agent() {
-    local agent="$1"
-    local pwd_
-    pwd_="$(pwd -P)"
-    case "$agent" in
-        claude)               printf '%s/CLAUDE.md' "$pwd_" ;;
-        codex|opencode|junie) printf '%s/AGENTS.md' "$pwd_" ;;
-        *) die "unknown agent '$1'" ;;
+# Project guidelines file of convention $1.
+convention_guidelines_file() {
+    case "$1" in
+        agents) printf '%s/AGENTS.md' "$(pwd -P)" ;;
+        claude) printf '%s/CLAUDE.md' "$(pwd -P)" ;;
+        *) die "unknown convention '$1'" ;;
     esac
 }
 
@@ -754,18 +785,18 @@ claude_md_covered_by_agents_md() {
     [ -f "$claude_md" ] && grep -Eq '(^|[[:space:]])@(\./)?AGENTS\.md([[:space:]]|$)' "$claude_md"
 }
 
-# Installs the block for agent $1, then checks what could still hide it from
-# the agent (see the helpers above).
+# Installs the block for convention $1, then checks what could still hide it
+# from the agents (see the helpers above).
 install_guidelines_block_for() {
     local dest
-    dest="$(agents_md_dest_for_agent "$1")"
+    dest="$(convention_guidelines_file "$1")"
     write_guidelines_block "$1" "$dest"
-    if [ "$1" = codex ]; then
+    if [ "$1" = agents ]; then
         warn_if_codex_misses_block "$dest"
     fi
 }
 
-# Writes the toolkit-managed block for agent $1 into project guidelines file $2.
+# Writes the toolkit-managed block for convention $1 into guidelines file $2.
 # Four branches, in order:
 #   1. no file            -> write the block alone
 #   2. markers present    -> replace only that region, no backup
@@ -777,9 +808,9 @@ install_guidelines_block_for() {
 # claude_md_covered_by_agents_md) is skipped, and a dest that exists but is not
 # a file is an error.
 write_guidelines_block() {
-    local agent="$1" dest="$2"
+    local conv="$1" dest="$2"
     local label dest_dir tmp backup
-    label="$(agent_label "$agent")"
+    label="$(guidelines_label "$conv")"
 
     [ -f "$SOURCE_GUIDELINES_BLOCK" ] \
         || die "guidelines-block.md not found in ${RESOLVED_VERSION_DIR}"
@@ -797,7 +828,7 @@ write_guidelines_block() {
 
     [ -f "$dest" ] || die "cannot merge guidelines into ${dest}: it exists but is not a file"
 
-    if [ "$agent" = claude ] && claude_md_covered_by_agents_md "$dest"; then
+    if [ "$conv" = claude ] && claude_md_covered_by_agents_md "$dest"; then
         log "  Skipped: ${dest} (imports AGENTS.md, which already carries the block)"
         log "  Project guidelines reach ${label} through AGENTS.md"
         return 0
@@ -861,35 +892,32 @@ write_guidelines_block() {
     log "  Project guidelines installed for ${label}"
 }
 
-# Installs the block for every agent in $1 (space-separated), AGENTS.md agents
-# before claude so claude_md_covered_by_agents_md sees AGENTS.md in its final
-# state whatever order the agents were given in. $2=1 keeps going after a
-# failed agent (wizard).
+# Installs the block for every convention in $1 (space-separated, agents before
+# claude as parse_conventions_csv orders them, so claude_md_covered_by_agents_md
+# sees AGENTS.md in its final state). $2=1 keeps going after a failed one
+# (wizard).
 install_guidelines_blocks() {
-    local agents="$1" lenient="${2:-0}" ordered="" agent
-    for agent in codex opencode junie claude; do
-        case " $agents " in *" ${agent} "*) ordered="${ordered} ${agent}" ;; esac
-    done
-    for agent in $ordered; do
+    local conventions="$1" lenient="${2:-0}" conv
+    for conv in $conventions; do
         if [ "$lenient" -eq 1 ]; then
-            install_guidelines_block_for "$agent" || true
+            install_guidelines_block_for "$conv" || true
         else
-            install_guidelines_block_for "$agent"
+            install_guidelines_block_for "$conv"
         fi
     done
 }
 
 cmd_agents_md() {
-    local agents_csv=""
+    local conventions_csv=""
 
     local _argc=-1
     while [ $# -gt 0 ]; do
         [ "$#" -ne "$_argc" ] || die "argument parser made no progress near: $1"
         _argc=$#
         case "$1" in
-            --agents)
-                [ $# -ge 2 ] || die "--agents requires an argument"
-                agents_csv="$2"; shift 2 ;;
+            --conventions|--agents)
+                [ $# -ge 2 ] || die "$1 requires an argument"
+                conventions_csv="$2"; shift 2 ;;
             --backup-existing-files)
                 BACKUP_EXISTING=1; shift ;;
             --source)
@@ -900,29 +928,29 @@ cmd_agents_md() {
         esac
     done
 
-    local agents
-    agents="$(parse_agents_csv "$agents_csv" "agents-md")"
+    local conventions
+    conventions="$(parse_conventions_csv "$conventions_csv" agents-md)"
 
     log "Project guidelines target directory: $(pwd -P)"
     ensure_tarball
-    install_guidelines_blocks "$agents"
+    install_guidelines_blocks "$conventions"
 }
 
 # =================================================================
-# MCP registration (shared by mcp-jetbrains, mcp-context7, playwright)
+# MCP registration (shared by mcp, mcp-jetbrains, mcp-context7, playwright)
 # =================================================================
 #
-# Servers are registered in each agent's user config, so they serve every
-# project:
+# Servers are written straight into each agent's config file. Local scope
+# writes the project files, global scope the user files:
 #
-#   agent           user config
-#   claude          ~/.claude.json via `claude mcp add --scope user`
-#   codex           ${CODEX_HOME:-~/.codex}/config.toml
-#   opencode        ${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json
-#   junie           ${JUNIE_HOME:-~/.junie}/mcp/mcp.json
+#   agent           local                  global
+#   claude          .mcp.json              ~/.claude.json via `claude mcp add`
+#   codex           .codex/config.toml     ${CODEX_HOME:-~/.codex}/config.toml
+#   opencode        opencode.json          ${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json
+#   junie           .junie/mcp/mcp.json    ${JUNIE_HOME:-~/.junie}/mcp/mcp.json
 #
 # With claude, Claude Desktop is set up too when it is installed (see
-# mcp_desktop): claude_desktop_config.json.
+# mcp_desktop): claude_desktop_config.json, user level only.
 #
 # ~/.claude.json is Claude Code's own state file, so it is changed only through
 # the claude CLI. Every other file is merged in place, with no agent CLI needed
@@ -943,12 +971,16 @@ claude_desktop_config() {
     printf '%s/claude_desktop_config.json' "$dir"
 }
 
-# Prints the user MCP config file of agent $1 (see the table above).
+# Prints the MCP config file of agent $1 for scope $2 (see the table above).
 mcp_config_file() {
-    case "$1" in
-        codex)    printf '%s/config.toml' "${CODEX_HOME:-${HOME}/.codex}" ;;
-        opencode) printf '%s/opencode/opencode.json' "${XDG_CONFIG_HOME:-${HOME}/.config}" ;;
-        junie)    printf '%s/mcp/mcp.json' "${JUNIE_HOME:-${HOME}/.junie}" ;;
+    case "$1:$2" in
+        claude:local)    printf '%s/.mcp.json' "$(pwd -P)" ;;
+        codex:local)     printf '%s/.codex/config.toml' "$(pwd -P)" ;;
+        codex:global)    printf '%s/config.toml' "${CODEX_HOME:-${HOME}/.codex}" ;;
+        opencode:local)  printf '%s/opencode.json' "$(pwd -P)" ;;
+        opencode:global) printf '%s/opencode/opencode.json' "${XDG_CONFIG_HOME:-${HOME}/.config}" ;;
+        junie:local)     printf '%s/.junie/mcp/mcp.json' "$(pwd -P)" ;;
+        junie:global)    printf '%s/mcp/mcp.json' "${JUNIE_HOME:-${HOME}/.junie}" ;;
         *) return 1 ;;
     esac
 }
@@ -1151,39 +1183,46 @@ codex_transport() {
 # Codex merges [mcp_servers.X] of the user config with the project configs of
 # the current directory up to its git root (the current directory alone outside
 # a repository), key by key, and refuses its whole configuration when the
-# result mixes url (HTTP) and command (stdio). Fails when one of those project
-# configs defines the server with the other transport; they are only read,
-# never changed.
-# $1 - server name   $2 - TOML body
-codex_check_project_layers() {
-    local user mine theirs cwd root dir project
-    user="$(mcp_config_file codex)"
-    case "$2" in url*) mine="url" ;; *) mine="command" ;; esac
+# result mixes url (HTTP) and command (stdio). Fails when one of those layers,
+# other than the one written, defines the server with the other transport;
+# they are only read, never changed.
+# $1 - scope written   $2 - server name   $3 - TOML body
+codex_check_layers() {
+    local own cwd root dir
+    own="$(mcp_config_file codex "$1")"
     cwd="$(pwd -P)" || { err "cannot determine the current directory"; return 1; }
     root="$cwd"
     while [ ! -e "$root/.git" ]; do
         if [ "$root" = / ]; then root="$cwd"; break; fi
         root="$(dirname "$root")"
     done
+    codex_check_layer "$own" "$(mcp_config_file codex global)" "$2" "$3" || return 1
     dir="$cwd"
     while :; do
-        project="${dir}/.codex/config.toml"
-        # Run from the user's home, the project config is the user config.
-        if [ "$project" != "$user" ] && ! [ "$project" -ef "$user" ]; then
-            toml_set_table "$project" "mcp_servers.$1" "$2" 644 scan || return 1
-            theirs="$(codex_transport "$project" "mcp_servers.$1")" || return 1
-            if [ -n "$theirs" ] && [ "$theirs" != "$mine" ]; then
-                if [ "$1" = jetbrains ] && [ "$JB_GUESSED" = 1 ]; then
-                    err "${project} defines [mcp_servers.jetbrains] with another transport, and IntelliJ IDEA is not reachable to tell which one it serves. Start it with its MCP server enabled and re-run."
-                else
-                    err "${project} defines [mcp_servers.$1] with another transport, which Codex cannot merge with the user config. Remove or change that table, then re-run."
-                fi
-                return 1
-            fi
-        fi
+        codex_check_layer "$own" "${dir}/.codex/config.toml" "$2" "$3" || return 1
         [ "$dir" != "$root" ] || break
         dir="$(dirname "$dir")"
     done
+}
+
+# Fails when Codex config $2 -- unless it is $1, the file being written (also
+# the user config when run from the user's home) -- defines server $3 with
+# another transport than TOML body $4.
+codex_check_layer() {
+    local own="$1" file="$2" mine theirs
+    if [ "$file" = "$own" ] || [ "$file" -ef "$own" ]; then
+        return 0
+    fi
+    toml_set_table "$file" "mcp_servers.$3" "$4" 644 scan || return 1
+    theirs="$(codex_transport "$file" "mcp_servers.$3")" || return 1
+    case "$4" in url*) mine="url" ;; *) mine="command" ;; esac
+    [ -n "$theirs" ] && [ "$theirs" != "$mine" ] || return 0
+    if [ "$3" = jetbrains ] && [ "$JB_GUESSED" = 1 ]; then
+        err "${file} defines [mcp_servers.jetbrains] with another transport, and IntelliJ IDEA is not reachable to tell which one it serves. Start it with its MCP server enabled and re-run."
+    else
+        err "${file} defines [mcp_servers.$3] with another transport, which Codex cannot merge with ${own}. Remove or change that table, then re-run."
+    fi
+    return 1
 }
 
 # Prints the claude CLI: the one on PATH, else where Claude Code's installers
@@ -1205,37 +1244,42 @@ mcp_claude_user() {
     local name="$1" cli
     shift
     if ! cli="$(claude_cli)"; then
-        log "  Skipped: 'claude' CLI not found on PATH or in ~/.local/bin. Install Claude Code and re-run."
+        log "  Skipped: 'claude' CLI not found on PATH, in ~/.local/bin or in ~/.claude/local. Install Claude Code and re-run."
         return 0
     fi
     "$cli" mcp remove --scope user "$name" >/dev/null 2>&1 || true
     "$cli" mcp add "$@" >/dev/null || { err "claude mcp add ${name} failed"; return 1; }
-    MCP_WRITTEN=1
     log "  Registered ${name} in the Claude Code user config"
 }
 
-# Writes MCP server $2 into the user config of agent $1. $3 is the entry:
-# compact JSON, or the TOML table body for codex. For claude the remaining
+# Writes MCP server $3 for agent $1 at scope $2. $4 is the entry: compact JSON,
+# or the TOML table body for codex. For claude at global scope the remaining
 # arguments are passed to `claude mcp add` instead.
 mcp_write() {
-    local agent="$1" name="$2" entry="$3" file
-    shift 3
-    if [ "$agent" = claude ]; then
+    local agent="$1" scope="$2" name="$3" entry="$4" file mode=644
+    shift 4
+    if [ "$agent" = claude ] && [ "$scope" = global ]; then
         mcp_claude_user "$name" "$@"
         return
     fi
-    file="$(mcp_config_file "$agent")" || { err "no MCP config file for ${agent}"; return 1; }
-    # A new file is private: user configs may hold the Context7 key.
+    # A new user config is private (it may get the Context7 key later), and so
+    # is any new file that gets it now.
+    if [ "$scope" = global ] || [ "$MCP_PRIVATE" = 1 ]; then
+        mode=600
+    fi
+    file="$(mcp_config_file "$agent" "$scope")" || { err "no MCP config file for ${agent}"; return 1; }
     case "$agent" in
         codex)
-            codex_check_project_layers "$name" "$entry" \
-                && toml_set_table "$file" "mcp_servers.${name}" "$entry" 600 ;;
+            codex_check_layers "$scope" "$name" "$entry" \
+                && toml_set_table "$file" "mcp_servers.${name}" "$entry" "$mode" ;;
         opencode)
-            json_set_entry "$file" mcp "$name" "$entry" 600 ;;
+            json_set_entry "$file" mcp "$name" "$entry" "$mode" ;;
         *)
-            json_set_entry "$file" mcpServers "$name" "$entry" 600 ;;
+            json_set_entry "$file" mcpServers "$name" "$entry" "$mode" ;;
     esac || return 1
-    MCP_WRITTEN=1
+    if [ "$MCP_PRIVATE" = 1 ] && [ "$scope" = local ]; then
+        MCP_KEY_FILES="${MCP_KEY_FILES} ${file#"$(pwd -P)"/}"
+    fi
 }
 
 # Claude Desktop takes stdio servers only and has no project scope. It is set
@@ -1261,23 +1305,36 @@ desktop_selected() {
 # $1 - per-agent function   $2 - agents   $3.. - extra arguments for $1
 mcp_for_agents() {
     local fn="$1" agents="$2" agent rc=0
-    MCP_WRITTEN_AGENTS=""
     shift 2
     for agent in $agents; do
         log ""
-        MCP_WRITTEN=0
         "$fn" "$agent" "$@" || rc=1
-        [ "$MCP_WRITTEN" = 0 ] || MCP_WRITTEN_AGENTS="${MCP_WRITTEN_AGENTS} ${agent}"
     done
     return $rc
 }
 
-# Parses the shared MCP subcommand options into MCP_AGENTS_SEL / MCP_KEY.
-# $1 - subcommand name; the rest are the arguments.
+# Prints what the user still has to do for the configs just written.
+mcp_followups() {
+    [ "$MCP_SCOPE" = local ] || return 0
+    log ""
+    case " $MCP_AGENTS_SEL " in *" claude "*)
+        log "Claude Code asks to approve the servers in .mcp.json on its next start in this project." ;;
+    esac
+    case " $MCP_AGENTS_SEL " in *" codex "*)
+        log "Codex reads .codex/config.toml only in trusted projects: accept its 'trust this folder' prompt. The Codex desktop app ignores project MCP servers; use --scope global for it." ;;
+    esac
+    if [ -n "$MCP_KEY_FILES" ]; then
+        log "The Context7 API key is now in${MCP_KEY_FILES}: keep these files out of version control."
+    fi
+}
+
+# Parses the MCP subcommand options into MCP_AGENTS_SEL / MCP_SCOPE / MCP_KEY
+# and, for mcp, MCP_SERVERS. $1 - subcommand name; the rest are the arguments.
 parse_mcp_args() {
-    local sub="$1" agents_csv=""
+    local sub="$1" agents_csv="" scope="local" servers_csv=""
     shift
     MCP_KEY=""
+    MCP_KEY_FILES=""
     local _argc=-1
     while [ $# -gt 0 ]; do
         [ "$#" -ne "$_argc" ] || die "argument parser made no progress near: $1"
@@ -1287,9 +1344,14 @@ parse_mcp_args() {
                 [ $# -ge 2 ] || die "--agents requires an argument"
                 agents_csv="$2"; shift 2 ;;
             --scope)
-                die "${sub}: MCP servers are always registered in the user config; --scope applies to skills only" ;;
+                [ $# -ge 2 ] || die "--scope requires an argument"
+                scope="$2"; shift 2 ;;
+            --servers)
+                [ "$sub" = mcp ] || die "unknown argument: $1"
+                [ $# -ge 2 ] || die "--servers requires an argument"
+                servers_csv="$2"; shift 2 ;;
             --context7-key)
-                [ "$sub" = mcp-context7 ] || die "unknown argument: $1"
+                case "$sub" in mcp|mcp-context7) ;; *) die "unknown argument: $1" ;; esac
                 [ $# -ge 2 ] || die "--context7-key requires an argument"
                 MCP_KEY="$2"; shift 2 ;;
             --backup-existing-files)
@@ -1303,6 +1365,10 @@ parse_mcp_args() {
         esac
     done
     MCP_AGENTS_SEL="$(parse_agents_csv "$agents_csv" "$sub")"
+    MCP_SCOPE="$(parse_scope "$scope" "$sub")"
+    if [ "$sub" = mcp ]; then
+        MCP_SERVERS="$(parse_csv "$servers_csv" "$sub" --servers "$MCP_SERVERS_ALL")"
+    fi
 }
 
 # =================================================================
@@ -1333,9 +1399,9 @@ detect_jetbrains_transport() {
     esac
 }
 
-# $1 - agent
+# $1 - agent   $2 - scope
 install_jetbrains_for() {
-    local agent="$1" base="http://127.0.0.1:${JB_PORT}"
+    local agent="$1" scope="$2" base="http://127.0.0.1:${JB_PORT}"
     # A stdio-to-SSE bridge for clients without an HTTP transport the IDE has.
     local bridge_json="{\"command\":\"npx\",\"args\":[\"-y\",\"mcp-remote\",\"${base}/sse\",\"--transport\",\"sse-only\"]}"
     log "[JetBrains MCP] $(agent_label "$agent")"
@@ -1346,18 +1412,20 @@ install_jetbrains_for() {
     local rc=0
     if [ "$JB_TRANSPORT" = stream ]; then
         case "$agent" in
-            claude)   mcp_write claude jetbrains "" --scope user --transport http jetbrains "${base}/stream" ;;
-            codex)    mcp_write codex jetbrains "url = \"${base}/stream\"" ;;
-            opencode) mcp_write opencode jetbrains "{\"type\":\"remote\",\"url\":\"${base}/stream\",\"enabled\":true}" ;;
+            claude)   mcp_write claude "$scope" jetbrains "{\"type\":\"http\",\"url\":\"${base}/stream\"}" \
+                          --scope user --transport http jetbrains "${base}/stream" ;;
+            codex)    mcp_write codex "$scope" jetbrains "url = \"${base}/stream\"" ;;
+            opencode) mcp_write opencode "$scope" jetbrains "{\"type\":\"remote\",\"url\":\"${base}/stream\",\"enabled\":true}" ;;
         esac || rc=1
     else
         case "$agent" in
-            claude)   mcp_write claude jetbrains "" --scope user --transport sse jetbrains "${base}/sse" ;;
+            claude)   mcp_write claude "$scope" jetbrains "{\"type\":\"sse\",\"url\":\"${base}/sse\"}" \
+                          --scope user --transport sse jetbrains "${base}/sse" ;;
             # Codex has no SSE transport.
-            codex)    mcp_write codex jetbrains "command = \"npx\"
+            codex)    mcp_write codex "$scope" jetbrains "command = \"npx\"
 args = [\"-y\", \"mcp-remote\", \"${base}/sse\", \"--transport\", \"sse-only\"]
 startup_timeout_sec = 60" ;;
-            opencode) mcp_write opencode jetbrains "{\"type\":\"remote\",\"url\":\"${base}/sse\",\"enabled\":true}" ;;
+            opencode) mcp_write opencode "$scope" jetbrains "{\"type\":\"remote\",\"url\":\"${base}/sse\",\"enabled\":true}" ;;
         esac || rc=1
     fi
     # Claude Desktop has no HTTP transport for local servers: always the bridge.
@@ -1367,11 +1435,12 @@ startup_timeout_sec = 60" ;;
     return $rc
 }
 
-cmd_mcp_jetbrains() {
-    parse_mcp_args mcp-jetbrains "$@"
-    detect_jetbrains_transport
+# Registers JetBrains MCP for MCP_AGENTS_SEL at MCP_SCOPE.
+mcp_jetbrains_step() {
     local rc=0
-    mcp_for_agents install_jetbrains_for "$MCP_AGENTS_SEL" || rc=1
+    log ""
+    detect_jetbrains_transport
+    mcp_for_agents install_jetbrains_for "$MCP_AGENTS_SEL" "$MCP_SCOPE" || rc=1
     if desktop_selected; then
         warn_if_no_npx "Claude Desktop's JetBrains MCP bridge"
     elif [ "$JB_TRANSPORT" = sse ]; then
@@ -1380,8 +1449,16 @@ cmd_mcp_jetbrains() {
     return $rc
 }
 
+cmd_mcp_jetbrains() {
+    parse_mcp_args mcp-jetbrains "$@"
+    local rc=0
+    mcp_jetbrains_step || rc=1
+    mcp_followups
+    return $rc
+}
+
 # =================================================================
-# MCP install - Context7 (always user level: the entry carries the API key)
+# MCP install - Context7
 # =================================================================
 
 # Fails for an empty key or one that would need escaping: the key is spliced
@@ -1392,37 +1469,44 @@ context7_key_ok() {
     esac
 }
 
-# $1 - agent   $2 - API key
+# $1 - agent   $2 - scope   $3 - API key
 install_context7_for() {
-    local agent="$1" key="$2"
+    local agent="$1" scope="$2" key="$3"
+    local http_json="{\"type\":\"http\",\"url\":\"${CONTEXT7_URL}\",\"headers\":{\"Authorization\":\"Bearer ${key}\"}}"
     local stdio_json="{\"command\":\"npx\",\"args\":[\"-y\",\"@upstash/context7-mcp\"],\"env\":{\"CONTEXT7_API_KEY\":\"${key}\"}}"
     log "[Context7 MCP] $(agent_label "$agent")"
     case "$agent" in
         claude)
             local rc=0
-            mcp_write claude context7 "" \
+            mcp_write claude "$scope" context7 "$http_json" \
                 --scope user --transport http context7 "$CONTEXT7_URL" --header "Authorization: Bearer ${key}" || rc=1
             mcp_desktop context7 "$stdio_json" || rc=1
             return $rc ;;
-        codex)    mcp_write codex context7 "url = \"${CONTEXT7_URL}\"
+        codex)    mcp_write codex "$scope" context7 "url = \"${CONTEXT7_URL}\"
 http_headers = { Authorization = \"Bearer ${key}\" }" ;;
-        opencode) mcp_write opencode context7 "{\"type\":\"remote\",\"url\":\"${CONTEXT7_URL}\",\"headers\":{\"Authorization\":\"Bearer ${key}\"},\"enabled\":true}" ;;
+        opencode) mcp_write opencode "$scope" context7 "{\"type\":\"remote\",\"url\":\"${CONTEXT7_URL}\",\"headers\":{\"Authorization\":\"Bearer ${key}\"},\"enabled\":true}" ;;
         # Junie (and Claude Desktop above): stdio, the key in the environment, not in argv.
-        *)        mcp_write "$agent" context7 "$stdio_json" ;;
+        *)        mcp_write "$agent" "$scope" context7 "$stdio_json" ;;
     esac
 }
 
-cmd_mcp_context7() {
-    parse_mcp_args mcp-context7 "$@"
-    local key="$MCP_KEY"
+# Registers Context7 for MCP_AGENTS_SEL at MCP_SCOPE with key MCP_KEY, asking
+# for it when it is empty; "skip" skips the step (Studio's MCP step has to pass
+# a value).
+mcp_context7_step() {
+    local key="$MCP_KEY" rc=0
+    log ""
+    if [ "$key" = skip ]; then
+        log "[Context7 MCP] Skipped: no API key given."
+        return 0
+    fi
     if [ -z "$key" ]; then
         key="$(prompt 'Context7 API key' '')"
-        [ -n "$key" ] || die "Context7 API key is required"
+        [ -n "$key" ] || { err "Context7 API key is required"; return 1; }
     fi
-    context7_key_ok "$key" || die "Context7 API key may contain only letters, digits, '.', '_' and '-'"
-    local rc=0
+    context7_key_ok "$key" || { err "Context7 API key may contain only letters, digits, '.', '_' and '-'"; return 1; }
     MCP_PRIVATE=1
-    mcp_for_agents install_context7_for "$MCP_AGENTS_SEL" "$key" || rc=1
+    mcp_for_agents install_context7_for "$MCP_AGENTS_SEL" "$MCP_SCOPE" "$key" || rc=1
     MCP_PRIVATE=0
     case " $MCP_AGENTS_SEL " in
         *" junie "*) warn_if_no_npx "Context7 for Junie" ;;
@@ -1431,67 +1515,71 @@ cmd_mcp_context7() {
     return $rc
 }
 
+cmd_mcp_context7() {
+    parse_mcp_args mcp-context7 "$@"
+    local rc=0
+    mcp_context7_step || rc=1
+    mcp_followups
+    return $rc
+}
+
 # =================================================================
 # MCP install - Playwright
 # =================================================================
 
-# Earlier toolkit versions installed the playwright-cli skill into a global
-# store and linked it into the agent skill dirs. The step now registers the
-# MCP server instead. Remove the shared store only after all agents have it.
-remove_legacy_playwright_skills() {
-    local store="${HOME}/.agents/.playwright" dir link agent
-    [ -d "$store" ] || return 0
-    # The global store and even agent directories may be shared by all agents.
-    for agent in $ALL_AGENTS; do
-        case " $1 " in *" $agent "*) ;; *) return 0 ;; esac
-    done
-    for dir in "${HOME}/.claude/skills" "${HOME}/.agents/skills" "${HOME}/.junie/skills"; do
-        for link in "$dir"/*; do
-            [ -L "$link" ] || continue
-            # Only links into the store: ../.playwright/skills/X from
-            # ~/.agents/skills, .../.agents/.playwright/skills/X elsewhere.
-            case "$(readlink "$link")" in
-                ../.playwright/skills/*|*/.agents/.playwright/skills/*)
-                    rm -f "$link" && log "  Removed old playwright-cli skill link ${link}" ;;
-            esac
-        done
-    done
-    # A store that cannot be removed is reported, not a reason to stop.
-    if rm -rf "$store"; then
-        log "  Removed old playwright-cli skills store ${store}"
-    else
-        err "cannot fully remove the old playwright-cli skills store ${store}"
-    fi
-}
-
-# $1 - agent
+# $1 - agent   $2 - scope
 install_playwright_for() {
-    local agent="$1"
+    local agent="$1" scope="$2"
     log "[Playwright MCP] $(agent_label "$agent")"
     local stdio_json="{\"command\":\"npx\",\"args\":[\"-y\",\"${PLAYWRIGHT_MCP_PKG}\"]}"
     case "$agent" in
         claude)
             local rc=0
-            mcp_write claude playwright "" --scope user playwright -- npx -y "$PLAYWRIGHT_MCP_PKG" || rc=1
+            mcp_write claude "$scope" playwright "{\"type\":\"stdio\",\"command\":\"npx\",\"args\":[\"-y\",\"${PLAYWRIGHT_MCP_PKG}\"]}" \
+                --scope user playwright -- npx -y "$PLAYWRIGHT_MCP_PKG" || rc=1
             mcp_desktop playwright "$stdio_json" || rc=1
             return $rc ;;
         # The first npx download can outlast Codex's default startup timeout.
-        codex)    mcp_write codex playwright "command = \"npx\"
+        codex)    mcp_write codex "$scope" playwright "command = \"npx\"
 args = [\"-y\", \"${PLAYWRIGHT_MCP_PKG}\"]
 startup_timeout_sec = 60" ;;
-        opencode) mcp_write opencode playwright "{\"type\":\"local\",\"command\":[\"npx\",\"-y\",\"${PLAYWRIGHT_MCP_PKG}\"],\"enabled\":true}" ;;
-        *)        mcp_write "$agent" playwright "$stdio_json" ;;
+        opencode) mcp_write opencode "$scope" playwright "{\"type\":\"local\",\"command\":[\"npx\",\"-y\",\"${PLAYWRIGHT_MCP_PKG}\"],\"enabled\":true}" ;;
+        *)        mcp_write "$agent" "$scope" playwright "$stdio_json" ;;
     esac
+}
+
+# Registers Playwright MCP for MCP_AGENTS_SEL at MCP_SCOPE.
+mcp_playwright_step() {
+    local rc=0
+    log ""
+    mcp_for_agents install_playwright_for "$MCP_AGENTS_SEL" "$MCP_SCOPE" || rc=1
+    warn_if_no_npx "The Playwright MCP server"
+    return $rc
 }
 
 cmd_playwright() {
     parse_mcp_args playwright "$@"
     local rc=0
-    mcp_for_agents install_playwright_for "$MCP_AGENTS_SEL" || rc=1
-    if [ "$rc" = 0 ]; then
-        remove_legacy_playwright_skills "$MCP_WRITTEN_AGENTS"
-    fi
-    warn_if_no_npx "The Playwright MCP server"
+    mcp_playwright_step || rc=1
+    mcp_followups
+    return $rc
+}
+
+# =================================================================
+# MCP install - several servers in one step (Studio's MCP step)
+# =================================================================
+
+cmd_mcp() {
+    parse_mcp_args mcp "$@"
+    local rc=0 server
+    for server in $MCP_SERVERS; do
+        case "$server" in
+            jetbrains)  mcp_jetbrains_step || rc=1 ;;
+            context7)   mcp_context7_step || rc=1 ;;
+            playwright) mcp_playwright_step || rc=1 ;;
+        esac
+    done
+    mcp_followups
     return $rc
 }
 
@@ -1499,47 +1587,48 @@ cmd_playwright() {
 # Wizard
 # =================================================================
 
-wizard_pick_agent() {
-    local default_choice="$1"
-    shift
-    local prompt_label="$1"
-    shift
-    local options="$*"
+server_label() {
+    case "$1" in
+        jetbrains)  printf 'JetBrains (code insight from IntelliJ IDEA)' ;;
+        context7)   printf 'Context7 (library docs, needs an API key)' ;;
+        playwright) printf 'Playwright (browser automation)' ;;
+    esac
+}
 
+# Prints the options of space-separated list $4 (shown through label function
+# $3) that the answer picks, in $4's order, or "skip". The answer is a (all),
+# s (skip) or option numbers separated by commas; $1 is the default answer.
+wizard_pick() {
+    local default_choice="$1" title="$2" label_fn="$3" options="$4"
+    local opt i=1 answer nums picked=""
     {
         log ""
-        log "$prompt_label"
-        printf '  a) For all agents\n'
-        local i=1
-        local opt
+        log "$title"
+        printf '  a) All\n'
         for opt in $options; do
-            printf '  %d) %s\n' "$i" "$(agent_label "$opt")"
+            printf '  %d) %s\n' "$i" "$("$label_fn" "$opt")"
             i=$((i + 1))
         done
         printf '  s) Skip\n'
     } >&2
-
-    local answer
-    answer="$(prompt 'Choice' "$default_choice")"
+    answer="$(prompt 'Choice (a, s, or numbers like 1,3)' "$default_choice")"
     case "$answer" in
         s|S|skip|SKIP) printf 'skip'; return 0 ;;
         a|A|all|ALL) printf '%s' "$options"; return 0 ;;
     esac
-    if ! printf '%s' "$answer" | grep -Eq '^[0-9]+$'; then
+    nums=",$(printf '%s' "$answer" | tr -d ' '),"
+    case "$nums" in *[!0-9,]*) nums="" ;; esac
+    i=1
+    for opt in $options; do
+        case "$nums" in *",${i},"*) picked="${picked} ${opt}" ;; esac
+        i=$((i + 1))
+    done
+    if [ -z "$picked" ]; then
         log "Unrecognized choice '${answer}'. Skipping." >&2
         printf 'skip'
         return 0
     fi
-    local idx=1
-    for opt in $options; do
-        if [ "$idx" -eq "$answer" ]; then
-            printf '%s' "$opt"
-            return 0
-        fi
-        idx=$((idx + 1))
-    done
-    log "Unrecognized choice '${answer}'. Skipping." >&2
-    printf 'skip'
+    printf '%s' "${picked# }"
 }
 
 cmd_wizard() {
@@ -1563,17 +1652,15 @@ cmd_wizard() {
 
     local summary_skills="skipped"
     local summary_guidelines="skipped"
-    local summary_jetbrains="skipped"
-    local summary_context7="skipped"
-    local summary_playwright="skipped"
+    local summary_mcp="skipped"
+    local sel scope="local"
 
     # Step 1: skills
-    local sel
-    sel="$(wizard_pick_agent all '[1/5] Install Jmix skills?' "$ALL_AGENTS")"
+    sel="$(wizard_pick all '[1/3] Install Jmix skills into:' skills_label "$CONVENTIONS")"
     if [ "$sel" != "skip" ]; then
-        local scope_answer scope="local"
-        scope_answer="$(prompt 'Install scope: (l)ocal project dir or (g)lobal user home' 'l')"
-        case "$scope_answer" in g|G|global|GLOBAL) scope="global" ;; esac
+        case "$(prompt 'Install scope: (l)ocal project dir or (g)lobal user home' 'l')" in
+            g|G|global|GLOBAL) scope="global" ;;
+        esac
         ensure_tarball
         local root store_dir
         if [ "$scope" = "local" ]; then
@@ -1587,7 +1674,7 @@ cmd_wizard() {
     fi
 
     # Step 2: agents-md
-    sel="$(wizard_pick_agent all '[2/5] Merge Jmix coding guidelines into this directory?' "$ALL_AGENTS")"
+    sel="$(wizard_pick all '[2/3] Merge Jmix coding guidelines in this directory into:' guidelines_label "$CONVENTIONS")"
     if [ "$sel" != "skip" ]; then
         if prompt_yes_no "Target directory: $(pwd -P). Proceed?" "y"; then
             ensure_tarball
@@ -1598,44 +1685,31 @@ cmd_wizard() {
         fi
     fi
 
-    # Steps 3-5 reuse the subcommands: their only exits are argument errors,
-    # which cannot happen with the values passed here.
-
-    # Step 3: JetBrains MCP
-    sel="$(wizard_pick_agent skip '[3/5] Connect agent to IntelliJ IDEA via JetBrains MCP?' "$JETBRAINS_AGENTS")"
-    if [ "$sel" != "skip" ]; then
-        cmd_mcp_jetbrains --agents "$(printf '%s' "$sel" | tr ' ' ',')" || true
-        summary_jetbrains="$sel (user level)"
+    # Step 3: MCP servers. cmd_mcp's only exits are argument errors, which
+    # cannot happen with the values passed here. The scope defaults to the one
+    # chosen for the skills.
+    local servers agents="skip" key="" scope_mcp="local"
+    servers="$(wizard_pick skip '[3/3] Connect agents to MCP servers:' server_label "$MCP_SERVERS_ALL")"
+    if [ "$servers" != "skip" ]; then
+        agents="$(wizard_pick all 'For the agents:' agent_label "$ALL_AGENTS")"
     fi
-
-    # Step 4: Context7 MCP
-    sel="$(wizard_pick_agent skip '[4/5] Connect agent to library docs via Context7 MCP?' "$ALL_AGENTS")"
-    if [ "$sel" != "skip" ]; then
-        local key
-        key="$(prompt 'Context7 API key' '')"
-        if context7_key_ok "$key"; then
-            cmd_mcp_context7 --agents "$(printf '%s' "$sel" | tr ' ' ',')" --context7-key "$key" || true
-            summary_context7="$sel (user level)"
-        else
-            log "API key missing or malformed, skipping Context7 setup."
-            summary_context7="skipped (no key)"
-        fi
-    fi
-
-    # Step 5: Playwright MCP
-    sel="$(wizard_pick_agent skip '[5/5] Connect agent to a browser via Playwright MCP?' "$ALL_AGENTS")"
-    if [ "$sel" != "skip" ]; then
-        cmd_playwright --agents "$(printf '%s' "$sel" | tr ' ' ',')" || true
-        summary_playwright="$sel (user level)"
+    if [ "$agents" != "skip" ]; then
+        case "$(prompt 'Register in: (l)ocal project config or (g)lobal user config' "$(printf '%.1s' "$scope")")" in
+            g|G|global|GLOBAL) scope_mcp="global" ;;
+        esac
+        case " $servers " in *" context7 "*)
+            key="$(prompt 'Context7 API key (empty to skip Context7)' '')" ;;
+        esac
+        cmd_mcp --servers "$(printf '%s' "$servers" | tr ' ' ',')" --agents "$(printf '%s' "$agents" | tr ' ' ',')" \
+            --scope "$scope_mcp" --context7-key "${key:-skip}" || true
+        summary_mcp="${servers} for ${agents} (${scope_mcp})"
     fi
 
     log ""
     log "=== Setup complete ==="
     log "  Skills:      ${summary_skills}"
     log "  Guidelines:  ${summary_guidelines}"
-    log "  JetBrains:   ${summary_jetbrains}"
-    log "  Context7:    ${summary_context7}"
-    log "  Playwright:  ${summary_playwright}"
+    log "  MCP:         ${summary_mcp}"
 }
 
 # =================================================================
@@ -1673,6 +1747,7 @@ fi
 case "$1" in
     skills)        shift; cmd_skills "$@" ;;
     agents-md)     shift; cmd_agents_md "$@" ;;
+    mcp)           shift; cmd_mcp "$@" ;;
     mcp-jetbrains) shift; cmd_mcp_jetbrains "$@" ;;
     mcp-context7)  shift; cmd_mcp_context7 "$@" ;;
     playwright)    shift; cmd_playwright "$@" ;;

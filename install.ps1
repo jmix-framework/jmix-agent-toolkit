@@ -5,23 +5,22 @@
 .DESCRIPTION
     Default invocation (no subcommand) launches an interactive wizard that
     guides through:
-      1. Installing Jmix skills (globally or into the project) for one or all agents.
-      2. Adding project-level guidelines (CLAUDE.md / AGENTS.md).
-      3. Registering the JetBrains MCP server with the agent.
-      4. Registering the Context7 MCP server with the agent.
-      5. Registering the Playwright MCP server with the agent.
+      1. Installing Jmix skills (globally or into the project) for the chosen
+         conventions (.agents/skills, .claude/skills).
+      2. Adding project-level guidelines (AGENTS.md / CLAUDE.md).
+      3. Registering MCP servers (JetBrains, Context7, Playwright) with the agents.
 
     Subcommands are available for non-interactive use:
-      install.ps1 skills        -Agents CSV [-Scope global|local]
-                                Installs skills into a canonical store once, then symlinks each
-                                selected agent's skills dir to that store.
-      install.ps1 agents-md     -Agents CSV
-      install.ps1 mcp-jetbrains -Agents CSV
-      install.ps1 mcp-context7  -Agents CSV [-Context7Key KEY]
-      install.ps1 playwright    -Agents CSV
+      install.ps1 skills     -Conventions CSV [-Scope global|local]
+                             Installs skills into a canonical store once, then links
+                             them into the skills dir of each convention.
+      install.ps1 agents-md  -Conventions CSV
+      install.ps1 mcp        -Servers CSV -Agents CSV [-Scope local|global] [-Context7Key KEY]
+      install.ps1 mcp-jetbrains | mcp-context7 | playwright -Agents CSV [-Scope local|global]
+                             (mcp-context7 also takes -Context7Key)
 
-    MCP servers are registered in each agent's user config, so they serve every
-    project; no agent CLI is needed except for Claude CLI (`claude mcp add`).
+    MCP servers are written straight into each agent's config file; no agent
+    CLI is needed except for Claude CLI at user level (`claude mcp add`).
 
     Add -BackupExistingFiles to any subcommand to rename overwritten files/dirs
     to <name>.bak (deduped: .bak, .bak1, .bak2, ...) instead of deleting them.
@@ -43,22 +42,34 @@
     Repository branch/ref to download and use. Defaults to this release branch
     (v3). Studio passes its resolved toolkit branch here.
 
+.PARAMETER Conventions
+    skills / agents-md: where the skills and guidelines go, comma-separated:
+    "agents" (.agents/skills, AGENTS.md -- Codex, OpenCode, Junie and other
+    agents of these conventions) and/or "claude" (.claude/skills, CLAUDE.md --
+    Claude Code). Agent names work too (-Agents of earlier releases): codex,
+    opencode and junie mean agents.
+
 .PARAMETER Agents
-    Comma-separated list of agents (e.g. "claude,codex"). Single value is also
-    accepted (e.g. "claude"). Required by every subcommand. Valid values:
-    claude, codex, opencode, junie. In the MCP subcommands, claude also sets
-    up Claude Desktop when it is installed here.
+    MCP subcommands: comma-separated agents (e.g. "claude,codex"): claude,
+    codex, opencode, junie. claude also sets up Claude Desktop when it is
+    installed here.
+
+.PARAMETER Servers
+    mcp: comma-separated MCP servers: jetbrains, context7, playwright.
 
 .PARAMETER Scope
-    skills: "global" (default) writes to the per-agent user-home dir; "local"
-    writes to the matching dir under the current project (e.g.
-    .\.claude\skills).
-    Not accepted by the MCP subcommands: they always write the user config.
+    skills: "global" (default) links the skills into the user home, "local"
+    into the current project.
+    MCP subcommands: "local" (default) writes the project files in the current
+    directory (.mcp.json, .codex\config.toml, opencode.json,
+    .junie\mcp\mcp.json); "global" writes each agent's user config. Claude
+    Desktop has only a user config.
 
 .PARAMETER Context7Key
-    Context7 API key (mcp-context7). Prompted interactively when missing.
-    Context7 is always registered at user level, so the key never lands in
-    project files. Letters, digits, '.', '_' and '-' only.
+    Context7 API key (mcp, mcp-context7). Prompted interactively when missing;
+    "skip" leaves Context7 out. At local scope the key is written into the
+    project files: keep them out of version control. Letters, digits, '.', '_'
+    and '-' only.
 
 .PARAMETER BackupExistingFiles
     When set, an existing destination file or folder is renamed to a deduped
@@ -79,7 +90,7 @@
     Invoke-RestMethod https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/HEAD/install.ps1 | Invoke-Expression
 
 .EXAMPLE
-    & ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/HEAD/install.ps1).Content)) skills -Agent claude
+    & ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/HEAD/install.ps1).Content)) skills -Conventions claude
 #>
 [CmdletBinding()]
 param(
@@ -87,6 +98,8 @@ param(
     [string]$Subcommand = '',
     [string]$Source = '',
     [string]$Agents = '',
+    [string]$Conventions = '',
+    [string]$Servers = '',
     [string]$Scope = '',
     [string]$Context7Key = '',
     [string]$ContentRef = 'v3',
@@ -103,6 +116,11 @@ $script:RepoOwner = 'jmix-framework'
 $script:RepoName  = 'jmix-agent-toolkit'
 
 $script:AllAgents = @('claude', 'codex', 'opencode', 'junie')
+# Where skills and guidelines go: 'agents' -- .agents/skills and AGENTS.md
+# (Codex, OpenCode, Junie and other agents of those open conventions) -- and
+# 'claude' -- .claude/skills and CLAUDE.md (Claude Code).
+$script:AllConventions = @('agents', 'claude')
+$script:AllMcpServers = @('jetbrains', 'context7', 'playwright')
 
 # IntelliJ IDEA's MCP server listens on 127.0.0.1 only. Its default port is
 # 64342; another JetBrains IDE started first moves it, hence the override.
@@ -117,8 +135,8 @@ $script:PlaywrightMcpPkg = '@playwright/mcp@latest'
 $script:McpFailed = $false
 # True while writing entries that carry the Context7 key; see Save-McpConfig.
 $script:McpPrivate = $false
-$script:McpWritten = $false
-$script:McpWrittenAgents = @()
+# Project files the Context7 key went into during this step (local scope).
+$script:McpKeyFiles = @()
 # Set when Save-McpConfig created or updated its file.
 $script:ConfigChanged = $false
 
@@ -158,7 +176,7 @@ function Write-ChangeMarker {
 function Write-EnvDiagnostics {
     Write-Verbose "os: $([System.Environment]::OSVersion.VersionString)"
     Write-Verbose "pwd: $((Get-Location).Path)"
-    Write-Verbose "HOME: $HOME"
+    Write-Verbose "HOME: $HOME, user profile: $($script:UserHome)"
     Write-Verbose "profile: $($script:UserHome)"
     Write-Verbose "PSVersion: $($PSVersionTable.PSVersion)"
     foreach ($tool in 'git', 'node', 'npx') {
@@ -222,6 +240,31 @@ function Get-AgentLabel {
     }
 }
 
+function Get-SkillsLabel {
+    param([string]$Convention)
+    switch ($Convention) {
+        'agents' { '.agents/skills (Codex, OpenCode, Junie, ...)' }
+        'claude' { '.claude/skills (Claude Code)' }
+    }
+}
+
+function Get-GuidelinesLabel {
+    param([string]$Convention)
+    switch ($Convention) {
+        'agents' { 'AGENTS.md (Codex, OpenCode, Junie, ...)' }
+        'claude' { 'CLAUDE.md (Claude Code)' }
+    }
+}
+
+function Get-ServerLabel {
+    param([string]$Server)
+    switch ($Server) {
+        'jetbrains'  { 'JetBrains (code insight from IntelliJ IDEA)' }
+        'context7'   { 'Context7 (library docs, needs an API key)' }
+        'playwright' { 'Playwright (browser automation)' }
+    }
+}
+
 # Returns a not-yet-existing backup file NAME (bare, no directory) for the item
 # at $Path: first "<name>.bak", then on collision "<name>.bak1", ".bak2", ... so
 # an earlier backup is never overwritten.
@@ -263,28 +306,37 @@ function Write-Dest {
     }
 }
 
-# $Valid - the agents the subcommand accepts (defaults to $script:AllAgents).
-function Resolve-AgentsCsv {
-    param(
-        [string]$Csv,
-        [string]$Subcommand,
-        [string[]]$Valid = $script:AllAgents
-    )
-    if ([string]::IsNullOrWhiteSpace($Csv)) {
-        Write-ErrAndExit "${Subcommand}: -Agents is required (e.g. -Agents claude,codex)"
+# Parses comma-separated list $Csv, given in option $Option of $Subcommand.
+# Every value must be one of $Valid; returns them in $Valid's order, each once.
+function Resolve-Csv {
+    param([string]$Csv, [string]$Subcommand, [string]$Option, [string[]]$Valid)
+    $tokens = @($Csv -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    if ($tokens.Count -eq 0) {
+        Write-ErrAndExit "${Subcommand}: $Option is required (one or more of: $($Valid -join ','))"
     }
-    $tokens = $Csv -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
-    $resolved = @()
     foreach ($t in $tokens) {
         if ($Valid -notcontains $t) {
-            Write-ErrAndExit "${Subcommand}: unknown agent in -Agents: '$t' (valid: $($Valid -join ','))"
+            Write-ErrAndExit "${Subcommand}: unknown value '$t' in $Option (valid: $($Valid -join ','))"
         }
-        $resolved += $t
     }
-    if ($resolved.Count -eq 0) {
-        Write-ErrAndExit "${Subcommand}: -Agents resolved to an empty list"
-    }
-    return $resolved
+    return @($Valid | Where-Object { $tokens -contains $_ })
+}
+
+function Resolve-AgentsCsv {
+    param([string]$Csv, [string]$Subcommand)
+    return Resolve-Csv -Csv $Csv -Subcommand $Subcommand -Option '-Agents' -Valid $script:AllAgents
+}
+
+# -Conventions of skills / agents-md. Agent names (the -Agents of earlier
+# releases) are accepted too: codex, opencode and junie follow the agents
+# convention.
+function Resolve-ConventionsCsv {
+    param([string]$Csv, [string]$Subcommand)
+    $mapped = @($Csv -split ',' | ForEach-Object {
+        $t = $_.Trim()
+        if ($t -in 'codex', 'opencode', 'junie') { 'agents' } else { $t }
+    }) -join ','
+    return Resolve-Csv -Csv $mapped -Subcommand $Subcommand -Option '-Conventions' -Valid $script:AllConventions
 }
 
 # =================================================================
@@ -366,25 +418,25 @@ function Initialize-Tarball {
 # skills install (global, per agent)
 # =================================================================
 
-# Validates the skills -Scope value. Defaults to 'global'.
+# Validates -Scope. $Default applies when it is empty: 'global' for skills,
+# 'local' for the MCP subcommands.
 function Resolve-Scope {
-    param([string]$Scope)
-    if ([string]::IsNullOrWhiteSpace($Scope)) { return 'global' }
+    param([string]$Scope, [string]$Default = 'global', [string]$Subcommand = 'skills')
+    if ([string]::IsNullOrWhiteSpace($Scope)) { return $Default }
     switch ($Scope) {
         'global' { return 'global' }
         'local'  { return 'local' }
-        default  { Write-ErrAndExit "skills: -Scope must be 'global' or 'local' (got '$Scope')" }
+        default  { Write-ErrAndExit "${Subcommand}: -Scope must be 'global' or 'local' (got '$Scope')" }
     }
 }
 
-function Get-AgentSymlinkRel {
-    param([string]$Agent)
-    switch ($Agent) {
-        'claude'   { '.claude/skills' }
-        'codex'    { '.agents/skills' }
-        'opencode' { '.agents/skills' }
-        'junie'    { '.agents/skills' }
-        default    { throw "unknown agent '$Agent'" }
+# Relative skills dir of convention $Convention.
+function Get-ConventionSkillsDir {
+    param([string]$Convention)
+    switch ($Convention) {
+        'agents' { '.agents/skills' }
+        'claude' { '.claude/skills' }
+        default  { throw "unknown convention '$Convention'" }
     }
 }
 
@@ -395,10 +447,10 @@ function Get-AgentSymlinkRel {
 # skills), and never from a .junie/skills that is the same folder as an agent
 # skills dir: its links are the ones this run just created.
 function Remove-OldJunieSkillLinks {
-    param([string]$Root, [string[]]$Agents)
+    param([string]$Root, [string[]]$Conventions)
     $dir = Join-Path $Root '.junie/skills'
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return }
-    if (-not ($Agents | Where-Object { $_ -in 'codex', 'opencode', 'junie' })) { return }
+    if ($Conventions -notcontains 'agents') { return }
     foreach ($rel in '.agents/skills', '.claude/skills') {
         if (Test-SameDirectory -Path (Join-Path $Root $rel) -Other $dir) { return }
     }
@@ -556,8 +608,14 @@ function New-SkillSymlinks {
     Write-Info "  Linked skills into $AgentDir"
 }
 
+# The -Conventions of skills / agents-md, or the -Agents of earlier releases.
+function Get-ConventionsArg {
+    if ($Conventions) { return $Conventions }
+    return $Agents
+}
+
 function Invoke-CmdSkills {
-    $agents = Resolve-AgentsCsv -Csv $Agents -Subcommand 'skills'
+    $conventionList = Resolve-ConventionsCsv -Csv (Get-ConventionsArg) -Subcommand 'skills'
     $resolvedScope = Resolve-Scope -Scope $Scope
     Initialize-Tarball
 
@@ -565,8 +623,8 @@ function Invoke-CmdSkills {
         $root = (Get-Location).Path
         $storeDir = Join-Path $root '.skills'
     } else {
-        $root = $HOME
-        $storeDir = Join-Path $HOME (Join-Path '.agents/.jmix/skills' $script:ResolvedVersionDir)
+        $root = $script:UserHome
+        $storeDir = Join-Path $script:UserHome (Join-Path '.agents/.jmix/skills' $script:ResolvedVersionDir)
     }
 
     $storeExisted = Test-Path $storeDir
@@ -576,32 +634,27 @@ function Invoke-CmdSkills {
 
     Write-Info ''
     Write-Info 'Linking store skills into agent dirs'
-    $seen = @{}
-    foreach ($a in $agents) {
-        $rel = Get-AgentSymlinkRel -Agent $a
-        if ($seen.ContainsKey($rel)) { continue }
-        $seen[$rel] = $true
-        New-SkillSymlinks -AgentDir (Join-Path $root $rel) -StoreDir $storeDir
+    foreach ($c in $conventionList) {
+        New-SkillSymlinks -AgentDir (Join-Path $root (Get-ConventionSkillsDir -Convention $c)) -StoreDir $storeDir
     }
-    Remove-OldJunieSkillLinks -Root $root -Agents $agents
+    Remove-OldJunieSkillLinks -Root $root -Conventions $conventionList
 
     Write-Info ''
-    Write-Info "Done. Installed $resolvedScope skills store at $storeDir and linked: $($agents -join ', ')"
+    Write-Info "Done. Installed $resolvedScope skills store at $storeDir and linked: $($conventionList -join ', ')"
 }
 
 # =================================================================
 # agents-md install (project-level)
 # =================================================================
 
-function Get-AgentsMdDest {
-    param([string]$Agent)
+# Project guidelines file of convention $Convention.
+function Get-ConventionGuidelinesFile {
+    param([string]$Convention)
     $proj = (Get-Location).Path
-    switch ($Agent) {
-        'claude'   { Join-Path $proj 'CLAUDE.md' }
-        'codex'    { Join-Path $proj 'AGENTS.md' }
-        'opencode' { Join-Path $proj 'AGENTS.md' }
-        'junie'    { Join-Path $proj 'AGENTS.md' }
-        default    { throw "unknown agent '$Agent'" }
+    switch ($Convention) {
+        'agents' { Join-Path $proj 'AGENTS.md' }
+        'claude' { Join-Path $proj 'CLAUDE.md' }
+        default  { throw "unknown convention '$Convention'" }
     }
 }
 
@@ -791,16 +844,16 @@ function Test-ClaudeMdCoveredByAgentsMd {
     return ((Get-FileTextRaw -Path $ClaudeMd) -cmatch '(?m)(^|\s)@(\./)?AGENTS\.md(\s|$)')
 }
 
-# Installs the block for agent $Agent, then checks what could still hide it
-# from the agent (see the helpers above).
+# Installs the block for convention $Convention, then checks what could still
+# hide it from the agents (see the helpers above).
 function Install-GuidelinesBlockFor {
-    param([string]$Agent)
-    $dest = Get-AgentsMdDest -Agent $Agent
-    Write-GuidelinesBlock -Agent $Agent -Dest $dest
-    if ($Agent -eq 'codex') { Write-CodexBlockNotes -AgentsMd $dest }
+    param([string]$Convention)
+    $dest = Get-ConventionGuidelinesFile -Convention $Convention
+    Write-GuidelinesBlock -Convention $Convention -Dest $dest
+    if ($Convention -eq 'agents') { Write-CodexBlockNotes -AgentsMd $dest }
 }
 
-# Writes the toolkit-managed block for $Agent into project guidelines file $Dest.
+# Writes the toolkit-managed block for $Convention into guidelines file $Dest.
 # Four branches, in order, plus an early exit for a destination path that exists
 # but is not a file (e.g. CLAUDE.md is a directory) -- there is nothing to merge
 # into, so this reports an error and exits rather than attempting anything else:
@@ -812,8 +865,8 @@ function Install-GuidelinesBlockFor {
 # Before 2-4, a CLAUDE.md that already gets the block through AGENTS.md (see
 # Test-ClaudeMdCoveredByAgentsMd) is skipped.
 function Write-GuidelinesBlock {
-    param([string]$Agent, [string]$Dest)
-    $label = Get-AgentLabel -Agent $Agent
+    param([string]$Convention, [string]$Dest)
+    $label = Get-GuidelinesLabel -Convention $Convention
 
     if (-not (Test-Path -LiteralPath $script:SourceGuidelinesBlock)) {
         Write-ErrAndExit "guidelines-block.md not found in $($script:ResolvedVersionDir)"
@@ -835,7 +888,7 @@ function Write-GuidelinesBlock {
         Write-ErrAndExit "cannot merge guidelines into $Dest`: it exists but is not a file"
     }
 
-    if ($Agent -eq 'claude' -and (Test-ClaudeMdCoveredByAgentsMd -ClaudeMd $Dest)) {
+    if ($Convention -eq 'claude' -and (Test-ClaudeMdCoveredByAgentsMd -ClaudeMd $Dest)) {
         Write-Info "  Skipped: $Dest (imports AGENTS.md, which already carries the block)"
         Write-Info "  Project guidelines reach $label through AGENTS.md"
         return
@@ -894,44 +947,43 @@ function Get-GuidelinesWithBlockAdded {
     return $prefix + "`n" + $Block
 }
 
-# Installs the block for every agent in $Agents, AGENTS.md agents before claude
-# so Test-ClaudeMdCoveredByAgentsMd sees AGENTS.md in its final state whatever
-# order the agents were given in. -Lenient keeps going after a failed agent
+# Installs the block for every convention in $ConventionList, agents before
+# claude so Test-ClaudeMdCoveredByAgentsMd sees AGENTS.md in its final state
+# whatever order they were given in. -Lenient keeps going after a failed one
 # (wizard).
 function Install-GuidelinesBlocks {
-    param([string[]]$Agents, [switch]$Lenient)
-    $ordered = @('codex', 'opencode', 'junie', 'claude') | Where-Object { $Agents -contains $_ }
-    foreach ($a in $ordered) {
+    param([string[]]$ConventionList, [switch]$Lenient)
+    foreach ($c in @($script:AllConventions | Where-Object { $ConventionList -contains $_ })) {
         if ($Lenient) {
-            try { Install-GuidelinesBlockFor -Agent $a } catch { Write-Info "error: $($_.Exception.Message)" }
+            try { Install-GuidelinesBlockFor -Convention $c } catch { Write-Info "error: $($_.Exception.Message)" }
         } else {
-            Install-GuidelinesBlockFor -Agent $a
+            Install-GuidelinesBlockFor -Convention $c
         }
     }
 }
 
 function Invoke-CmdAgentsMd {
-    $agents = Resolve-AgentsCsv -Csv $Agents -Subcommand 'agents-md'
+    $conventionList = Resolve-ConventionsCsv -Csv (Get-ConventionsArg) -Subcommand 'agents-md'
     Write-Info "Project guidelines target directory: $((Get-Location).Path)"
     Initialize-Tarball
-    Install-GuidelinesBlocks -Agents $agents
+    Install-GuidelinesBlocks -ConventionList $conventionList
 }
 
 # =================================================================
-# MCP registration (shared by mcp-jetbrains, mcp-context7, playwright)
+# MCP registration (shared by mcp, mcp-jetbrains, mcp-context7, playwright)
 # =================================================================
 #
-# Servers are registered in each agent's user config, so they serve every
-# project:
+# Servers are written straight into each agent's config file. Local scope
+# writes the project files, global scope the user files:
 #
-#   agent           user config
-#   claude          ~\.claude.json via `claude mcp add --scope user`
-#   codex           $env:CODEX_HOME (default ~\.codex)\config.toml
-#   opencode        $env:XDG_CONFIG_HOME (default ~\.config)\opencode\opencode.json
-#   junie           $env:JUNIE_HOME (default ~\.junie)\mcp\mcp.json
+#   agent           local                  global
+#   claude          .mcp.json              ~\.claude.json via `claude mcp add`
+#   codex           .codex\config.toml     $env:CODEX_HOME (default ~\.codex)\config.toml
+#   opencode        opencode.json          $env:XDG_CONFIG_HOME (default ~\.config)\opencode\opencode.json
+#   junie           .junie\mcp\mcp.json    $env:JUNIE_HOME (default ~\.junie)\mcp\mcp.json
 #
 # With claude, Claude Desktop is set up too when it is installed (see
-# Write-ClaudeDesktopServer): claude_desktop_config.json.
+# Write-ClaudeDesktopServer): claude_desktop_config.json, user level only.
 #
 # ~\.claude.json is Claude Code's own state file, so it is changed only through
 # the claude CLI. Every other file is merged in place, with no agent CLI needed
@@ -974,21 +1026,31 @@ function Get-ClaudeDesktopConfigFiles {
     if ($dir) { return (Join-Path $dir $name) }
 }
 
-# Returns the user MCP config file of $Agent (see the table above).
+# Returns the MCP config file of $Agent for $Scope (see the table above).
 function Get-McpConfigFile {
-    param([string]$Agent)
-    switch ($Agent) {
-        'codex' {
-            $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $script:UserHome '.codex' }
-            return (Join-Path $codexHome 'config.toml')
+    param([string]$Agent, [string]$Scope)
+    if ($Scope -eq 'local') {
+        $proj = (Get-Location).Path
+        switch ($Agent) {
+            'claude'   { return (Join-Path $proj '.mcp.json') }
+            'codex'    { return [System.IO.Path]::Combine($proj, '.codex', 'config.toml') }
+            'opencode' { return (Join-Path $proj 'opencode.json') }
+            'junie'    { return [System.IO.Path]::Combine($proj, '.junie', 'mcp', 'mcp.json') }
         }
-        'opencode' { return [System.IO.Path]::Combine((Get-UserConfigHome), 'opencode', 'opencode.json') }
-        'junie' {
-            $junieHome = if ($env:JUNIE_HOME) { $env:JUNIE_HOME } else { Join-Path $script:UserHome '.junie' }
-            return [System.IO.Path]::Combine($junieHome, 'mcp', 'mcp.json')
+    } else {
+        switch ($Agent) {
+            'codex' {
+                $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $script:UserHome '.codex' }
+                return (Join-Path $codexHome 'config.toml')
+            }
+            'opencode' { return [System.IO.Path]::Combine((Get-UserConfigHome), 'opencode', 'opencode.json') }
+            'junie' {
+                $junieHome = if ($env:JUNIE_HOME) { $env:JUNIE_HOME } else { Join-Path $script:UserHome '.junie' }
+                return [System.IO.Path]::Combine($junieHome, 'mcp', 'mcp.json')
+            }
         }
     }
-    throw "no MCP config file for agent '$Agent'"
+    throw "no MCP config file for agent '$Agent' at scope '$Scope'"
 }
 
 # Writes config $Raw (Get-FileTextRaw representation) to $File through a temp
@@ -1203,14 +1265,12 @@ function Get-CodexTransport {
 # Codex merges [mcp_servers.X] of the user config with the project configs of
 # the current directory up to its git root (the current directory alone outside
 # a repository), key by key, and refuses its whole configuration when the
-# result mixes url (HTTP) and command (stdio). Throws when one of those project
-# configs defines the server with the other transport; they are only read,
-# never changed.
-function Test-CodexProjectLayers {
-    param([string]$Name, [string[]]$Body)
-    $user = Get-McpConfigFile -Agent 'codex'
-    $userDir = Split-Path -Parent $user
-    $mine = if ($Body[0] -clike 'url*') { 'url' } else { 'command' }
+# result mixes url (HTTP) and command (stdio). Throws when one of those layers,
+# other than the one written at $Scope, defines the server with the other
+# transport; they are only read, never changed.
+function Test-CodexLayers {
+    param([string]$Scope, [string]$Name, [string[]]$Body)
+    $own = Get-McpConfigFile -Agent 'codex' -Scope $Scope
     $cwd = (Get-Location).Path
     $root = $cwd
     while (-not (Test-Path -LiteralPath (Join-Path $root '.git'))) {
@@ -1218,25 +1278,31 @@ function Test-CodexProjectLayers {
         if (-not $parent) { $root = $cwd; break }
         $root = $parent
     }
+    Test-CodexLayer -Own $own -File (Get-McpConfigFile -Agent 'codex' -Scope 'global') -Name $Name -Body $Body
     $dir = $cwd
     while ($true) {
-        $project = [System.IO.Path]::Combine($dir, '.codex', 'config.toml')
-        # Run from the user's home, the project config is the user config (also
-        # when a symlink in the path makes the two spellings differ; the marker
-        # goes into the user's folder, which this step writes anyway).
-        if ($project -ne $user -and -not (Test-SameDirectory -Path $userDir -Other (Split-Path -Parent $project))) {
-            Set-McpTomlTable -File $project -Table "mcp_servers.$Name" -Body $Body -Scan
-            $theirs = Get-CodexTransport -File $project -Table "mcp_servers.$Name"
-            if ($theirs -and $theirs -ne $mine) {
-                if ($Name -eq 'jetbrains' -and $script:JbGuessed) {
-                    throw "$project defines [mcp_servers.jetbrains] with another transport, and IntelliJ IDEA is not reachable to tell which one it serves. Start it with its MCP server enabled and re-run."
-                }
-                throw "$project defines [mcp_servers.$Name] with another transport, which Codex cannot merge with the user config. Remove or change that table, then re-run."
-            }
-        }
+        Test-CodexLayer -Own $own -File ([System.IO.Path]::Combine($dir, '.codex', 'config.toml')) -Name $Name -Body $Body
         if ($dir -eq $root) { break }
         $dir = Split-Path -Parent $dir
     }
+}
+
+# Throws when Codex config $File -- unless it is $Own, the file being written
+# (also the user config when run from the user's home, even when a symlink in
+# the path makes the two spellings differ) -- defines server $Name with
+# another transport than $Body. The marker of Test-SameDirectory goes into the
+# folder of $Own, which this step writes anyway.
+function Test-CodexLayer {
+    param([string]$Own, [string]$File, [string]$Name, [string[]]$Body)
+    if ($File -eq $Own -or (Test-SameDirectory -Path (Split-Path -Parent $Own) -Other (Split-Path -Parent $File))) { return }
+    Set-McpTomlTable -File $File -Table "mcp_servers.$Name" -Body $Body -Scan
+    $theirs = Get-CodexTransport -File $File -Table "mcp_servers.$Name"
+    $mine = if ($Body[0] -clike 'url*') { 'url' } else { 'command' }
+    if (-not $theirs -or $theirs -eq $mine) { return }
+    if ($Name -eq 'jetbrains' -and $script:JbGuessed) {
+        throw "$File defines [mcp_servers.jetbrains] with another transport, and IntelliJ IDEA is not reachable to tell which one it serves. Start it with its MCP server enabled and re-run."
+    }
+    throw "$File defines [mcp_servers.$Name] with another transport, which Codex cannot merge with $Own. Remove or change that table, then re-run."
 }
 
 # The claude CLI as an application (claude.exe / claude.cmd, or the executable
@@ -1276,36 +1342,39 @@ function Add-ClaudeUserMcp {
     param([string]$Name, [string[]]$CliArgs)
     $claude = Get-ClaudeCli
     if ($null -eq $claude) {
-        Write-Info "  Skipped: 'claude' CLI not found on PATH or in ~/.local/bin. Install Claude Code and re-run."
+        Write-Info "  Skipped: 'claude' CLI not found on PATH, in ~/.local/bin or in ~/.claude/local. Install Claude Code and re-run."
         return
     }
     $null = Invoke-NativeQuiet -Command $claude -CliArgs @('mcp', 'remove', '--scope', 'user', $Name)
     if ((Invoke-NativeQuiet -Command $claude -CliArgs (@('mcp', 'add') + $CliArgs)) -ne 0) {
         throw "claude mcp add $Name failed"
     }
-    $script:McpWritten = $true
     Write-Info "  Registered $Name in the Claude Code user config"
 }
 
-# Writes MCP server $Name into the user config of $Agent. $Entry is the server
-# object for a JSON config, or the TOML table body lines for codex. For claude
-# $CliArgs (the arguments of `claude mcp add`) are used instead.
+# Writes MCP server $Name for $Agent at $Scope. $Entry is the server object for
+# a JSON config, or the TOML table body lines for codex. For claude at global
+# scope $CliArgs (the arguments of `claude mcp add`) are used instead.
 function Write-McpServer {
-    param([string]$Agent, [string]$Name, [object]$Entry, [string[]]$CliArgs)
-    if ($Agent -eq 'claude') {
+    param([string]$Agent, [string]$Scope, [string]$Name, [object]$Entry, [string[]]$CliArgs)
+    if ($Agent -eq 'claude' -and $Scope -eq 'global') {
         Add-ClaudeUserMcp -Name $Name -CliArgs $CliArgs
         return
     }
-    $file = Get-McpConfigFile -Agent $Agent
-    # A new file is private: user configs may hold the Context7 key.
+    $file = Get-McpConfigFile -Agent $Agent -Scope $Scope
+    # A new user config is private (it may get the Context7 key later), and so
+    # is any new file that gets it now.
+    $isPrivate = ($Scope -eq 'global' -or $script:McpPrivate)
     if ($Agent -eq 'codex') {
-        Test-CodexProjectLayers -Name $Name -Body $Entry
-        Set-McpTomlTable -File $file -Table "mcp_servers.$Name" -Body $Entry -Private
+        Test-CodexLayers -Scope $Scope -Name $Name -Body $Entry
+        Set-McpTomlTable -File $file -Table "mcp_servers.$Name" -Body $Entry -Private:$isPrivate
     } else {
         $root = if ($Agent -eq 'opencode') { 'mcp' } else { 'mcpServers' }
-        Set-McpJsonEntry -File $file -Root $root -Name $Name -Entry $Entry -Private
+        Set-McpJsonEntry -File $file -Root $root -Name $Name -Entry $Entry -Private:$isPrivate
     }
-    $script:McpWritten = $true
+    if ($script:McpPrivate -and $Scope -eq 'local') {
+        $script:McpKeyFiles += $file.Substring((Get-Location).Path.Length).TrimStart('\', '/')
+    }
 }
 
 # Claude Desktop takes stdio servers only and has no project scope. It is set
@@ -1333,20 +1402,38 @@ function Test-DesktopSelected {
 # after it still run.
 function Invoke-McpForAgents {
     param([string[]]$AgentList, [string]$Step, [hashtable]$StepParams = @{})
-    $script:McpWrittenAgents = @()
-    $script:McpStepFailed = $false
     foreach ($agent in $AgentList) {
         Write-Info ''
-        $script:McpWritten = $false
         try {
             & $Step -Agent $agent @StepParams
         } catch {
             Write-Err $_.Exception.Message
             $script:McpFailed = $true
-            $script:McpStepFailed = $true
         }
-        if ($script:McpWritten) { $script:McpWrittenAgents += $agent }
     }
+}
+
+# Prints what the user still has to do for the configs just written.
+function Write-McpFollowups {
+    param([string[]]$AgentList, [string]$McpScope)
+    if ($McpScope -ne 'local') { return }
+    Write-Info ''
+    if ($AgentList -contains 'claude') {
+        Write-Info 'Claude Code asks to approve the servers in .mcp.json on its next start in this project.'
+    }
+    if ($AgentList -contains 'codex') {
+        Write-Info "Codex reads .codex/config.toml only in trusted projects: accept its 'trust this folder' prompt. The Codex desktop app ignores project MCP servers; use -Scope global for it."
+    }
+    if ($script:McpKeyFiles.Count -gt 0) {
+        Write-Info "The Context7 API key is now in $($script:McpKeyFiles -join ' '): keep these files out of version control."
+    }
+}
+
+# The options that only some MCP subcommands take are refused by the others.
+function Assert-McpArgs {
+    param([string]$Subcommand, [switch]$AllowServers, [switch]$AllowKey)
+    if ($Servers -and -not $AllowServers) { Write-ErrAndExit "${Subcommand}: unknown argument: -Servers" }
+    if ($Context7Key -and -not $AllowKey) { Write-ErrAndExit "${Subcommand}: unknown argument: -Context7Key" }
 }
 
 # =================================================================
@@ -1391,7 +1478,7 @@ function Resolve-JetbrainsTransport {
 }
 
 function Install-JetbrainsFor {
-    param([string]$Agent)
+    param([string]$Agent, [string]$Scope)
     $base = "http://127.0.0.1:$($script:JbPort)"
     Write-Info "[JetBrains MCP] $(Get-AgentLabel -Agent $Agent)"
     if ($Agent -eq 'junie') {
@@ -1404,7 +1491,8 @@ function Install-JetbrainsFor {
         'claude' {
             $type = if ($isSse) { 'sse' } else { 'http' }
             try {
-                Write-McpServer -Agent $Agent -Name 'jetbrains' -CliArgs @('--scope', 'user', '--transport', $type, 'jetbrains', $url)
+                Write-McpServer -Agent $Agent -Scope $Scope -Name 'jetbrains' -Entry ([PSCustomObject][ordered]@{ type = $type; url = $url }) `
+                    -CliArgs @('--scope', 'user', '--transport', $type, 'jetbrains', $url)
             } finally {
                 # Claude Desktop has no HTTP transport for local servers: always the bridge.
                 Write-ClaudeDesktopServer -Name 'jetbrains' -Entry ([PSCustomObject][ordered]@{
@@ -1415,18 +1503,19 @@ function Install-JetbrainsFor {
             # Codex has no SSE transport: the same stdio bridge on 2025.x.
             $body = @("url = `"$url`"")
             if ($isSse) { $body = @('command = "npx"', "args = [`"-y`", `"mcp-remote`", `"$url`", `"--transport`", `"sse-only`"]", 'startup_timeout_sec = 60') }
-            Write-McpServer -Agent $Agent -Name 'jetbrains' -Entry $body
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'jetbrains' -Entry $body
         }
         'opencode' {
-            Write-McpServer -Agent $Agent -Name 'jetbrains' -Entry ([PSCustomObject][ordered]@{ type = 'remote'; url = $url; enabled = $true })
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'jetbrains' -Entry ([PSCustomObject][ordered]@{ type = 'remote'; url = $url; enabled = $true })
         }
     }
 }
 
 function Install-McpJetbrains {
-    param([string[]]$AgentList)
+    param([string[]]$AgentList, [string]$McpScope)
+    Write-Info ''
     Resolve-JetbrainsTransport
-    Invoke-McpForAgents -AgentList $AgentList -Step 'Install-JetbrainsFor'
+    Invoke-McpForAgents -AgentList $AgentList -Step 'Install-JetbrainsFor' -StepParams @{ Scope = $McpScope }
     if (Test-DesktopSelected -AgentList $AgentList) {
         Write-NpxNote -What "Claude Desktop's JetBrains MCP bridge"
     } elseif ($AgentList -contains 'codex' -and $script:JbTransport -eq 'sse') {
@@ -1434,20 +1523,17 @@ function Install-McpJetbrains {
     }
 }
 
-# The MCP subcommands always write the user config.
-function Assert-NoMcpScope {
-    param([string]$Subcommand)
-    if ($Scope) { Write-ErrAndExit "${Subcommand}: MCP servers are always registered in the user config; -Scope applies to skills only" }
-}
-
 function Invoke-CmdMcpJetbrains {
-    Assert-NoMcpScope -Subcommand 'mcp-jetbrains'
+    Assert-McpArgs -Subcommand 'mcp-jetbrains'
     $agentList = Resolve-AgentsCsv -Csv $Agents -Subcommand 'mcp-jetbrains'
-    Install-McpJetbrains -AgentList $agentList
+    $mcpScope = Resolve-Scope -Scope $Scope -Default 'local' -Subcommand 'mcp-jetbrains'
+    $script:McpKeyFiles = @()
+    Install-McpJetbrains -AgentList $agentList -McpScope $mcpScope
+    Write-McpFollowups -AgentList $agentList -McpScope $mcpScope
 }
 
 # =================================================================
-# MCP install - Context7 (always user level: the entry carries the API key)
+# MCP install - Context7
 # =================================================================
 
 # False for an empty key or one that would need escaping: the key is spliced
@@ -1458,28 +1544,29 @@ function Test-Context7Key {
 }
 
 function Install-Context7For {
-    param([string]$Agent, [string]$Key)
+    param([string]$Agent, [string]$Scope, [string]$Key)
     $url = $script:Context7Url
     Write-Info "[Context7 MCP] $(Get-AgentLabel -Agent $Agent)"
     switch ($Agent) {
         'claude' {
             try {
-                Write-McpServer -Agent $Agent -Name 'context7' -Entry $null `
+                Write-McpServer -Agent $Agent -Scope $Scope -Name 'context7' -Entry ([PSCustomObject][ordered]@{
+                    type = 'http'; url = $url; headers = [PSCustomObject]@{ Authorization = "Bearer $Key" } }) `
                     -CliArgs @('--scope', 'user', '--transport', 'http', 'context7', $url, '--header', "Authorization: Bearer $Key")
             } finally {
                 Write-ClaudeDesktopServer -Name 'context7' -Entry (New-Context7StdioEntry -Key $Key)
             }
         }
         'codex' {
-            Write-McpServer -Agent $Agent -Name 'context7' `
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'context7' `
                 -Entry @("url = `"$url`"", "http_headers = { Authorization = `"Bearer $Key`" }")
         }
         'opencode' {
-            Write-McpServer -Agent $Agent -Name 'context7' -Entry ([PSCustomObject][ordered]@{
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'context7' -Entry ([PSCustomObject][ordered]@{
                 type = 'remote'; url = $url; headers = [PSCustomObject]@{ Authorization = "Bearer $Key" }; enabled = $true })
         }
         default {
-            Write-McpServer -Agent $Agent -Name 'context7' -Entry (New-Context7StdioEntry -Key $Key)
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'context7' -Entry (New-Context7StdioEntry -Key $Key)
         }
     }
 }
@@ -1491,12 +1578,29 @@ function New-Context7StdioEntry {
         command = 'npx'; args = @('-y', '@upstash/context7-mcp'); env = [PSCustomObject]@{ CONTEXT7_API_KEY = $Key } }
 }
 
+# Registers Context7 for $AgentList at $McpScope with $Key, asking for it when
+# it is empty; 'skip' skips the step (Studio's MCP step has to pass a value).
 function Install-McpContext7 {
-    param([string[]]$AgentList, [string]$Key)
+    param([string[]]$AgentList, [string]$McpScope, [string]$Key)
+    Write-Info ''
+    if ($Key -ceq 'skip') {
+        Write-Info '[Context7 MCP] Skipped: no API key given.'
+        return
+    }
+    if (-not $Key) {
+        # Without a console (-NonInteractive) Read-Host throws: treat it as no key.
+        try { $Key = Read-Prompt -Message 'Context7 API key' -Default '' } catch { $Key = '' }
+        if (-not $Key) { Write-Err 'Context7 API key is required'; $script:McpFailed = $true; return }
+    }
+    if (-not (Test-Context7Key -Key $Key)) {
+        Write-Err "Context7 API key may contain only letters, digits, '.', '_' and '-'"
+        $script:McpFailed = $true
+        return
+    }
     # The entries carry the key: see Save-McpConfig.
     $script:McpPrivate = $true
     try {
-        Invoke-McpForAgents -AgentList $AgentList -Step 'Install-Context7For' -StepParams @{ Key = $Key }
+        Invoke-McpForAgents -AgentList $AgentList -Step 'Install-Context7For' -StepParams @{ Scope = $McpScope; Key = $Key }
     } finally {
         $script:McpPrivate = $false
     }
@@ -1508,67 +1612,27 @@ function Install-McpContext7 {
 }
 
 function Invoke-CmdMcpContext7 {
-    Assert-NoMcpScope -Subcommand 'mcp-context7'
+    Assert-McpArgs -Subcommand 'mcp-context7' -AllowKey
     $agentList = Resolve-AgentsCsv -Csv $Agents -Subcommand 'mcp-context7'
-    $apiKey = $Context7Key
-    if (-not $apiKey) {
-        $apiKey = Read-Prompt -Message 'Context7 API key' -Default ''
-        if (-not $apiKey) { Write-ErrAndExit 'Context7 API key is required' }
-    }
-    if (-not (Test-Context7Key -Key $apiKey)) {
-        Write-ErrAndExit "Context7 API key may contain only letters, digits, '.', '_' and '-'"
-    }
-    Install-McpContext7 -AgentList $agentList -Key $apiKey
+    $mcpScope = Resolve-Scope -Scope $Scope -Default 'local' -Subcommand 'mcp-context7'
+    $script:McpKeyFiles = @()
+    Install-McpContext7 -AgentList $agentList -McpScope $mcpScope -Key $Context7Key
+    Write-McpFollowups -AgentList $agentList -McpScope $mcpScope
 }
 
 # =================================================================
 # MCP install - Playwright
 # =================================================================
 
-# Earlier toolkit versions installed the playwright-cli skill into a global
-# store and linked it into the agent skill dirs (on Windows as junctions or
-# symlinks with absolute targets). The step now registers the MCP server
-# instead. Remove the shared store only after all global replacements.
-function Remove-LegacyPlaywrightSkills {
-    param([string[]]$RegisteredAgents)
-    $store = Join-Path $script:UserHome '.agents/.playwright'
-    if (-not (Test-Path -LiteralPath $store -PathType Container)) { return }
-    # The global store and even agent directories may be shared by all agents.
-    foreach ($agent in $script:AllAgents) {
-        if ($RegisteredAgents -notcontains $agent) { return }
-    }
-    foreach ($rel in '.claude/skills', '.agents/skills', '.junie/skills') {
-        $dir = Join-Path $script:UserHome $rel
-        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
-        foreach ($item in Get-ChildItem -LiteralPath $dir -Force) {
-            if (-not $item.LinkType) { continue }
-            # Only links into the store: ../.playwright/skills/X from
-            # ~/.agents/skills, .../.agents/.playwright/skills/X elsewhere.
-            $target = [string](@($item.Target) | Select-Object -First 1)
-            if ($target -notmatch '^(?:\.\.[\\/]|.*[\\/]\.agents[\\/])\.playwright[\\/]skills[\\/].') { continue }
-            Remove-Link -Item $item
-            Write-Info "  Removed old playwright-cli skill link $($item.FullName)"
-        }
-    }
-    # A store that cannot be removed is reported, not a reason to stop.
-    try {
-        $storeItem = Get-Item -LiteralPath $store -Force
-        if ($storeItem.LinkType) { Remove-Link -Item $storeItem }
-        else { Remove-Item -LiteralPath $store -Recurse -Force }
-        Write-Info "  Removed old playwright-cli skills store $store"
-    } catch {
-        Write-Err "cannot fully remove the old playwright-cli skills store $store"
-    }
-}
-
 function Install-PlaywrightFor {
-    param([string]$Agent)
+    param([string]$Agent, [string]$Scope)
     $pkg = $script:PlaywrightMcpPkg
     Write-Info "[Playwright MCP] $(Get-AgentLabel -Agent $Agent)"
     switch ($Agent) {
         'claude' {
             try {
-                Write-McpServer -Agent $Agent -Name 'playwright' `
+                Write-McpServer -Agent $Agent -Scope $Scope -Name 'playwright' `
+                    -Entry ([PSCustomObject][ordered]@{ type = 'stdio'; command = 'npx'; args = @('-y', $pkg) }) `
                     -CliArgs @('--scope', 'user', 'playwright', '--', 'npx', '-y', $pkg)
             } finally {
                 Write-ClaudeDesktopServer -Name 'playwright' -Entry ([PSCustomObject][ordered]@{ command = 'npx'; args = @('-y', $pkg) })
@@ -1576,74 +1640,93 @@ function Install-PlaywrightFor {
         }
         'codex' {
             # The first npx download can outlast Codex's default startup timeout.
-            Write-McpServer -Agent $Agent -Name 'playwright' `
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'playwright' `
                 -Entry @('command = "npx"', "args = [`"-y`", `"$pkg`"]", 'startup_timeout_sec = 60')
         }
         'opencode' {
-            Write-McpServer -Agent $Agent -Name 'playwright' `
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'playwright' `
                 -Entry ([PSCustomObject][ordered]@{ type = 'local'; command = @('npx', '-y', $pkg); enabled = $true })
         }
         default {
-            Write-McpServer -Agent $Agent -Name 'playwright' `
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'playwright' `
                 -Entry ([PSCustomObject][ordered]@{ command = 'npx'; args = @('-y', $pkg) })
         }
     }
 }
 
 function Install-McpPlaywright {
-    param([string[]]$AgentList)
-    Invoke-McpForAgents -AgentList $AgentList -Step 'Install-PlaywrightFor'
-    # Cleanup of an old install never fails the step.
-    if (-not $script:McpStepFailed) {
-        try {
-            Remove-LegacyPlaywrightSkills -RegisteredAgents $script:McpWrittenAgents
-        } catch {
-            Write-Err "cannot remove the old playwright-cli skill: $($_.Exception.Message)"
-        }
-    }
+    param([string[]]$AgentList, [string]$McpScope)
+    Write-Info ''
+    Invoke-McpForAgents -AgentList $AgentList -Step 'Install-PlaywrightFor' -StepParams @{ Scope = $McpScope }
     Write-NpxNote -What 'The Playwright MCP server'
 }
 
 function Invoke-CmdPlaywright {
-    Assert-NoMcpScope -Subcommand 'playwright'
+    Assert-McpArgs -Subcommand 'playwright'
     $agentList = Resolve-AgentsCsv -Csv $Agents -Subcommand 'playwright'
-    Install-McpPlaywright -AgentList $agentList
+    $mcpScope = Resolve-Scope -Scope $Scope -Default 'local' -Subcommand 'playwright'
+    $script:McpKeyFiles = @()
+    Install-McpPlaywright -AgentList $agentList -McpScope $mcpScope
+    Write-McpFollowups -AgentList $agentList -McpScope $mcpScope
+}
+
+# =================================================================
+# MCP install - several servers in one step (Studio's MCP step)
+# =================================================================
+
+function Invoke-McpServers {
+    param([string[]]$ServerList, [string[]]$AgentList, [string]$McpScope, [string]$Key)
+    $script:McpKeyFiles = @()
+    foreach ($server in $ServerList) {
+        switch ($server) {
+            'jetbrains'  { Install-McpJetbrains -AgentList $AgentList -McpScope $McpScope }
+            'context7'   { Install-McpContext7 -AgentList $AgentList -McpScope $McpScope -Key $Key }
+            'playwright' { Install-McpPlaywright -AgentList $AgentList -McpScope $McpScope }
+        }
+    }
+    Write-McpFollowups -AgentList $AgentList -McpScope $McpScope
+}
+
+function Invoke-CmdMcp {
+    Assert-McpArgs -Subcommand 'mcp' -AllowServers -AllowKey
+    $agentList = Resolve-AgentsCsv -Csv $Agents -Subcommand 'mcp'
+    $serverList = Resolve-Csv -Csv $Servers -Subcommand 'mcp' -Option '-Servers' -Valid $script:AllMcpServers
+    $mcpScope = Resolve-Scope -Scope $Scope -Default 'local' -Subcommand 'mcp'
+    Invoke-McpServers -ServerList $serverList -AgentList $agentList -McpScope $mcpScope -Key $Context7Key
 }
 
 # =================================================================
 # Wizard
 # =================================================================
 
-function Read-AgentChoice {
-    param(
-        [string]$Label,
-        [string[]]$Options,
-        [string]$Default = 'skip'
-    )
-    # Menu text must go to the host (Write-Host), not the success stream. The caller
-    # captures this function's return value ($sel = Read-AgentChoice ...); Write-Output
-    # lines would be swallowed into $sel and never shown instead of printed.
+# Returns the options of $Options that the answer picks (shown through label
+# script block $Label), in $Options' order, or @('skip'). The answer is a (all),
+# s (skip) or option numbers separated by commas; $Default is the default answer.
+# Menu text goes to the host (Write-Host): the caller captures the return value.
+function Read-Choice {
+    param([string]$Title, [string[]]$Options, [scriptblock]$Label, [string]$Default = 'skip')
     Write-Host ''
-    Write-Host $Label
-    Write-Host '  a) For all agents'
-    $i = 1
-    foreach ($opt in $Options) {
-        Write-Host ("  {0}) {1}" -f $i, (Get-AgentLabel -Agent $opt))
-        $i++
+    Write-Host $Title
+    Write-Host '  a) All'
+    for ($i = 0; $i -lt $Options.Count; $i++) {
+        Write-Host ("  {0}) {1}" -f ($i + 1), (& $Label $Options[$i]))
     }
     Write-Host '  s) Skip'
-
-    $answer = Read-Prompt -Message 'Choice' -Default $Default
+    $answer = Read-Prompt -Message 'Choice (a, s, or numbers like 1,3)' -Default $Default
     if ($answer -match '^(s|skip)$') { return @('skip') }
     if ($answer -match '^(a|all)$') { return $Options }
-    if ($answer -notmatch '^\d+$') {
+    $picked = @()
+    if ($answer -match '^[\d,\s]+$') {
+        $numbers = @($answer -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        for ($i = 0; $i -lt $Options.Count; $i++) {
+            if ($numbers -contains [string]($i + 1)) { $picked += $Options[$i] }
+        }
+    }
+    if ($picked.Count -eq 0) {
         Write-Host "Unrecognized choice '$answer'. Skipping."
         return @('skip')
     }
-    $num = [int]$answer
-    if ($num -ge 1 -and $num -le $Options.Length) { return @($Options[$num - 1]) }
-    Write-Host "Unrecognized choice '$answer'. Skipping."
-    return @('skip')
+    return $picked
 }
 
 function Invoke-Wizard {
@@ -1653,92 +1736,76 @@ function Invoke-Wizard {
     $summaryStrings = @{
         skills     = 'skipped'
         guidelines = 'skipped'
-        jetbrains  = 'skipped'
-        context7   = 'skipped'
-        playwright = 'skipped'
+        mcp        = 'skipped'
     }
+    $resolvedScope = 'local'
+
+    # Each Read-Choice result is wrapped in @() so a one-element return stays an
+    # array: PowerShell unwraps it, and $sel[0] would index its first character.
 
     # Step 1: skills
-    # Each Read-AgentChoice result is wrapped in @() so a single-agent or 'skip' return
-    # stays an array; PowerShell unwraps one-element arrays, which would turn $sel into a
-    # bare string and make $sel[0] index its first character instead of the value.
-    $sel = @(Read-AgentChoice -Label '[1/5] Install Jmix skills?' -Options $script:AllAgents -Default 'all')
+    $sel = @(Read-Choice -Title '[1/3] Install Jmix skills into:' -Options $script:AllConventions `
+        -Label { param($o) Get-SkillsLabel -Convention $o } -Default 'all')
     if ($sel[0] -ne 'skip') {
         $scopeAnswer = Read-Prompt -Message 'Install scope: (l)ocal project dir or (g)lobal user home' -Default 'l'
-        $resolvedScope = if ($scopeAnswer -match '^(g|global)$') { 'global' } else { 'local' }
+        if ($scopeAnswer -match '^(g|global)$') { $resolvedScope = 'global' }
         Initialize-Tarball
         try {
             if ($resolvedScope -eq 'local') {
                 $wizRoot = (Get-Location).Path
                 $wizStoreDir = Join-Path $wizRoot '.skills'
             } else {
-                $wizRoot = $HOME
-                $wizStoreDir = Join-Path $HOME (Join-Path '.agents/.jmix/skills' $script:ResolvedVersionDir)
+                $wizRoot = $script:UserHome
+                $wizStoreDir = Join-Path $script:UserHome (Join-Path '.agents/.jmix/skills' $script:ResolvedVersionDir)
             }
             Install-SkillsToStore -StoreDir $wizStoreDir
             Write-Info ''
-            Write-Info 'Linking agent skill dirs to the store'
-            $wizSeen = @{}
-            foreach ($a in $sel) {
-                $rel = Get-AgentSymlinkRel -Agent $a
-                if ($wizSeen.ContainsKey($rel)) { continue }
-                $wizSeen[$rel] = $true
-                New-SkillSymlinks -AgentDir (Join-Path $wizRoot $rel) -StoreDir $wizStoreDir
+            Write-Info 'Linking store skills into agent dirs'
+            foreach ($c in $sel) {
+                New-SkillSymlinks -AgentDir (Join-Path $wizRoot (Get-ConventionSkillsDir -Convention $c)) -StoreDir $wizStoreDir
             }
-            Remove-OldJunieSkillLinks -Root $wizRoot -Agents $sel
+            Remove-OldJunieSkillLinks -Root $wizRoot -Conventions $sel
         } catch { Write-Info "error: $($_.Exception.Message)" }
         $summaryStrings.skills = "$($sel -join ', ') ($resolvedScope)"
     }
 
     # Step 2: agents-md
-    $sel = @(Read-AgentChoice -Label '[2/5] Merge Jmix coding guidelines into this directory?' -Options $script:AllAgents -Default 'all')
+    $sel = @(Read-Choice -Title '[2/3] Merge Jmix coding guidelines in this directory into:' -Options $script:AllConventions `
+        -Label { param($o) Get-GuidelinesLabel -Convention $o } -Default 'all')
     if ($sel[0] -ne 'skip') {
         if (Read-YesNo -Message "Target directory: $((Get-Location).Path). Proceed?" -Default 'y') {
             Initialize-Tarball
-            Install-GuidelinesBlocks -Agents $sel -Lenient
+            Install-GuidelinesBlocks -ConventionList $sel -Lenient
             $summaryStrings.guidelines = $sel -join ', '
         } else {
             $summaryStrings.guidelines = 'skipped (declined)'
         }
     }
 
-    # Steps 3-5 reuse the subcommand steps; a failed agent there is reported
-    # and the wizard moves on.
-
-    # Step 3: JetBrains MCP
-    $sel = @(Read-AgentChoice -Label '[3/5] Connect agent to IntelliJ IDEA via JetBrains MCP?' -Options @($script:AllAgents | Where-Object { $_ -ne 'junie' }))
-    if ($sel[0] -ne 'skip') {
-        Install-McpJetbrains -AgentList $sel
-        $summaryStrings.jetbrains = "$($sel -join ', ') (user level)"
+    # Step 3: MCP servers; a failed agent there is reported and the wizard moves
+    # on. The scope defaults to the one chosen for the skills.
+    $serverList = @(Read-Choice -Title '[3/3] Connect agents to MCP servers:' -Options $script:AllMcpServers `
+        -Label { param($o) Get-ServerLabel -Server $o })
+    $agentList = @('skip')
+    if ($serverList[0] -ne 'skip') {
+        $agentList = @(Read-Choice -Title 'For the agents:' -Options $script:AllAgents `
+            -Label { param($o) Get-AgentLabel -Agent $o } -Default 'all')
     }
-
-    # Step 4: Context7 MCP
-    $sel = @(Read-AgentChoice -Label '[4/5] Connect agent to library docs via Context7 MCP?' -Options $script:AllAgents)
-    if ($sel[0] -ne 'skip') {
-        $apiKey = Read-Prompt -Message 'Context7 API key' -Default ''
-        if (Test-Context7Key -Key $apiKey) {
-            Install-McpContext7 -AgentList $sel -Key $apiKey
-            $summaryStrings.context7 = "$($sel -join ', ') (user level)"
-        } else {
-            Write-Info 'API key missing or malformed, skipping Context7 setup.'
-            $summaryStrings.context7 = 'skipped (no key)'
-        }
-    }
-
-    # Step 5: Playwright MCP
-    $sel = @(Read-AgentChoice -Label '[5/5] Connect agent to a browser via Playwright MCP?' -Options $script:AllAgents)
-    if ($sel[0] -ne 'skip') {
-        Install-McpPlaywright -AgentList $sel
-        $summaryStrings.playwright = "$($sel -join ', ') (user level)"
+    if ($agentList[0] -ne 'skip') {
+        $answer = Read-Prompt -Message 'Register in: (l)ocal project config or (g)lobal user config' -Default $resolvedScope.Substring(0, 1)
+        $mcpScope = if ($answer -match '^(g|global)$') { 'global' } else { 'local' }
+        $key = ''
+        if ($serverList -contains 'context7') { $key = Read-Prompt -Message 'Context7 API key (empty to skip Context7)' -Default '' }
+        if (-not $key) { $key = 'skip' }
+        Invoke-McpServers -ServerList $serverList -AgentList $agentList -McpScope $mcpScope -Key $key
+        $summaryStrings.mcp = "$($serverList -join ', ') for $($agentList -join ', ') ($mcpScope)"
     }
 
     Write-Info ''
     Write-Info '=== Setup complete ==='
     Write-Info "  Skills:      $($summaryStrings.skills)"
     Write-Info "  Guidelines:  $($summaryStrings.guidelines)"
-    Write-Info "  JetBrains:   $($summaryStrings.jetbrains)"
-    Write-Info "  Context7:    $($summaryStrings.context7)"
-    Write-Info "  Playwright:  $($summaryStrings.playwright)"
+    Write-Info "  MCP:         $($summaryStrings.mcp)"
 }
 
 # =================================================================
@@ -1761,6 +1828,7 @@ try {
         ''               { Invoke-Wizard }
         'skills'         { Invoke-CmdSkills }
         'agents-md'      { Invoke-CmdAgentsMd }
+        'mcp'            { Invoke-CmdMcp }
         'mcp-jetbrains'  { Invoke-CmdMcpJetbrains }
         'mcp-context7'   { Invoke-CmdMcpContext7 }
         'playwright'     { Invoke-CmdPlaywright }
