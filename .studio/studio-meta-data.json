@@ -101,7 +101,7 @@
           },
           {
             "id": "mcpServers",
-            "label": "🔌 Servers",
+            "label": "🔌 MCP Servers:",
             "type": "options",
             "multi": true,
             "choices": [
