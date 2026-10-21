@@ -5,7 +5,7 @@
       {
         "id": "skills",
         "title": "Skills",
-        "message": "🛠️ Install Jmix <code>skills</code> for the selected agents in the preferred scope (local/global). <br>⏭️ Click <i>Skip</i> to opt out.",
+        "message": "🛠️ Install Jmix <code>skills</code> into the selected skills folders, in the project or the user home. <br>⏭️ Click <i>Skip</i> to opt out.",
         "inputs": [
           {
             "id": "skillsScope",
@@ -24,128 +24,107 @@
             ]
           },
           {
-            "id": "skillsAgents",
-            "label": "🤖 Agents",
+            "id": "skillsConventions",
+            "label": "📁 Skills folders",
             "type": "options",
             "multi": true,
             "choices": [
               {
+                "value": "agents",
+                "label": ".agents (Codex, OpenCode, etc)",
+                "default": true
+              },
+              {
                 "value": "claude",
-                "label": "Claude Code",
-                "default": true
-              },
-              {
-                "value": "codex",
-                "label": "Codex",
-                "default": true
-              },
-              {
-                "value": "opencode",
-                "label": "OpenCode",
-                "default": true
-              },
-              {
-                "value": "junie",
-                "label": "Junie",
+                "label": ".claude",
                 "default": true
               }
             ]
           }
         ],
         "command": {
-          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) skills -ContentRef \"${guidelinesBranch}\" -Agents \"${skillsAgents}\" -Scope \"${skillsScope}\"",
-          "macos": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- skills --content-ref \"${guidelinesBranch}\" --agents \"${skillsAgents}\" --scope \"${skillsScope}\"",
-          "linux": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- skills --content-ref \"${guidelinesBranch}\" --agents \"${skillsAgents}\" --scope \"${skillsScope}\""
+          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) skills -ContentRef \"${guidelinesBranch}\" -Conventions \"${skillsConventions}\" -Scope \"${skillsScope}\"",
+          "macos": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- skills --content-ref \"${guidelinesBranch}\" --conventions \"${skillsConventions}\" --scope \"${skillsScope}\"",
+          "linux": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- skills --content-ref \"${guidelinesBranch}\" --conventions \"${skillsConventions}\" --scope \"${skillsScope}\""
         }
       },
       {
         "id": "guidelines",
         "title": "Guidelines",
-        "message": "📘 Add a few lines to <code>CLAUDE.md</code> / <code>AGENTS.md</code> / <code>guidelines.md</code> that point the agent at the Jmix skills. <br>✍️ Your own instructions are kept — the lines are merged in. A guidelines file installed by an older version of this toolkit is replaced instead. Changed user or legacy files are backed up. If <code>CLAUDE.md</code> imports <code>@AGENTS.md</code>, it is left untouched after <code>AGENTS.md</code> is updated. <br>⏭️ Click <i>Skip</i> to leave the project as is; the Jmix skills are then installed but nothing routes the agent to them.",
+        "message": "📘 Add a few lines to the selected guidelines files that point the agents at the Jmix skills. <br>✍️ Your own instructions are kept — the lines are merged in. A guidelines file installed by an older version of this toolkit is replaced instead. Changed user or legacy files are backed up. If <code>CLAUDE.md</code> imports <code>@AGENTS.md</code>, it is left untouched after <code>AGENTS.md</code> is updated. <br>⏭️ Click <i>Skip</i> to leave the project as is; the Jmix skills are then installed but nothing routes the agents to them.",
         "inputs": [
           {
-            "id": "guidelinesAgents",
-            "label": "\uD83E\uDD16 Agents",
+            "id": "guidelinesConventions",
+            "label": "📄 Guidelines files",
             "type": "options",
             "multi": true,
             "choices": [
               {
+                "value": "agents",
+                "label": "AGENTS.md (Codex, OpenCode, etc)",
+                "default": true
+              },
+              {
                 "value": "claude",
-                "label": "Claude Code",
-                "default": true
-              },
-              {
-                "value": "codex",
-                "label": "Codex",
-                "default": true
-              },
-              {
-                "value": "opencode",
-                "label": "OpenCode",
-                "default": true
-              },
-              {
-                "value": "junie",
-                "label": "Junie",
+                "label": "CLAUDE.md",
                 "default": true
               }
             ]
           }
         ],
         "command": {
-          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) agents-md -ContentRef \"${guidelinesBranch}\" -Agents \"${guidelinesAgents}\"",
-          "macos": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- agents-md --content-ref \"${guidelinesBranch}\" --agents \"${guidelinesAgents}\"",
-          "linux": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- agents-md --content-ref \"${guidelinesBranch}\" --agents \"${guidelinesAgents}\""
+          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) agents-md -ContentRef \"${guidelinesBranch}\" -Conventions \"${guidelinesConventions}\"",
+          "macos": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- agents-md --content-ref \"${guidelinesBranch}\" --conventions \"${guidelinesConventions}\"",
+          "linux": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- agents-md --content-ref \"${guidelinesBranch}\" --conventions \"${guidelinesConventions}\""
         }
       },
       {
-        "id": "jetbrainsMcp",
-        "title": "JetBrains MCP",
-        "message": "🔌 Register the <code>JetBrains MCP</code> server with the selected agents. <br>⏭️ Click <i>Skip</i> to opt out.",
+        "id": "mcp",
+        "title": "MCP servers",
+        "message": "🔌 Connect the agents to MCP servers:<br>🧩 <b>JetBrains</b>: enable the MCP server in IntelliJ IDEA (<i>Settings | Tools | MCP Server</i>).<br>📚 <b>Context7</b>: get a key on <a href=\"https://context7.com\" target=\"_blank\">context7.com</a>. With <i>Local</i>, it is saved in the project files: keep them out of Git.<br>🎭 <b>Playwright</b>: needs Node.js 20+.<br>⏭️ Click <i>Skip</i> to opt out.",
         "inputs": [
           {
-            "id": "jetbrainsMcpAgents",
-            "label": "\uD83E\uDD16 Agents",
+            "id": "mcpScope",
+            "label": "Scope",
+            "type": "options",
+            "choices": [
+              {
+                "value": "local",
+                "label": "Local (project files)",
+                "default": true
+              },
+              {
+                "value": "global",
+                "label": "Global (user config)"
+              }
+            ]
+          },
+          {
+            "id": "mcpServers",
+            "label": "🔌 MCP Servers:",
             "type": "options",
             "multi": true,
             "choices": [
               {
-                "value": "claude",
-                "label": "Claude Code",
+                "value": "jetbrains",
+                "label": "JetBrains",
                 "default": true
               },
               {
-                "value": "codex",
-                "label": "Codex",
+                "value": "context7",
+                "label": "Context7",
                 "default": true
               },
               {
-                "value": "opencode",
-                "label": "OpenCode",
-                "default": true
-              },
-              {
-                "value": "junie",
-                "label": "Junie",
+                "value": "playwright",
+                "label": "Playwright",
                 "default": true
               }
             ]
-          }
-        ],
-        "command": {
-          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) mcp-jetbrains -ContentRef \"${guidelinesBranch}\" -Agents \"${jetbrainsMcpAgents}\"",
-          "macos": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- mcp-jetbrains --content-ref \"${guidelinesBranch}\" --agents \"${jetbrainsMcpAgents}\"",
-          "linux": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- mcp-jetbrains --content-ref \"${guidelinesBranch}\" --agents \"${jetbrainsMcpAgents}\""
-        }
-      },
-      {
-        "id": "context7",
-        "title": "Context7 MCP",
-        "message": "\uD83D\uDD0C Register the <code>Context7 MCP</code> server with the selected agents. <br>\uD83C\uDF10 You can get key on <a href=\"https://context7.com\" target=\"_blank\">context7.com</a>. Your key is sent to the MCP CLI and never stored by Studio. <br>⏭\uFE0F Click <i>Skip</i> to opt out.",
-        "inputs": [
+          },
           {
-            "id": "context7Agents",
-            "label": "\uD83E\uDD16 Agents",
+            "id": "mcpAgents",
+            "label": "🤖 Agents",
             "type": "options",
             "multi": true,
             "choices": [
@@ -173,57 +152,18 @@
           },
           {
             "id": "context7Key",
-            "label": "\uD83D\uDD11 API key",
+            "label": "🔑 Context7 API key",
             "type": "userInput",
-            "regex": "^.{8,}$",
-            "errorMessage": "Context7 API key must be at least 8 characters.",
-            "placeholder": "ctx7_..."
+            "regex": "^(skip|[A-Za-z0-9._-]{8,})$",
+            "errorMessage": "Enter a Context7 API key (at least 8 characters: letters, digits, '.', '_' or '-'), or keep skip.",
+            "placeholder": "ctx7sk-...",
+            "default": "skip"
           }
         ],
         "command": {
-          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) mcp-context7 -ContentRef \"${guidelinesBranch}\" -Agents \"${context7Agents}\" -Context7Key \"${context7Key}\"",
-          "macos": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- mcp-context7 --content-ref \"${guidelinesBranch}\" --agents \"${context7Agents}\" --context7-key \"${context7Key}\"",
-          "linux": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- mcp-context7 --content-ref \"${guidelinesBranch}\" --agents \"${context7Agents}\" --context7-key \"${context7Key}\""
-        }
-      },
-      {
-        "id": "playwright",
-        "title": "Playwright",
-        "message": "\uD83D\uDD0C Install <code>Playwright</code> testing skills for the selected agents. <br>📦 Requires <b>npm</b> to be installed on PATH. <br>⏭️ Click <i>Skip</i> to opt out.",
-        "inputs": [
-          {
-            "id": "playwrightAgents",
-            "label": "\uD83E\uDD16 Agents",
-            "type": "options",
-            "multi": true,
-            "choices": [
-              {
-                "value": "claude",
-                "label": "Claude Code",
-                "default": true
-              },
-              {
-                "value": "codex",
-                "label": "Codex",
-                "default": true
-              },
-              {
-                "value": "opencode",
-                "label": "OpenCode",
-                "default": true
-              },
-              {
-                "value": "junie",
-                "label": "Junie",
-                "default": true
-              }
-            ]
-          }
-        ],
-        "command": {
-          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) playwright -ContentRef \"${guidelinesBranch}\" -Agents \"${playwrightAgents}\"",
-          "macos": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- playwright --content-ref \"${guidelinesBranch}\" --agents \"${playwrightAgents}\"",
-          "linux": "curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- playwright --content-ref \"${guidelinesBranch}\" --agents \"${playwrightAgents}\""
+          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) mcp -ContentRef \"${guidelinesBranch}\" -Servers \"${mcpServers}\" -Agents \"${mcpAgents}\" -Scope \"${mcpScope}\" -Context7Key \"${context7Key}\"",
+          "macos": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- mcp --content-ref \"${guidelinesBranch}\" --servers \"${mcpServers}\" --agents \"${mcpAgents}\" --scope \"${mcpScope}\" --context7-key \"${context7Key}\"",
+          "linux": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- mcp --content-ref \"${guidelinesBranch}\" --servers \"${mcpServers}\" --agents \"${mcpAgents}\" --scope \"${mcpScope}\" --context7-key \"${context7Key}\""
         }
       }
     ]
