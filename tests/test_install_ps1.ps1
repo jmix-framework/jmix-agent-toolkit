@@ -94,6 +94,25 @@ function Invoke-InstallerResult {
     $out = & $pwshPath -NoProfile -File $install @InstallerArgs 2>&1 | Out-String
     return [PSCustomObject]@{ Code = $LASTEXITCODE; Output = $out }
 }
+# Run install.ps1 in a child process; return its exit code and its stderr alone.
+function Invoke-InstallerStderr {
+    param([string[]]$InstallerArgs)
+    $errFile = Join-Path $work 'stderr.txt'
+    & $pwshPath -NoProfile -File $install @InstallerArgs 2> $errFile > $null
+    return [PSCustomObject]@{ Code = $LASTEXITCODE; Stderr = [System.IO.File]::ReadAllText($errFile) }
+}
+# Run install.ps1 in a child process the way Studio does, as a script block made
+# from its text; $ArgText is PowerShell source (e.g. "skills -Claude:`$false").
+# Returns the exit code.
+function Invoke-InstallerScriptBlock {
+    param([string]$ArgText)
+    & $pwshPath -NoProfile -Command "& ([scriptblock]::Create([System.IO.File]::ReadAllText('$install'))) $ArgText" *> $null
+    return $LASTEXITCODE
+}
+
+$helpText = [regex]::Match([System.IO.File]::ReadAllText($install), '(?s)<#(.*?)#>').Groups[1].Value
+Check ($helpText -match '\.PARAMETER Claude\b' -and $helpText -notmatch '-Conventions|\.PARAMETER Conventions\b') `
+    'help: documents -Claude and leaves the compatibility aliases undocumented'
 
 # ---------------------------------------------------------------------------
 # 1. agents-md (project guidelines block)
@@ -107,7 +126,7 @@ $agentsMd   = Join-Path $proj 'AGENTS.md'
 $junieDir   = Join-Path $proj '.junie'
 
 # 1a. No guidelines file yet -> the file is created holding exactly the block.
-Check ((Invoke-Installer @('agents-md', '-Agents', 'claude,codex,opencode,junie', '-Source', $Source)) -eq 0) `
+Check ((Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)) -eq 0) `
     'agents-md exits 0'
 Check (Test-Path $claudeMd)                                'agents-md: CLAUDE.md'
 Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
@@ -118,26 +137,52 @@ Check (([System.IO.File]::ReadAllText($agentsMd)) -eq $blockText) `
 Check (-not (Test-Path (Join-Path $junieDir 'guidelines.md'))) `
     'agents-md: Junie got no .junie/guidelines.md it would not read'
 
-# 1a2. -Conventions names the files instead of the agents: agents (AGENTS.md)
-#      and claude (CLAUDE.md); an unknown one is refused.
+# 1a2. AGENTS.md always gets the block; -Claude adds CLAUDE.md. Studio passes
+#      -Claude:$true / -Claude:$false, here through -File and as a script block.
 Remove-Item -LiteralPath $claudeMd, $agentsMd -Force
-$null = Invoke-Installer @('agents-md', '-Conventions', 'agents', '-Source', $Source)
-Check ((Test-Path $agentsMd) -and -not (Test-Path $claudeMd)) 'agents-md: -Conventions agents writes AGENTS.md alone'
-$null = Invoke-Installer @('agents-md', '-Conventions', 'claude,agents', '-Source', $Source)
-Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText -and ([System.IO.File]::ReadAllText($agentsMd)) -eq $blockText) `
-    'agents-md: -Conventions claude,agents writes both files'
-# Values are case-insensitive, as in install.sh, the agent names too.
+Check ((Invoke-Installer @('agents-md', '-Source', $Source)) -eq 0 -and
+       ([System.IO.File]::ReadAllText($agentsMd)) -eq $blockText -and -not (Test-Path $claudeMd)) `
+    'agents-md: without -Claude writes AGENTS.md alone'
+$null = Invoke-Installer @('agents-md', '-Claude:$false', '-Source', $Source)
+Check (-not (Test-Path $claudeMd)) 'agents-md: -Claude:$false writes no CLAUDE.md'
+$null = Invoke-Installer @('agents-md', '-Claude:$true', '-Source', $Source)
+Check ((Test-Path $claudeMd) -and ([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) 'agents-md: -Claude:$true writes CLAUDE.md'
 Remove-Item -LiteralPath $claudeMd, $agentsMd -Force
-$null = Invoke-Installer @('agents-md', '-Conventions', 'Claude,AGENTS', '-Source', $Source)
-Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText -and ([System.IO.File]::ReadAllText($agentsMd)) -eq $blockText) `
-    'agents-md: -Conventions is case-insensitive'
-Check ((Invoke-Installer @('agents-md', '-Agents', 'Codex', '-Source', $Source)) -eq 0) 'agents-md: -Agents Codex means agents'
-Check ((Invoke-Installer @('agents-md', '-Conventions', 'cursor', '-Source', $Source)) -ne 0) 'agents-md: an unknown convention fails'
+Check ((Invoke-InstallerScriptBlock "agents-md -Source '$Source' -Claude:`$false") -eq 0 -and
+       (Test-Path $agentsMd) -and -not (Test-Path $claudeMd)) 'agents-md: -Claude:$false as a script block writes AGENTS.md alone'
+Check ((Invoke-InstallerScriptBlock "agents-md -Source '$Source' -Claude:`$true") -eq 0 -and (Test-Path $claudeMd)) `
+    'agents-md: -Claude:$true as a script block writes CLAUDE.md too'
+
+# 1a3. The hidden aliases of earlier releases, -Conventions / -Agents CSV:
+#      claude there means -Claude, the other values change nothing, an explicit
+#      -Claude wins, and nothing goes to stderr (Studio <= 3.0.4 fails a step on
+#      it). Released jmix-cli runs the first call exactly.
+Remove-Item -LiteralPath $claudeMd, $agentsMd -Force
+$r = Invoke-InstallerStderr @('agents-md', '-Agents', 'claude,codex,opencode,junie', '-Source', $Source)
+Check ($r.Code -eq 0 -and $r.Stderr -eq '' -and ([System.IO.File]::ReadAllText($agentsMd)) -eq $blockText -and
+       ([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
+    'agents-md: the jmix-cli call (-Agents claude,codex,opencode,junie) writes both files, nothing on stderr'
+foreach ($case in @(
+        @{ Args = @('-Conventions', 'agents'); Claude = $false },
+        @{ Args = @('-Conventions', 'claude'); Claude = $true },
+        # Case-insensitive, as in install.sh, the agent names too.
+        @{ Args = @('-Conventions', 'Claude,AGENTS'); Claude = $true },
+        @{ Args = @('-Agents', 'Codex'); Claude = $false },
+        @{ Args = @('-Claude:$false', '-Conventions', 'claude'); Claude = $false },
+        @{ Args = @('-Conventions', 'agents', '-Claude'); Claude = $true })) {
+    Remove-Item -LiteralPath $claudeMd, $agentsMd -Force -ErrorAction SilentlyContinue
+    $r = Invoke-InstallerStderr (@('agents-md', '-Source', $Source) + $case.Args)
+    Check ($r.Code -eq 0 -and $r.Stderr -eq '' -and (Test-Path $agentsMd) -and (Test-Path $claudeMd) -eq $case.Claude) `
+        "agents-md: $($case.Args -join ' ') writes $(if ($case.Claude) { 'CLAUDE.md too' } else { 'AGENTS.md alone' })"
+}
+foreach ($bad in @(@('-Conventions', 'cursor'), @('-Agents', 'claude-desktop'), @('-Conventions', ''))) {
+    Check ((Invoke-Installer (@('agents-md', '-Source', $Source) + $bad)) -ne 0) "agents-md: -$($bad[0].TrimStart('-')) '$($bad[1])' fails"
+}
 
 # 1b. An up-to-date file is left completely alone: no rewrite, no backup (issue #22).
 $mtimeBefore = (Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc
 Start-Sleep -Seconds 1
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 Check (-not (Test-Path "$claudeMd.bak")) 'agents-md: unchanged file not backed up'
 Check ((Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc -eq $mtimeBefore) `
     'agents-md: unchanged file not rewritten'
@@ -150,11 +195,11 @@ $crlfBlock = [regex]::Replace($blockText, '\r?\n', "`r`n")
 [System.IO.File]::WriteAllText((Join-Path $crlfContent 'guidelines-block.md'), $crlfBlock,
     (New-Object System.Text.UTF8Encoding($false)))
 Remove-Item -LiteralPath $claudeMd -Force
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $crlfSource)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $crlfSource)
 $crlfHashBefore = (Get-FileHash -LiteralPath $claudeMd -Algorithm SHA256).Hash
 (Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc = [datetime]'2001-01-01T00:00:00Z'
 $crlfMtimeBefore = (Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $crlfSource)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $crlfSource)
 Check ((Get-FileHash -LiteralPath $claudeMd -Algorithm SHA256).Hash -eq $crlfHashBefore) `
     'agents-md: unchanged CRLF block bytes preserved'
 Check ((Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc -eq $crlfMtimeBefore) `
@@ -173,7 +218,7 @@ Use these instructions.
 
 - Persistent entity: create an entity
 "@
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
     'agents-md: legacy guidelines replaced by the block (Agent Instructions + Skill routing)'
 Check ((Get-Content -Raw "$claudeMd.bak") -match '# Agent Instructions') `
@@ -188,7 +233,7 @@ Set-Content -LiteralPath $claudeMd -NoNewline -Value @"
 
 Read jmix-create-entity before adding an entity.
 "@
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
     'agents-md: legacy Coding Guidelines file replaced by the block (Coding Guidelines + skill name)'
 Check ((Get-Content -Raw "$claudeMd.bak") -match '# Coding Guidelines') `
@@ -203,7 +248,7 @@ Set-Content -LiteralPath $claudeMd -NoNewline -Value @"
 
 Always rebase before pushing.
 "@
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 $after = [System.IO.File]::ReadAllText($claudeMd)
 Check ($after -match 'Always rebase before pushing\.') `
     'agents-md: non-toolkit file with a lookalike heading not wrongly replaced'
@@ -213,7 +258,7 @@ Check ($after.Contains($beginMark)) 'agents-md: block appended to non-toolkit lo
 Remove-Item -LiteralPath $claudeMd -Force
 Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
 Set-Content -LiteralPath $claudeMd -Value "# My project`n`nRun the linter before every commit."
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 $after = [System.IO.File]::ReadAllText($claudeMd)
 Check ($after -match 'Run the linter before every commit\.') 'agents-md: developer content kept on append'
 Check ($after.Contains($beginMark))                          'agents-md: block appended'
@@ -226,7 +271,7 @@ Check (Test-Path "$claudeMd.bak")                            'agents-md: appende
 Remove-Item -LiteralPath $claudeMd -Force
 Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
 [System.IO.File]::WriteAllText($claudeMd, '')
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 $expected1d2 = "`n" + $blockText
 Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $expected1d2) `
     'agents-md: empty destination file appended to byte-for-byte'
@@ -237,10 +282,10 @@ Check (Test-Path "$claudeMd.bak") 'agents-md: empty destination file backed up'
 Remove-Item -LiteralPath $claudeMd -Force
 Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
 Set-Content -LiteralPath $claudeMd -Value "# My project`n`nRun the linter before every commit."
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 
 # 1e. Appending is idempotent: a second run replaces the region in place.
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 $after = [System.IO.File]::ReadAllText($claudeMd)
 $beginCount = ([regex]::Matches($after, [regex]::Escape($beginMark))).Count
 Check ($beginCount -eq 1)                                    'agents-md: block not appended twice'
@@ -254,7 +299,7 @@ Remove-Item -LiteralPath $claudeMd -Force
 Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
 [System.IO.File]::WriteAllText($claudeMd,
     "ABOVE-SENTINEL`n`n$beginMark`nstale block content`n$endMark`n`nBELOW-SENTINEL`n")
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 $after = [System.IO.File]::ReadAllText($claudeMd)
 Check ($after -match 'ABOVE-SENTINEL')          'agents-md: text above the block kept'
 Check ($after -match 'BELOW-SENTINEL')          'agents-md: text below the block kept'
@@ -265,7 +310,7 @@ Check (-not (Test-Path "$claudeMd.bak"))        'agents-md: in-place replacement
 Remove-Item -LiteralPath $claudeMd -Force
 Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
 [System.IO.File]::WriteAllText($claudeMd, "KEEP-ME`n$beginMark`nhalf a block`n")
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 $after = [System.IO.File]::ReadAllText($claudeMd)
 Check ($after -match 'KEEP-ME')          'agents-md: malformed-marker file not truncated'
 Check ($after -match 'half a block')     'agents-md: malformed-marker content kept'
@@ -273,7 +318,7 @@ Check ($after.Contains($endMark))        'agents-md: block appended to malformed
 
 # A later run must pair the appended block with its own nearest BEGIN marker;
 # the original orphan marker and the developer's content remain unmanaged.
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 $after = [System.IO.File]::ReadAllText($claudeMd)
 Check ($after -match 'KEEP-ME')      'agents-md: malformed-marker file not truncated on re-run'
 Check ($after -match 'half a block') 'agents-md: malformed-marker content kept on re-run'
@@ -285,7 +330,7 @@ Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
 $fence = '```'
 [System.IO.File]::WriteAllText($claudeMd,
     "# Project`n`n${fence}markdown`n$beginMark`n$fence`n`nTEAM-RULE-SENTINEL`n`n$beginMark`nstale block`n$endMark`n")
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 $after = [System.IO.File]::ReadAllText($claudeMd)
 Check ($after -match 'TEAM-RULE-SENTINEL') 'agents-md: text after a fenced BEGIN marker kept'
 Check ($after.Contains($fence))             'agents-md: fenced marker example not truncated'
@@ -294,7 +339,7 @@ Remove-Item -LiteralPath $claudeMd -Force
 Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
 [System.IO.File]::WriteAllText($claudeMd,
     "# Project`n`nKeep the ``$beginMark`` and ``$endMark`` lines.`n")
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 $after = [System.IO.File]::ReadAllText($claudeMd)
 Check ($after -match 'Keep the')                         'agents-md: inline marker prose kept'
 Check ($after -match [regex]::Escape("and ``$endMark``")) 'agents-md: inline END marker prose kept'
@@ -306,7 +351,7 @@ Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
 $prefixBytes = [byte[]](0x23,0x20,0x50,0x72,0x6f,0x6a,0x65,0x63,0x74,0x0a,0x0a,0x63,0x61,0x66,0xe9,0x0a,0x0a)
 $staleBytes = [System.Text.Encoding]::ASCII.GetBytes("$beginMark`nstale block`n$endMark`n")
 [System.IO.File]::WriteAllBytes($claudeMd, $prefixBytes + $staleBytes)
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 $afterBytes = [System.IO.File]::ReadAllBytes($claudeMd)
 Check ($afterBytes[14] -eq 0xe9) 'agents-md: non-UTF-8 developer byte preserved'
 Check (-not (($afterBytes | ForEach-Object { $_.ToString('X2') }) -join '').Contains('EFBFBD')) `
@@ -320,7 +365,7 @@ Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
 $cyrillic = -join [char[]](0x041F, 0x0440, 0x043E, 0x0435, 0x043A, 0x0442)
 [System.IO.File]::WriteAllText($claudeMd, "# $cyrillic`n`n$beginMark`nstale block`n$endMark`n",
     (New-Object System.Text.UTF8Encoding($true)))
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 $afterBytes = [System.IO.File]::ReadAllBytes($claudeMd)
 $after = [System.Text.Encoding]::UTF8.GetString($afterBytes, 3, $afterBytes.Length - 3)
 Check ($afterBytes[0] -eq 0xEF -and $afterBytes[1] -eq 0xBB -and $afterBytes[2] -eq 0xBF) `
@@ -335,7 +380,7 @@ Remove-Item -LiteralPath $claudeMd -Force
 Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
 [System.IO.File]::WriteAllText($claudeMd,
     "# Agent Instructions`r`n`r`nUse these instructions.`r`n`r`n## Skill routing`r`n`r`n- Persistent entity: create an entity`r`n")
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
     'agents-md: CRLF legacy guidelines replaced by the block'
 Check ((Get-Content -Raw "$claudeMd.bak") -match 'Agent Instructions') `
@@ -348,7 +393,7 @@ $bomChar = [char]0xFEFF
 [System.IO.File]::WriteAllText($claudeMd,
     "$bomChar# Coding Guidelines`n`nRead jmix-create-entity before adding an entity.`n",
     (New-Object System.Text.UTF8Encoding($false)))
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
     'agents-md: BOM legacy guidelines replaced by the block'
 Check ((Get-Content -Raw "$claudeMd.bak") -match 'Coding Guidelines') `
@@ -361,7 +406,7 @@ Remove-Item -LiteralPath $claudeMd -Force
 Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
 [System.IO.File]::WriteAllText($claudeMd,
     "ABOVE-SENTINEL`r`n`r`n$beginMark`r`nstale block content`r`n$endMark`r`n`r`nBELOW-SENTINEL`r`n")
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 $after = [System.IO.File]::ReadAllText($claudeMd)
 Check ($after.Contains("ABOVE-SENTINEL`r`n"))          'agents-md(CRLF): text above the block kept its CRLF ending'
 Check ($after.Contains("BELOW-SENTINEL`r`n"))          'agents-md(CRLF): text below the block kept its CRLF ending'
@@ -380,7 +425,7 @@ Use these instructions.
 
 - Persistent entity: create an entity
 "@
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
     "agents-md: '# Jmix Coding Guidelines' legacy file replaced by the block"
 Check ((Get-Content -Raw "$claudeMd.bak") -match 'Jmix Coding Guidelines') `
@@ -396,7 +441,7 @@ Set-Content -LiteralPath $claudeMd -NoNewline -Value @"
 
 See jmix-services for the service layer conventions.
 "@
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
     'agents-md: early-vintage file (jmix-services, no Skill routing) replaced'
 Check ((Get-Content -Raw "$claudeMd.bak") -match 'jmix-services') `
@@ -408,7 +453,7 @@ Check ((Get-Content -Raw "$claudeMd.bak") -match 'jmix-services') `
 Remove-Item -LiteralPath $claudeMd -Force
 Get-ChildItem -Path $proj -Filter 'CLAUDE.md.bak*' | Remove-Item -Force
 [System.IO.File]::WriteAllText($claudeMd, "# My project`n`nRun the linter before every commit.")
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 $expected1m = "# My project`n`nRun the linter before every commit.`n`n" + $blockText
 Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $expected1m) `
     'agents-md: no-trailing-newline destination appended to byte-for-byte'
@@ -425,52 +470,53 @@ function Reset-Guidelines {
 
 # 1n. A CLAUDE.md that @-imports AGENTS.md (Claude Code import syntax) is left
 #     alone when AGENTS.md carries the block: Claude sees it through the import,
-#     a second copy would only duplicate it. No rewrite, no backup -- and the
-#     AGENTS.md agents are processed first even though claude is listed first.
+#     a second copy would only duplicate it. No rewrite, no backup: AGENTS.md
+#     is processed first.
 Reset-Guidelines
 $importText = "# Team rules`n`nSee @AGENTS.md for the shared instructions.`n"
 [System.IO.File]::WriteAllText($claudeMd, $importText)
 [System.IO.File]::WriteAllText($agentsMd, "# Shared`n`nNever push to main.`n")
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude,codex', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 Check ((Get-Content -Raw $agentsMd) -match [regex]::Escape($beginMark)) 'agents-md: block merged into AGENTS.md'
 Check ((Get-Content -Raw $agentsMd) -match 'Never push to main\.')     'agents-md: AGENTS.md content kept'
 Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $importText) `
     'agents-md: CLAUDE.md that imports AGENTS.md not rewritten'
 Check (-not (Test-Path "$claudeMd.bak")) 'agents-md: CLAUDE.md that imports AGENTS.md not backed up'
 
-# 1n2. Same import, only claude selected later: AGENTS.md still carries the block
-#      from the earlier run, so CLAUDE.md is still skipped.
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+# 1n2. Same import, a re-run: AGENTS.md still carries the block, so CLAUDE.md is
+#      still skipped.
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $importText) `
-    'agents-md: importing CLAUDE.md still skipped on a claude-only re-run'
+    'agents-md: importing CLAUDE.md still skipped on a re-run'
 
-# 1o. Same import, but AGENTS.md has no block and only claude is selected: nothing
-#     else routes Claude to the skills, so the block goes into CLAUDE.md and
-#     AGENTS.md is not touched.
+# 1o. Same import, AGENTS.md without the block, no -Claude: AGENTS.md gets the
+#     block, which Claude sees through the import, and CLAUDE.md is not touched.
 Reset-Guidelines
 [System.IO.File]::WriteAllText($claudeMd, $importText)
 [System.IO.File]::WriteAllText($agentsMd, "# Shared`n`nNever push to main.`n")
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
-Check ((Get-Content -Raw $claudeMd) -match [regex]::Escape($beginMark)) `
-    'agents-md: block added to importing CLAUDE.md when AGENTS.md is unmanaged'
-Check ((Get-Content -Raw $claudeMd) -match 'See @AGENTS\.md') 'agents-md: import line kept'
-Check (-not ((Get-Content -Raw $agentsMd) -match [regex]::Escape($beginMark))) `
-    'agents-md: AGENTS.md untouched when only claude selected'
+$null = Invoke-Installer @('agents-md', '-Source', $Source)
+Check ((Get-Content -Raw $agentsMd) -match [regex]::Escape($beginMark)) `
+    'agents-md: without -Claude the block goes into AGENTS.md'
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $importText -and -not (Test-Path "$claudeMd.bak")) `
+    'agents-md: without -Claude CLAUDE.md is not touched'
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
+Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $importText -and -not (Test-Path "$claudeMd.bak")) `
+    'agents-md: a later -Claude run keeps the importing CLAUDE.md untouched'
 
-# 1p. CLAUDE.md symlinked to AGENTS.md (a common setup). Claude-only: the block is
-#     written through the link, which survives, and AGENTS.md gets it once. Both
-#     agents: the shared file is still touched once. Needs symlink privilege.
+# 1p. CLAUDE.md symlinked to AGENTS.md (a common setup): the block goes into
+#     AGENTS.md once, CLAUDE.md is then the same file and skipped, and the link
+#     survives. Needs symlink privilege.
 if (Test-SymlinkCapable) {
     Reset-Guidelines
     [System.IO.File]::WriteAllText($agentsMd, "# Shared`n`nNever push to main.`n")
     New-Item -ItemType SymbolicLink -Path $claudeMd -Target 'AGENTS.md' | Out-Null
-    $null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+    $null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
     Check ((Get-Item -LiteralPath $claudeMd -Force).LinkType -eq 'SymbolicLink') `
         'agents-md: symlinked CLAUDE.md survives'
     Check (([regex]::Matches((Get-Content -Raw $agentsMd), [regex]::Escape($beginMark))).Count -eq 1) `
-        'agents-md: block written once through the CLAUDE.md symlink'
+        'agents-md: block written once with a CLAUDE.md symlink'
     Check ((Get-Content -Raw $agentsMd) -match 'Never push to main\.') 'agents-md: linked AGENTS.md content kept'
-    $null = Invoke-Installer @('agents-md', '-Agents', 'claude,codex', '-Source', $Source)
+    $null = Invoke-Installer @('agents-md', '-Source', $Source)
     Check ((Get-Item -LiteralPath $claudeMd -Force).LinkType -eq 'SymbolicLink') `
         'agents-md: symlinked CLAUDE.md survives a re-run'
     Check (([regex]::Matches((Get-Content -Raw $agentsMd), [regex]::Escape($beginMark))).Count -eq 1) `
@@ -483,7 +529,7 @@ if (Test-SymlinkCapable) {
 #     not toolkit skills (jmix-flowui, a jmix-framework URL) is NOT legacy: append.
 Reset-Guidelines
 [System.IO.File]::WriteAllText($claudeMd, "# Coding Guidelines`n`nWe use jmix-flowui; see https://github.com/jmix-framework/jmix.`n")
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 Check ((Get-Content -Raw $claudeMd) -match 'We use jmix-flowui') `
     'agents-md: jmix-flowui / jmix-framework mentions are not a legacy signal'
 Check ((Get-Content -Raw $claudeMd) -match [regex]::Escape($beginMark)) 'agents-md: block appended to jmix-flowui file'
@@ -492,7 +538,7 @@ Check ((Get-Content -Raw $claudeMd) -match [regex]::Escape($beginMark)) 'agents-
 Reset-Guidelines
 [System.IO.File]::WriteAllText($claudeMd, "# Team rules`n`nKeep this.`n")
 $env:JMIX_EMIT_CHANGE_MARKERS = '1'
-$markerOutput = Invoke-InstallerCapture @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$markerOutput = Invoke-InstallerCapture @('agents-md', '-Claude', '-Source', $Source)
 Remove-Item Env:JMIX_EMIT_CHANGE_MARKERS
 Check ($markerOutput -match '@@JMIX_CHANGE@@\s+action=backed-up\s+type=file\s+path=') `
     'agents-md: backup emitted as a Studio change marker'
@@ -501,14 +547,14 @@ Check ($markerOutput -match '@@JMIX_CHANGE@@\s+action=backed-up\s+type=file\s+pa
 #     and MCP" section with no skill name left: still recognised as legacy.
 Reset-Guidelines
 [System.IO.File]::WriteAllText($claudeMd, "# Coding Guidelines`n`nThis file provides guidance to AI coding agents.`n`n## Skills and MCP`n`n- ALWAYS use the Skill tool.`n")
-$null = Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)
 Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
     "agents-md: early-vintage file recognised by its 'Skills and MCP' section"
 
 # 1s. A destination that exists but is not a file is an error, not a merge.
 Reset-Guidelines
 New-Item -ItemType Directory -Path $claudeMd | Out-Null
-Check ((Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', $Source)) -ne 0) `
+Check ((Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)) -ne 0) `
     'agents-md: a directory named CLAUDE.md fails'
 Remove-Item -LiteralPath $claudeMd -Force
 
@@ -519,7 +565,7 @@ Reset-Guidelines
 $bomBytes = [byte[]](0xEF, 0xBB, 0xBF)
 $sharedText = "# Shared`n`nNever push to main.`n"
 [System.IO.File]::WriteAllBytes($agentsMd, $bomBytes + [System.Text.Encoding]::UTF8.GetBytes($sharedText))
-$null = Invoke-Installer @('agents-md', '-Agents', 'codex', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Source', $Source)
 $afterBytes = [System.IO.File]::ReadAllBytes($agentsMd)
 Check ($afterBytes[0] -eq 0xEF -and $afterBytes[1] -eq 0xBB -and $afterBytes[2] -eq 0xBF) `
     'agents-md: AGENTS.md kept its leading BOM'
@@ -527,14 +573,14 @@ $afterText = [System.Text.Encoding]::UTF8.GetString($afterBytes, 3, $afterBytes.
 Check ($afterText -ceq ($blockText + "`n" + $sharedText)) `
     'agents-md: the block is on top of an unmarked AGENTS.md, developer content below it'
 Check (Test-Path "$agentsMd.bak") 'agents-md: AGENTS.md backed up'
-Check (-not (Test-Path $claudeMd)) 'agents-md: -Agents codex leaves CLAUDE.md alone'
+Check (-not (Test-Path $claudeMd)) 'agents-md: without -Claude CLAUDE.md is not created'
 
 # 1u. Codex: a block past 32 KiB and an AGENTS.override.md are reported.
 Reset-Guidelines
 $rules = (0..699 | ForEach-Object { "Rule ${_}: keep the build green and the tests fast." }) -join "`n"
 [System.IO.File]::WriteAllText($agentsMd, "$rules`n$blockText")
 [System.IO.File]::WriteAllText((Join-Path $proj 'AGENTS.override.md'), "local rules`n")
-$out = Invoke-InstallerCapture @('agents-md', '-Agents', 'codex', '-Source', $Source)
+$out = Invoke-InstallerCapture @('agents-md', '-Source', $Source)
 Check ($out -match 'first 32 KiB')        "agents-md: warns about a block past Codex's 32 KiB"
 Check ($out -match 'AGENTS\.override\.md') 'agents-md: warns about AGENTS.override.md'
 
@@ -547,18 +593,18 @@ $junieAgents = Join-Path $junieDir 'AGENTS.md'
 $legacyJunie = Join-Path $junieDir 'guidelines.md'
 [System.IO.File]::WriteAllText($junieAgents, "# Junie rules`n")
 [System.IO.File]::WriteAllText($legacyJunie, "# Old Junie rules`n")
-$null = Invoke-Installer @('agents-md', '-Agents', 'opencode,junie', '-Source', $Source)
+$null = Invoke-Installer @('agents-md', '-Source', $Source)
 Check ((Test-Path $agentsMd) -and ([System.IO.File]::ReadAllText($agentsMd) -eq $blockText) -and -not (Test-Path $claudeMd)) `
     "agents-md: Junie's block written to the root AGENTS.md alone"
 Check (([System.IO.File]::ReadAllText($junieAgents) -eq "# Junie rules`n") -and
        ([System.IO.File]::ReadAllText($legacyJunie) -eq "# Old Junie rules`n")) `
     'agents-md: .junie guidelines files untouched'
 
-# 1za. A NUL byte in AGENTS.md does not stop the agents after codex.
+# 1za. A NUL byte in AGENTS.md does not stop CLAUDE.md after it.
 Reset-Guidelines
 [System.IO.File]::WriteAllBytes($agentsMd, [byte[]](0x23, 0x20, 0x52, 0x0a, 0x78, 0x00, 0x79, 0x0a))
-Check ((Invoke-Installer @('agents-md', '-Agents', 'codex,claude', '-Source', $Source)) -eq 0 -and (Test-Path $claudeMd)) `
-    'agents-md: a NUL byte in AGENTS.md does not stop the agents after codex'
+Check ((Invoke-Installer @('agents-md', '-Claude', '-Source', $Source)) -eq 0 -and (Test-Path $claudeMd)) `
+    'agents-md: a NUL byte in AGENTS.md does not stop CLAUDE.md after it'
 
 # Reset so later sections start from a clean project guidelines state.
 Reset-Guidelines
@@ -620,7 +666,7 @@ function New-TestProject {
 
 # Runs a local skills install in project $Dir with the extra arguments $More.
 function Invoke-LocalSkills {
-    param([string]$Dir, [string[]]$More)
+    param([string]$Dir, [string[]]$More = @())
     Push-Location $Dir
     try { return Invoke-InstallerResult (@('skills', '-Scope', 'local', '-Source', $Source) + $More) }
     finally { Pop-Location }
@@ -647,7 +693,7 @@ function New-LegacyLayout {
     }
 }
 
-Check ((Invoke-Installer @('skills', '-Agents', 'claude,codex,opencode,junie', '-Scope', 'local', '-Source', $Source)) -eq 0) `
+Check ((Invoke-Installer @('skills', '-Claude', '-Scope', 'local', '-Source', $Source)) -eq 0) `
     'skills(local) exits 0'
 Check ((Test-RealDir (Join-Path $proj ".agents/skills/$skill")) -and (Test-Path (Join-Path $proj ".agents/skills/$skill/SKILL.md"))) `
     'skills(local): the skill is a real folder in .agents/skills (the store)'
@@ -660,16 +706,44 @@ $manifest = Get-Content -Raw -LiteralPath (Join-Path $Source '.studio/skills-man
 Check ($manifest.store.local -eq '.agents/skills' -and (Test-RealDir (Join-Path $proj "$($manifest.store.local)/$skill"))) `
     'skills(local): the Studio manifest names the store the installer uses'
 
-# Claude alone still keeps the skills in .agents/skills; agents alone makes no .claude.
-$convProj = New-TestProject 'conventions-claude-project'
-$r = Invoke-LocalSkills -Dir $convProj -More @('-Conventions', 'claude')
+# Without -Claude the skills go to .agents/skills alone; -Claude also links them
+# into .claude/skills, through -File and as a script block (Studio).
+$convProj = New-TestProject 'agents-only-project'
+$r = Invoke-LocalSkills -Dir $convProj
 Check ($r.Code -eq 0 -and (Test-RealDir (Join-Path $convProj ".agents/skills/$skill")) -and
-       (Test-LinkIntoStore (Join-Path $convProj ".claude/skills/$skill"))) `
-    'skills: -Conventions claude keeps the skills in .agents/skills and links them into .claude/skills'
-$convProj = New-TestProject 'conventions-agents-project'
-$r = Invoke-LocalSkills -Dir $convProj -More @('-Conventions', 'agents')
-Check ($r.Code -eq 0 -and (Test-Path (Join-Path $convProj ".agents/skills/$skill/SKILL.md")) -and
-       -not (Test-Path (Join-Path $convProj '.claude'))) 'skills: -Conventions agents installs .agents/skills alone'
+       -not (Test-Path (Join-Path $convProj '.claude'))) 'skills: without -Claude installs .agents/skills alone'
+$r = Invoke-LocalSkills -Dir $convProj -More @('-Claude:$false')
+Check ($r.Code -eq 0 -and -not (Test-Path (Join-Path $convProj '.claude'))) 'skills: -Claude:$false makes no .claude'
+$r = Invoke-LocalSkills -Dir $convProj -More @('-Claude:$true')
+Check ($r.Code -eq 0 -and (Test-RealDir (Join-Path $convProj ".agents/skills/$skill")) -and
+       (Test-LinkIntoStore (Join-Path $convProj ".claude/skills/$skill"))) 'skills: -Claude:$true links the store into .claude/skills'
+foreach ($withClaude in $false, $true) {
+    $convProj = New-TestProject "script-block-claude-$withClaude-project"
+    Push-Location $convProj
+    try { $code = Invoke-InstallerScriptBlock "skills -Scope local -Source '$Source' -Claude:`$$withClaude" }
+    finally { Pop-Location }
+    Check ($code -eq 0 -and (Test-RealDir (Join-Path $convProj ".agents/skills/$skill")) -and
+           (Test-LinkIntoStore (Join-Path $convProj ".claude/skills/$skill")) -eq $withClaude) `
+        "skills: -Claude:`$$withClaude as a script block"
+}
+
+# The hidden aliases (see 1a3). Released jmix-cli runs the first call exactly.
+foreach ($case in @(
+        @{ Args = @('-Agents', 'claude,codex,opencode'); Claude = $true },
+        @{ Args = @('-Agents', 'claude,codex,opencode,junie'); Claude = $true },
+        @{ Args = @('-Conventions', 'agents'); Claude = $false },
+        @{ Args = @('-Conventions', 'claude'); Claude = $true },
+        @{ Args = @('-Claude:$false', '-Conventions', 'claude'); Claude = $false },
+        @{ Args = @('-Conventions', 'agents', '-Claude'); Claude = $true })) {
+    $aliasProj = New-TestProject "alias-$($case.Args -join '' -replace '[^A-Za-z]', '')-project"
+    Push-Location $aliasProj
+    try { $r = Invoke-InstallerStderr (@('skills', '-Scope', 'local', '-Source', $Source) + $case.Args) }
+    finally { Pop-Location }
+    Check ($r.Code -eq 0 -and $r.Stderr -eq '' -and (Test-RealDir (Join-Path $aliasProj ".agents/skills/$skill")) -and
+           (Test-LinkIntoStore (Join-Path $aliasProj ".claude/skills/$skill")) -eq $case.Claude -and
+           (Test-Path (Join-Path $aliasProj '.claude')) -eq $case.Claude) `
+        "skills: $($case.Args -join ' ') $(if ($case.Claude) { 'links .claude/skills too' } else { 'installs .agents/skills alone' })"
+}
 
 # The user's own skills in both dirs survive an install and a re-install, and
 # a re-run leaves the same layout.
@@ -680,7 +754,7 @@ foreach ($rel in '.agents/skills/my-skill', '.claude/skills/my-skill') {
 }
 $layouts = @{}
 foreach ($run in 1, 2) {
-    $r = Invoke-LocalSkills -Dir $ownProj -More @('-Conventions', 'agents,claude')
+    $r = Invoke-LocalSkills -Dir $ownProj -More @('-Claude')
     Check ($r.Code -eq 0) "skills(local): run $run exits 0"
     Check ((Test-Path (Join-Path $ownProj '.agents/skills/my-skill/SKILL.md')) -and
            (Test-Path (Join-Path $ownProj '.claude/skills/my-skill/SKILL.md'))) "skills(local): the user's own skills kept (run $run)"
@@ -701,7 +775,7 @@ if ($linkType) {
         New-Item -ItemType Directory -Force -Path (Join-Path $proj ".skills/$n") | Out-Null
         New-Item -ItemType $linkType -Path (Join-Path $oldJunieSkills $n) -Target (Join-Path $proj ".skills/$n") | Out-Null
     }
-    $out = Invoke-InstallerCapture @('skills', '-Agents', 'codex', '-Scope', 'local', '-Source', $Source)
+    $out = Invoke-InstallerCapture @('skills', '-Scope', 'local', '-Source', $Source)
     Check (-not (Test-Path -LiteralPath (Join-Path $oldJunieSkills 'jmix')) -and
            -not (Get-Item -LiteralPath (Join-Path $oldJunieSkills $skill) -Force -ErrorAction SilentlyContinue)) `
         'skills(local): old toolkit links in .junie/skills removed'
@@ -714,21 +788,21 @@ if ($linkType) {
 Remove-Item -LiteralPath (Join-Path $proj '.junie') -Recurse -Force
 
 if ($linkType) {
-    # At local scope .agents/skills is the store, so Junie keeps its skills after
-    # a Claude-only run too: the links go, or they would dangle once .skills does.
+    # With -Claude too: .agents/skills, where Junie reads the skills, is always
+    # filled. The links go, or they would dangle once .skills does.
     New-Item -ItemType Directory -Force -Path $oldJunieSkills, (Join-Path $proj ".skills/$skill") | Out-Null
     $oldLink = Join-Path $oldJunieSkills $skill
     New-Item -ItemType $linkType -Path $oldLink -Target (Join-Path $proj ".skills/$skill") | Out-Null
-    $null = Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'local', '-Source', $Source)
+    $null = Invoke-Installer @('skills', '-Claude', '-Scope', 'local', '-Source', $Source)
     Check (-not (Get-Item -LiteralPath $oldLink -Force -ErrorAction SilentlyContinue)) `
-        'skills(local): old Junie links removed by a Claude-only run'
+        'skills(local): old Junie links removed by a -Claude run too'
     if (Test-Path -LiteralPath $junieDir) { Remove-Item -LiteralPath $junieDir -Recurse -Force }
 
     # A .junie/skills that is the same dir as an agent skills dir holds the links
     # this run just created: the cleanup leaves it alone.
     New-Item -ItemType Directory -Force -Path $junieDir | Out-Null
     New-Item -ItemType $linkType -Path $oldJunieSkills -Target (Join-Path $proj '.agents/skills') | Out-Null
-    $out = Invoke-InstallerCapture @('skills', '-Agents', 'codex,junie', '-Scope', 'local', '-Source', $Source)
+    $out = Invoke-InstallerCapture @('skills', '-Scope', 'local', '-Source', $Source)
     Check (Test-Path (Join-Path $proj ".agents/skills/$skill/SKILL.md")) `
         'skills(local): links kept through a .junie/skills -> .agents/skills link'
     Check ($out -notmatch 'Removed old Junie skill link') 'skills(local): nothing removed from a shared .junie/skills'
@@ -747,7 +821,7 @@ if ($linkType) {
     if ($linkType -eq 'SymbolicLink') {
         New-Item -ItemType SymbolicLink -Path (Join-Path $selfProj ".skills/$skill") -Target "./$skill" | Out-Null
     }
-    $runs = @(1, 2 | ForEach-Object { Invoke-LocalSkills -Dir $selfProj -More @('-Conventions', 'claude') })
+    $runs = @(1, 2 | ForEach-Object { Invoke-LocalSkills -Dir $selfProj -More @('-Claude') })
     Check (@($runs | Where-Object { $_.Code -ne 0 }).Count -eq 0) 'skills(local): runs succeed with .claude/skills linked to .skills'
     Check (Test-Path (Join-Path $selfProj '.skills/my-skill/SKILL.md')) "skills(local): the user's skill in a linked .skills kept"
     Check (Test-Path (Join-Path $selfProj ".claude/skills/$skill/SKILL.md")) 'skills(local): the skill resolves through .claude/skills -> .skills'
@@ -758,7 +832,7 @@ if ($linkType) {
     $storeLinkProj = New-TestProject 'store-link-project'
     New-Item -ItemType Directory -Force -Path (Join-Path $storeLinkProj '.agents'), (Join-Path $storeLinkProj '.claude/skills') | Out-Null
     New-Item -ItemType $linkType -Path (Join-Path $storeLinkProj '.agents/skills') -Target (Join-Path $storeLinkProj '.claude/skills') | Out-Null
-    $runs = @(1, 2 | ForEach-Object { Invoke-LocalSkills -Dir $storeLinkProj -More @('-Conventions', 'claude') })
+    $runs = @(1, 2 | ForEach-Object { Invoke-LocalSkills -Dir $storeLinkProj -More @('-Claude') })
     Check (@($runs | Where-Object { $_.Code -ne 0 }).Count -eq 0) 'skills(local): runs succeed with .agents/skills linked to .claude/skills'
     Check ($runs[1].Output -match 'is the skills store itself' -and $runs[1].Output -notmatch 'Linked skills into') `
         'skills(local): reports that .claude/skills is the store instead of linking'
@@ -768,7 +842,7 @@ if ($linkType) {
     # The old layout: skills in .skills, linked into both agent dirs.
     $legacyProj = New-TestProject 'legacy-project'
     New-LegacyLayout -Dir $legacyProj
-    $r = Invoke-LocalSkills -Dir $legacyProj -More @('-Conventions', 'agents,claude')
+    $r = Invoke-LocalSkills -Dir $legacyProj -More @('-Claude')
     Check ($r.Code -eq 0) 'skills(local): migrating the old .skills layout exits 0'
     Check (@($skillNames | Where-Object { -not (Test-RealDir (Join-Path $legacyProj ".agents/skills/$_")) }).Count -eq 0) `
         'skills(local): migrated skills are real folders in .agents/skills'
@@ -790,7 +864,7 @@ if ($linkType) {
     New-LegacyLayout -Dir $keepProj
     [System.IO.File]::WriteAllText((Join-Path $keepProj '.skills/notes.txt'), "mine`n")
     [System.IO.File]::WriteAllText((Join-Path $keepProj '.skills/JMIX-README.md'), "mine`n")
-    $r = Invoke-LocalSkills -Dir $keepProj -More @('-Conventions', 'agents,claude')
+    $r = Invoke-LocalSkills -Dir $keepProj -More @('-Claude')
     Check ($r.Code -eq 0 -and (@(Get-ChildItem -LiteralPath (Join-Path $keepProj '.skills') -Force -ErrorAction SilentlyContinue |
             Sort-Object Name).Name -join ',') -eq 'JMIX-README.md,notes.txt') `
         'skills(local): a .skills holding other files keeps only them'
@@ -801,7 +875,7 @@ if ($linkType) {
     New-Item -ItemType Directory -Force -Path (Join-Path $shared 'jmix-foo') | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $shared 'jmix-foo/SKILL.md'), "# foo`n")
     New-Item -ItemType $linkType -Path (Join-Path $sharedProj '.skills') -Target $shared | Out-Null
-    $r = Invoke-LocalSkills -Dir $sharedProj -More @('-Conventions', 'agents,claude')
+    $r = Invoke-LocalSkills -Dir $sharedProj -More @('-Claude')
     Check ($r.Code -eq 0 -and (Test-Path (Join-Path $shared 'jmix-foo/SKILL.md')) -and
            [bool](Get-Item -LiteralPath (Join-Path $sharedProj '.skills') -Force).LinkType) `
         'skills(local): a .skills that is a link is left alone'
@@ -810,7 +884,7 @@ if ($linkType) {
     # are re-linked into the store, and a whole-dir link keeps .skills as it is.
     $otherProj = New-TestProject 'legacy-cursor-project'
     New-LegacyLayout -Dir $otherProj -AgentDirs @('.claude/skills', '.cursor/skills')
-    $r = Invoke-LocalSkills -Dir $otherProj -More @('-Conventions', 'agents,claude')
+    $r = Invoke-LocalSkills -Dir $otherProj -More @('-Claude')
     Check ($r.Code -eq 0 -and @($skillNames | Where-Object { -not (Test-LinkIntoStore (Join-Path $otherProj ".cursor/skills/$_")) }).Count -eq 0 -and
            -not (Get-Item -LiteralPath (Join-Path $otherProj '.cursor/skills/jmix-obsolete-skill') -Force -ErrorAction SilentlyContinue) -and
            -not (Test-Path (Join-Path $otherProj '.skills'))) `
@@ -821,7 +895,7 @@ if ($linkType) {
     New-LegacyLayout -Dir $otherProj -AgentDirs @('.agents/skills')
     New-Item -ItemType Directory -Force -Path (Join-Path $otherProj '.github') | Out-Null
     New-Item -ItemType $linkType -Path (Join-Path $otherProj '.github/skills') -Target (Join-Path $otherProj '.skills') | Out-Null
-    $r = Invoke-LocalSkills -Dir $otherProj -More @('-Conventions', 'agents')
+    $r = Invoke-LocalSkills -Dir $otherProj -More @()
     Check ($r.Code -eq 0 -and (Test-Path (Join-Path $otherProj ".github/skills/$skill/SKILL.md")) -and
            (Test-LinkIntoStore (Join-Path $otherProj ".skills/$skill")) -and
            (Test-Path (Join-Path $otherProj '.github/skills/jmix-obsolete-skill/SKILL.md'))) `
@@ -833,7 +907,7 @@ if ($linkType) {
     New-LegacyLayout -Dir $clutterProj
     [System.IO.File]::WriteAllText((Join-Path $clutterProj '.skills/.DS_Store'), '')
     Copy-Item -Path (Join-Path $Source "content/skills/$skill") -Destination (Join-Path $clutterProj ".claude/skills/$skill.bak1") -Recurse
-    $r = Invoke-LocalSkills -Dir $clutterProj -More @('-Conventions', 'agents,claude')
+    $r = Invoke-LocalSkills -Dir $clutterProj -More @('-Claude')
     Check ($r.Code -eq 0 -and -not (Test-Path (Join-Path $clutterProj '.skills')) -and @(Get-LegacyLeftovers $clutterProj).Count -eq 0 -and
            (Test-Path (Join-Path $clutterProj ".agents/.jmix/backups/$skill.bak1.bak/SKILL.md"))) `
         'skills(local): Finder clutter and real old backups do not stay behind'
@@ -841,15 +915,15 @@ if ($linkType) {
     # Agents alone: .claude/skills is still re-linked away from .skills.
     $legacyProj = New-TestProject 'legacy-agents-project'
     New-LegacyLayout -Dir $legacyProj
-    $r = Invoke-LocalSkills -Dir $legacyProj -More @('-Conventions', 'agents')
+    $r = Invoke-LocalSkills -Dir $legacyProj -More @()
     Check ($r.Code -eq 0 -and (Test-LinkIntoStore (Join-Path $legacyProj ".claude/skills/$skill")) -and
            @(Get-LegacyLeftovers $legacyProj).Count -eq 0 -and -not (Test-Path (Join-Path $legacyProj '.skills'))) `
-        'skills(local): -Conventions agents re-links the old .claude/skills into .agents/skills'
+        'skills(local): without -Claude the old .claude/skills is re-linked into .agents/skills'
 
     # An old Claude-only layout: .skills linked into .claude/skills alone.
     $legacyProj = New-TestProject 'legacy-claude-project'
     New-LegacyLayout -Dir $legacyProj -AgentDirs @('.claude/skills')
-    $r = Invoke-LocalSkills -Dir $legacyProj -More @('-Conventions', 'claude')
+    $r = Invoke-LocalSkills -Dir $legacyProj -More @('-Claude')
     Check ($r.Code -eq 0 -and (Test-RealDir (Join-Path $legacyProj ".agents/skills/$skill")) -and
            (Test-LinkIntoStore (Join-Path $legacyProj ".claude/skills/$skill")) -and
            @(Get-LegacyLeftovers $legacyProj).Count -eq 0 -and -not (Test-Path (Join-Path $legacyProj '.skills'))) `
@@ -861,7 +935,7 @@ if ($linkType) {
     New-Item -ItemType Directory -Force -Path (Join-Path $userLinkProj '.skills'), (Join-Path $userLinkProj '.agents') | Out-Null
     Copy-Item -Path (Join-Path $Source 'content/skills/*') -Destination (Join-Path $userLinkProj '.skills') -Recurse
     New-Item -ItemType $linkType -Path (Join-Path $userLinkProj '.agents/skills') -Target (Join-Path $userLinkProj '.skills') | Out-Null
-    $r = Invoke-LocalSkills -Dir $userLinkProj -More @('-Conventions', 'agents,claude')
+    $r = Invoke-LocalSkills -Dir $userLinkProj -More @('-Claude')
     Check ($r.Code -eq 0 -and (Test-RealDir (Join-Path $userLinkProj ".skills/$skill")) -and
            (Test-Path (Join-Path $userLinkProj ".skills/$skill/SKILL.md")) -and
            (Test-Path (Join-Path $userLinkProj ".claude/skills/$skill/SKILL.md"))) `
@@ -872,35 +946,35 @@ if ($linkType) {
     New-Item -ItemType Directory -Force -Path (Join-Path $danglingProj 'missing'), (Join-Path $danglingProj '.agents') | Out-Null
     New-Item -ItemType $linkType -Path (Join-Path $danglingProj '.agents/skills') -Target (Join-Path $danglingProj 'missing') | Out-Null
     Remove-Item -LiteralPath (Join-Path $danglingProj 'missing') -Recurse -Force
-    $r = Invoke-LocalSkills -Dir $danglingProj -More @('-Conventions', 'agents,claude')
+    $r = Invoke-LocalSkills -Dir $danglingProj -More @('-Claude')
     Check ($r.Code -eq 0 -and (Test-RealDir (Join-Path $danglingProj ".agents/skills/$skill"))) `
         'skills(local): a dangling .agents/skills link is replaced by the store'
 
     # A dangling per-skill link into a .skills that is gone is re-linked.
-    foreach ($conv in 'agents,claude', 'agents') {
-        $danglingProj = New-TestProject "dangling-link-$($conv -replace ',', '-')-project"
+    foreach ($withClaude in $true, $false) {
+        $danglingProj = New-TestProject "dangling-link-claude-$withClaude-project"
         New-Item -ItemType Directory -Force -Path (Join-Path $danglingProj ".skills/$skill"), (Join-Path $danglingProj '.claude/skills') | Out-Null
         New-Item -ItemType $linkType -Path (Join-Path $danglingProj ".claude/skills/$skill") -Target (Join-Path $danglingProj ".skills/$skill") | Out-Null
         Remove-Item -LiteralPath (Join-Path $danglingProj '.skills') -Recurse -Force
-        $r = Invoke-LocalSkills -Dir $danglingProj -More @('-Conventions', $conv)
+        $r = Invoke-LocalSkills -Dir $danglingProj -More @("-Claude:`$$withClaude")
         Check ($r.Code -eq 0 -and (Test-LinkIntoStore (Join-Path $danglingProj ".claude/skills/$skill"))) `
-            "skills(local): a dangling .claude/skills link is re-linked into the store ($conv)"
+            "skills(local): a dangling .claude/skills link is re-linked into the store (-Claude: $withClaude)"
     }
 
     # -BackupExistingFiles: replaced skill folders go to .agents/.jmix/backups,
     # never into the dirs the agents scan, and a link is never backed up.
     $backupProj = New-TestProject 'backup-project'
     $backups = Join-Path $backupProj '.agents/.jmix/backups'
-    $r = Invoke-LocalSkills -Dir $backupProj -More @('-Conventions', 'agents,claude', '-BackupExistingFiles')
+    $r = Invoke-LocalSkills -Dir $backupProj -More @('-Claude', '-BackupExistingFiles')
     Check ($r.Code -eq 0 -and -not (Test-Path $backups)) 'skills(local): a fresh install makes no backups dir'
-    $r = Invoke-LocalSkills -Dir $backupProj -More @('-Conventions', 'agents,claude', '-BackupExistingFiles')
+    $r = Invoke-LocalSkills -Dir $backupProj -More @('-Claude', '-BackupExistingFiles')
     Check ($r.Code -eq 0 -and @(Get-LegacyLeftovers $backupProj).Count -eq 0) 'skills(local): no backups in the agent dirs'
     Check ((Test-RealDir (Join-Path $backups "$skill.bak")) -and (Test-Path (Join-Path $backups "$skill.bak/SKILL.md"))) `
         'skills(local): the replaced skill backed up into .agents/.jmix/backups'
     $backupProj = New-TestProject 'backup-legacy-project'
     $backups = Join-Path $backupProj '.agents/.jmix/backups'
     New-LegacyLayout -Dir $backupProj
-    $r = Invoke-LocalSkills -Dir $backupProj -More @('-Conventions', 'agents,claude', '-BackupExistingFiles')
+    $r = Invoke-LocalSkills -Dir $backupProj -More @('-Claude', '-BackupExistingFiles')
     Check ($r.Code -eq 0 -and @(Get-LegacyLeftovers $backupProj).Count -eq 0 -and -not (Test-Path (Join-Path $backupProj '.skills'))) `
         'skills(local): the old layout migrated with -BackupExistingFiles'
     Check ((Test-Path (Join-Path $backups "$skill.bak/SKILL.md")) -and (Test-Path (Join-Path $backups 'jmix-obsolete-skill.bak/SKILL.md'))) `
@@ -913,7 +987,7 @@ if ($linkType) {
     $copyProj = New-TestProject 'claude-copy-project'
     New-Item -ItemType Directory -Force -Path (Join-Path $copyProj ".claude/skills/$skill") | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $copyProj ".claude/skills/$skill/SKILL.md"), "# my copy`n")
-    $r = Invoke-LocalSkills -Dir $copyProj -More @('-Conventions', 'claude', '-BackupExistingFiles')
+    $r = Invoke-LocalSkills -Dir $copyProj -More @('-Claude', '-BackupExistingFiles')
     Check ($r.Code -eq 0 -and (Test-LinkIntoStore (Join-Path $copyProj ".claude/skills/$skill")) -and
            @(Get-LegacyLeftovers $copyProj).Count -eq 0) 'skills(local): a real skill copy in .claude/skills is replaced by a link'
     Check ((Get-Content -Raw -LiteralPath (Join-Path $copyProj ".agents/.jmix/backups/$skill.bak/SKILL.md")) -match 'my copy') `
@@ -930,26 +1004,39 @@ if ($onWindows -and -not (Test-SymlinkCapable)) {
 # Re-running with identical args must complete -- this is the Windows hang scenario:
 # existing junctions are removed (via Directory.Delete, not a prompting Remove-Item)
 # before re-linking. Links must still resolve afterwards.
-Check ((Invoke-Installer @('skills', '-Agents', 'claude,codex,opencode,junie', '-Scope', 'local', '-Source', $Source)) -eq 0) `
+Check ((Invoke-Installer @('skills', '-Claude', '-Scope', 'local', '-Source', $Source)) -eq 0) `
     'skills(local): re-run exits 0 (links already exist)'
 Check (Test-LinkIntoStore (Join-Path $proj ".claude/skills/$skill")) 'skills(local): claude link still resolves after re-run'
 
-# skills global -- store keyed by the branch (CONTENT_REF)
-Check ((Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'global', '-Source', $Source)) -eq 0) `
+# skills global -- store keyed by the branch (CONTENT_REF), linked into
+# ~/.agents/skills, and with -Claude into ~/.claude/skills too.
+# True when ~/$Rel/<skill> is a link that resolves.
+function Test-GlobalLink {
+    param([string]$Rel)
+    $item = Get-Item -LiteralPath (Join-Path $homeDir "$Rel/$skill") -Force -ErrorAction SilentlyContinue
+    return ($null -ne $item -and [bool]$item.LinkType -and (Test-Path (Join-Path $homeDir "$Rel/$skill/SKILL.md")))
+}
+Check ((Invoke-Installer @('skills', '-Scope', 'global', '-Source', $Source)) -eq 0) `
     'skills(global) exits 0'
 Check (Test-Path (Join-Path $homeDir '.agents/.jmix/skills/v3')) 'skills(global): v3 store created'
+Check ((Test-GlobalLink '.agents/skills') -and -not (Test-Path (Join-Path $homeDir ".claude/skills/$skill"))) `
+    'skills(global): without -Claude the skills are linked into ~/.agents/skills alone'
+Check ((Invoke-Installer @('skills', '-Claude', '-Scope', 'global', '-Source', $Source)) -eq 0 -and
+       (Test-GlobalLink '.agents/skills') -and (Test-GlobalLink '.claude/skills')) `
+    'skills(global): -Claude links them into ~/.claude/skills too'
 
-# Without an agent that reads ~/.agents/skills nothing replaces old Junie links,
-# so they stay: removing them would leave Junie with no Jmix skills.
+# ~/.agents/skills always gets the skills, so old Junie links always go.
 if ($linkType) {
     $junieLink = Join-Path $homeDir ".junie/skills/$skill"
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $junieLink) | Out-Null
-    New-Item -ItemType $linkType -Path $junieLink -Target (Join-Path $homeDir ".agents/.jmix/skills/v3/$skill") | Out-Null
-    $null = Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'global', '-Source', $Source)
-    $junieItem = Get-Item -LiteralPath $junieLink -Force -ErrorAction SilentlyContinue
-    Check ($null -ne $junieItem -and [bool]$junieItem.LinkType) 'skills(global): old Junie links kept when no agent reads ~/.agents/skills'
-    if ($junieItem) { [System.IO.Directory]::Delete($junieLink, $false) }
-    Remove-Item -LiteralPath (Join-Path $homeDir '.junie') -Recurse -Force
+    foreach ($withClaude in $false, $true) {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $junieLink) | Out-Null
+        New-Item -ItemType $linkType -Path $junieLink -Target (Join-Path $homeDir ".agents/.jmix/skills/v3/$skill") | Out-Null
+        $null = Invoke-Installer @('skills', "-Claude:`$$withClaude", '-Scope', 'global', '-Source', $Source)
+        $junieItem = Get-Item -LiteralPath $junieLink -Force -ErrorAction SilentlyContinue
+        Check ($null -eq $junieItem) "skills(global): old Junie links removed (-Claude: $withClaude)"
+        if ($junieItem) { [System.IO.Directory]::Delete($junieLink, $false) }
+    }
+    Remove-Item -LiteralPath (Join-Path $homeDir '.junie') -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # Store backups (-BackupExistingFiles) are not skills: they are not linked,
@@ -959,11 +1046,11 @@ if ($linkType) {
     New-Item -ItemType Directory -Force -Path $globalBak | Out-Null
     New-Item -ItemType $linkType -Path (Join-Path $homeDir ".claude/skills/$skill.bak") -Target $globalBak | Out-Null
 }
-$null = Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'global', '-BackupExistingFiles', '-Source', $Source)
+$null = Invoke-Installer @('skills', '-Claude', '-Scope', 'global', '-BackupExistingFiles', '-Source', $Source)
 Check (@(Get-ChildItem -LiteralPath (Join-Path $homeDir '.agents/.jmix/skills/v3') -Directory -Filter "$skill.bak*" |
         Where-Object { Test-Path (Join-Path $_.FullName 'SKILL.md') }).Count -gt 0) `
     'skills(global): -BackupExistingFiles made a store backup beside the skill'
-Check (@(Get-ChildItem -LiteralPath (Join-Path $homeDir '.claude/skills') -Force -Filter '*.bak*').Count -eq 0) `
+Check (@(Get-ChildItem -LiteralPath (Join-Path $homeDir '.claude/skills'), (Join-Path $homeDir '.agents/skills') -Force -Filter '*.bak*').Count -eq 0) `
     'skills(global): store backups not linked as skills'
 Get-ChildItem -LiteralPath (Join-Path $homeDir '.agents/.jmix/skills/v3') -Force -Filter '*.bak*' | Remove-Item -Recurse -Force
 
@@ -976,7 +1063,7 @@ if ($linkType) {
     [System.IO.File]::WriteAllText((Join-Path $fork 'SKILL.md'), "fork`n")
     Remove-Item -LiteralPath (Join-Path $gstore $skill) -Recurse -Force
     New-Item -ItemType $linkType -Path (Join-Path $gstore $skill) -Target $fork | Out-Null
-    $null = Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'global', '-BackupExistingFiles', '-Source', $Source)
+    $null = Invoke-Installer @('skills', '-Claude', '-Scope', 'global', '-BackupExistingFiles', '-Source', $Source)
     $forkBak = Get-Item -LiteralPath (Join-Path $gstore "$skill.bak") -Force -ErrorAction SilentlyContinue
     Check ($null -ne $forkBak -and [bool]$forkBak.LinkType -and (Test-RealDir (Join-Path $gstore $skill)) -and
            (Get-Content -Raw -LiteralPath (Join-Path $fork 'SKILL.md')) -eq "fork`n") `
@@ -993,7 +1080,7 @@ if ($onWindows) {
     New-Item -ItemType Directory -Force -Path $otherHome | Out-Null
     $savedHomePath = $env:HOMEPATH
     $env:HOMEPATH = $otherHome.Substring($env:HOMEDRIVE.Length)
-    $code = Invoke-Installer @('skills', '-Conventions', 'claude', '-Scope', 'global', '-Source', $Source)
+    $code = Invoke-Installer @('skills', '-Claude', '-Scope', 'global', '-Source', $Source)
     $env:HOMEPATH = $savedHomePath
     Check ($code -eq 0 -and (Test-Path (Join-Path $homeDir ".claude/skills/$skill/SKILL.md")) -and
            -not (Test-Path (Join-Path $otherHome '.claude'))) 'skills(global): Windows links the skills under USERPROFILE'
@@ -1006,11 +1093,14 @@ if ($onWindows) {
 # the skills the user keeps there stay visible.
 if (Test-SymlinkCapable) {
     $agentsSkills = Join-Path $homeDir '.agents/skills'
+    # Make way for the link: the skill links the runs above made there go.
+    Get-ChildItem -LiteralPath $agentsSkills -Force | ForEach-Object { [System.IO.Directory]::Delete($_.FullName, $false) }
+    [System.IO.Directory]::Delete($agentsSkills, $false)
     $ownSkill = Join-Path $homeDir '.claude/skills/my-own-skill'
     New-Item -ItemType Directory -Force -Path $ownSkill | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $ownSkill 'SKILL.md'), "# mine`n")
     New-Item -ItemType SymbolicLink -Path $agentsSkills -Target ([System.IO.Path]::Combine('..', '.claude', 'skills')) | Out-Null
-    Check ((Invoke-Installer @('skills', '-Agents', 'codex', '-Scope', 'global', '-Source', $Source)) -eq 0) `
+    Check ((Invoke-Installer @('skills', '-Scope', 'global', '-Source', $Source)) -eq 0) `
         'skills(global): exits 0 with a symlinked ~/.agents/skills'
     Check ((Get-Item -LiteralPath $agentsSkills -Force).LinkType -eq 'SymbolicLink') `
         'skills(global): a relative ~/.agents/skills -> ../.claude/skills link is kept'
@@ -1029,7 +1119,7 @@ if (Test-SymlinkCapable) {
     $agentsSkills = Join-Path $homeDir '.agents/skills'
     New-Item -ItemType Directory -Force -Path (Join-Path $homeDir '.junie/skills') | Out-Null
     New-Item -ItemType SymbolicLink -Path $agentsSkills -Target ([System.IO.Path]::Combine('..', '.junie', 'skills')) | Out-Null
-    $null = Invoke-Installer @('skills', '-Agents', 'codex', '-Scope', 'global', '-Source', $Source)
+    $null = Invoke-Installer @('skills', '-Scope', 'global', '-Source', $Source)
     Check (Test-Path (Join-Path $agentsSkills "$skill/SKILL.md")) `
         'skills(global): links kept through ~/.agents/skills -> ~/.junie/skills'
     # A broken cleanup removes ~/.junie/skills too, leaving the link dangling.
@@ -1038,7 +1128,7 @@ if (Test-SymlinkCapable) {
 }
 
 # Studio can pin a feature branch independently of the release default.
-Check ((Invoke-Installer @('skills', '-ContentRef', 'no-agents-md-test', '-Agents', 'claude',
+Check ((Invoke-Installer @('skills', '-ContentRef', 'no-agents-md-test', '-Claude',
         '-Scope', 'global', '-Source', $Source)) -eq 0) `
     'skills(global): content-ref override exits 0'
 Check (Test-Path (Join-Path $homeDir '.agents/.jmix/skills/no-agents-md-test')) `
@@ -1545,36 +1635,57 @@ Check ((Invoke-Installer @('playwright', '-Agents', 'codex', '-Context7Key', 'x'
 Set-Location $mcpProj
 Remove-Item -LiteralPath $localProj -Recurse -Force
 
-# 3u. Every Studio command runs: the placeholders filled in as Studio would,
-#     each against this checkout.
-$studioProj = Join-Path $work 'studio-project'
-New-Item -ItemType Directory -Force -Path (Join-Path $studioProj '.git') | Out-Null
-Set-Location $studioProj
+# 3u. Every Studio command runs as Studio runs it on Windows: the placeholders
+#     filled in as Studio would, the installer run as a script block made from
+#     its text, against this checkout. Each input gets its Studio default (the
+#     default choices, or the default text); then the Claude Code choices once
+#     more with "false". Only ${id} is replaced, so "-Claude:$${skillsClaude}"
+#     becomes "-Claude:$true". The hidden -Conventions alias is not used.
 $studioMeta = [System.IO.File]::ReadAllText((Join-Path $Source '.studio/studio-meta-data.json')) | ConvertFrom-Json
-# Each input gets its Studio default: the default choices, or the default text.
-$studioValues = @{ guidelinesBranch = 'v3' }
+$studioDefaults = @{ guidelinesBranch = 'v3' }
 foreach ($inp in $studioMeta.'install-flow'.steps.inputs) {
-    $studioValues[$inp.id] = if ($inp.type -eq 'options') {
+    $studioDefaults[$inp.id] = if ($inp.type -eq 'options') {
         @($inp.choices | Where-Object { $_.default } | ForEach-Object { $_.value }) -join ','
     } else { $inp.default }
 }
 foreach ($step in $studioMeta.'install-flow'.steps) {
-    $cmd = $step.command.windows
-    $argText = $cmd.Substring($cmd.IndexOf('.Content)) ') + '.Content)) '.Length)
-    foreach ($k in $studioValues.Keys) { $argText = $argText.Replace('${' + $k + '}', $studioValues[$k]) }
-    Check (-not $argText.Contains('${')) "studio: placeholders filled for the $($step.id) step"
-    & $pwshPath -NoProfile -Command "& '$install' $argText -Source '$Source'" *> $null
-    Check ($LASTEXITCODE -eq 0) "studio: the $($step.id) command runs"
+    Check (($step.command.windows -notmatch '-Conventions') -and ($step.command.macos -notmatch '--conventions') -and
+           ($step.command.linux -notmatch '--conventions')) "studio: the $($step.id) command passes no conventions"
 }
-foreach ($f in '.agents/skills', '.claude/skills', 'AGENTS.md', 'CLAUDE.md', '.mcp.json', '.codex/config.toml', 'opencode.json', '.junie/mcp/mcp.json') {
-    Check (Test-Path -LiteralPath (Join-Path $studioProj $f)) "studio: the default commands created $f"
+foreach ($claudeValue in 'true', 'false') {
+    $studioProj = Join-Path $work "studio-project-$claudeValue"
+    New-Item -ItemType Directory -Force -Path (Join-Path $studioProj '.git') | Out-Null
+    Set-Location $studioProj
+    $studioValues = $studioDefaults.Clone()
+    foreach ($inp in $studioMeta.'install-flow'.steps.inputs) {
+        if ($inp.type -eq 'options' -and (@($inp.choices.value) -join ',') -eq 'true,false') {
+            $studioValues[$inp.id] = $claudeValue
+        }
+    }
+    foreach ($step in $studioMeta.'install-flow'.steps) {
+        $cmd = $step.command.windows
+        $argText = $cmd.Substring($cmd.IndexOf('.Content)) ') + '.Content)) '.Length)
+        foreach ($k in $studioValues.Keys) { $argText = $argText.Replace('${' + $k + '}', $studioValues[$k]) }
+        Check (-not $argText.Contains('${')) "studio: placeholders filled for the $($step.id) step ($claudeValue)"
+        if ($cmd.Contains('-Claude:')) {
+            Check ($argText.Contains("-Claude:`$$claudeValue")) "studio: the $($step.id) step passes -Claude:`$$claudeValue"
+        }
+        Check ((Invoke-InstallerScriptBlock "$argText -Source '$Source'") -eq 0) "studio: the $($step.id) command runs ($claudeValue)"
+    }
+    foreach ($f in '.agents/skills', 'AGENTS.md', '.mcp.json', '.codex/config.toml', 'opencode.json', '.junie/mcp/mcp.json') {
+        Check (Test-Path -LiteralPath (Join-Path $studioProj $f)) "studio: the commands created $f ($claudeValue)"
+    }
+    foreach ($f in '.claude/skills', 'CLAUDE.md') {
+        Check ((Test-Path -LiteralPath (Join-Path $studioProj $f)) -eq ($claudeValue -eq 'true')) `
+            "studio: $f $(if ($claudeValue -eq 'true') { 'created' } else { 'not created' }) for Claude Code $claudeValue"
+    }
+    Set-Location $mcpProj
+    Remove-Item -LiteralPath $studioProj -Recurse -Force
 }
 $keyRegex = ($studioMeta.'install-flow'.steps.inputs | Where-Object { $_.id -eq 'context7Key' }).regex
 Check ((@('skip', 'ctx7sk-abcdefgh') | Where-Object { $_ -cmatch $keyRegex }).Count -eq 2 -and
        -not (@('', 'skipx', 'short', 'bad key', 'a"b-cdefgh') | Where-Object { $_ -cmatch $keyRegex })) `
     'studio: the context7Key regex accepts and rejects the right keys'
-Set-Location $mcpProj
-Remove-Item -LiteralPath $studioProj -Recurse -Force
 
 # 3w. Without a console a missing Context7 key fails that server only: the
 #     servers after it are still registered.
@@ -1589,22 +1700,42 @@ Check ((Test-Path 'opencode.json') -and (Get-Content -Raw 'opencode.json' | Conv
 Set-Location $mcpProj
 Remove-Item -LiteralPath $noKeyProj -Recurse -Force
 
-# 3x. The wizard reads its answers from stdin here. The MCP scope defaults to
+# 3x. The wizard reads its answers from stdin here: skills (yes, scope, Claude
+#     Code), guidelines (yes, Claude Code), then MCP. The MCP scope defaults to
 #     the skills scope, and an empty Context7 key skips Context7.
 $wizProj = Join-Path $work 'wizard-project'
 New-Item -ItemType Directory -Force -Path (Join-Path $wizProj '.git') | Out-Null
 Set-Location $wizProj
-$out = "1`nl`ns`n2,3`n2`n`n`n" | & $pwshPath -NoProfile -File $install -Source $Source 2>&1 | Out-String
+function Invoke-WizardWith {
+    param([string]$Answers)
+    return ($Answers | & $pwshPath -NoProfile -File $install -Source $Source 2>&1 | Out-String)
+}
+$out = Invoke-WizardWith "y`nl`nn`nn`n2,3`n2`n`n`n"
 Check ($LASTEXITCODE -eq 0) 'wizard exits 0'
 Check ($out -match '\[Context7 MCP\] Skipped') 'wizard: an empty key skips Context7'
-Check ($out -match 'MCP:\s+context7, playwright for codex \(local\)') 'wizard: the summary names the choices'
-Check ((Test-RealDir ".agents/skills/$skill") -and -not (Test-Path '.skills') -and -not (Test-Path '.claude/skills') -and
-       -not (Test-Path 'AGENTS.md')) 'wizard: skills and guidelines as chosen'
+Check ($out -match 'Skills:\s+agents \(local\)' -and $out -match 'Guidelines:\s+skipped' -and
+       $out -match 'MCP:\s+context7, playwright for codex \(local\)') 'wizard: the summary names the choices'
+Check ((Test-RealDir ".agents/skills/$skill") -and -not (Test-Path '.skills') -and -not (Test-Path '.claude') -and
+       -not (Test-Path 'AGENTS.md')) 'wizard: skills without Claude Code, no guidelines'
 $toml = Get-Content -Raw '.codex/config.toml'
 Check ($toml -match '(?m)^\[mcp_servers\.playwright\]' -and $toml -notmatch 'context7') 'wizard: local Codex config as chosen'
+# The guidelines' Claude Code answer defaults to the skills' one: no...
+$out = Invoke-WizardWith "y`nl`nn`ny`n`ns`n"
+Check ($LASTEXITCODE -eq 0 -and (Test-Path 'AGENTS.md') -and -not (Test-Path 'CLAUDE.md') -and -not (Test-Path '.claude') -and
+       $out -match 'Guidelines:\s+agents\r?\n') 'wizard: guidelines for Claude Code default to the skills answer (no)'
+# ...yes...
+$out = Invoke-WizardWith "y`nl`n`n`n`ns`n"
+Check ($LASTEXITCODE -eq 0 -and (Test-LinkIntoStore ".claude/skills/$skill") -and (Test-Path 'CLAUDE.md') -and
+       $out -match 'Skills:\s+agents, claude \(local\)' -and $out -match 'Guidelines:\s+agents, claude') `
+    'wizard: guidelines for Claude Code default to the skills answer (yes)'
+# ...and yes when the skills step is skipped.
+Remove-Item -LiteralPath 'AGENTS.md', 'CLAUDE.md' -Force
+$out = Invoke-WizardWith "n`ny`n`ns`n"
+Check ($LASTEXITCODE -eq 0 -and (Test-Path 'AGENTS.md') -and (Test-Path 'CLAUDE.md') -and $out -match 'Skills:\s+skipped') `
+    'wizard: guidelines for Claude Code by default when the skills step is skipped'
 # Global skills make global the default MCP scope.
 $ocBefore = if (Test-Path $userOc) { [System.IO.File]::ReadAllBytes($userOc) } else { $null }
-$out = "1`ng`ns`n3`n3`n`n" | & $pwshPath -NoProfile -File $install -Source $Source 2>&1 | Out-String
+$out = Invoke-WizardWith "y`ng`nn`nn`n3`n3`n`n"
 Check ($LASTEXITCODE -eq 0 -and (Test-Path $userOc) -and (Get-Content -Raw $userOc | ConvertFrom-Json).mcp.playwright -and
        -not (Test-Path 'opencode.json')) 'wizard: the MCP scope defaults to the global skills scope'
 if ($null -eq $ocBefore) { Remove-Item -LiteralPath $userOc -Force } else { [System.IO.File]::WriteAllBytes($userOc, $ocBefore) }
@@ -1630,15 +1761,15 @@ Set-Location $proj
 # ---------------------------------------------------------------------------
 # 4. Negative cases
 # ---------------------------------------------------------------------------
-Check ((Invoke-Installer @('agents-md', '-Source', $Source)) -ne 0) `
-    'negative: agents-md without -Conventions fails'
+Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex', '-Claude')) -ne 0) `
+    'negative: -Claude is for skills and agents-md only'
 Check ((Invoke-Installer @('skills', '-Conventions', 'bogus', '-Scope', 'local', '-Source', $Source)) -ne 0) `
     'negative: unknown convention fails'
 Check ((Invoke-Installer @('skills', '-Agents', 'claude-desktop', '-Scope', 'local', '-Source', $Source)) -ne 0) `
     'negative: skills rejects claude-desktop'
 Check ((Invoke-Installer @('agents-md', '-Agents', 'claude-desktop', '-Source', $Source)) -ne 0) `
     'negative: agents-md rejects claude-desktop'
-Check ((Invoke-Installer @('agents-md', '-Agents', 'claude', '-Source', (Join-Path $work 'does-not-exist'))) -ne 0) `
+Check ((Invoke-Installer @('agents-md', '-Claude', '-Source', (Join-Path $work 'does-not-exist'))) -ne 0) `
     'negative: missing -Source dir fails'
 
 Set-Location $scriptDir

@@ -2,11 +2,12 @@
 # Jmix AI Agents Toolkit installer.
 #
 # Default (no subcommand) launches an interactive wizard that guides through:
-#   1. Installing Jmix skills (globally or into the project) for the chosen
-#      conventions (.agents/skills, .claude/skills). In the project the skills
-#      are kept in .agents/skills (also when only claude is chosen) and linked
-#      into .claude/skills; an old .skills store is migrated and removed.
-#   2. Adding project-level guidelines (AGENTS.md / CLAUDE.md).
+#   1. Installing Jmix skills (globally or into the project) into .agents/skills,
+#      and for Claude Code also into .claude/skills. In the project the skills
+#      are kept in .agents/skills and linked into .claude/skills; an old
+#      .skills store is migrated and removed.
+#   2. Adding project-level guidelines to AGENTS.md, and for Claude Code to
+#      CLAUDE.md.
 #   3. Registering MCP servers (JetBrains, Context7, Playwright) with the agents.
 #
 # Subcommands are available for non-interactive use; see `install.sh --help`.
@@ -35,10 +36,6 @@ SKILL_BACKUP_DIR=""
 VERBOSE=0
 
 ALL_AGENTS="claude codex opencode junie"
-# Where skills and guidelines go: "agents" -- .agents/skills and AGENTS.md
-# (Codex, OpenCode, Junie and other agents of those open conventions) --
-# and "claude" -- .claude/skills and CLAUDE.md (Claude Code).
-CONVENTIONS="agents claude"
 MCP_SERVERS_ALL="jetbrains context7 playwright"
 
 # IntelliJ IDEA's MCP server listens on 127.0.0.1 only. Its default port is
@@ -202,16 +199,34 @@ parse_agents_csv() {
     parse_csv "$1" "$2" --agents "$ALL_AGENTS"
 }
 
-# Parses the --conventions list $1 of subcommand $2. Agent names (the --agents
-# of earlier releases) are accepted too: codex, opencode and junie follow the
-# agents convention.
-parse_conventions_csv() {
-    local token mapped=""
-    for token in $(printf '%s' "$1" | tr ',' ' ' | tr '[:upper:]' '[:lower:]'); do
-        case "$token" in codex|opencode|junie) token=agents ;; esac
-        mapped="${mapped},${token}"
-    done
-    parse_csv "${mapped#,}" "$2" --conventions "$CONVENTIONS"
+# Prints 1 or 0 for the value $1 of --claude=VALUE.
+parse_claude_value() {
+    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+        true) printf 1 ;;
+        false) printf 0 ;;
+        *) die "--claude takes true or false (got '$1')" ;;
+    esac
+}
+
+# Prints the conventions of a skills / agents-md run: "agents" -- .agents/skills
+# and AGENTS.md, read by Codex, OpenCode, Junie and other agents, always -- and
+# "claude" -- .claude/skills and CLAUDE.md -- when Claude Code is on.
+# $1 - subcommand   $2 - --claude: 1, 0, or empty when not given
+# $3 - 1 when a hidden --conventions / --agents list was given   $4 - that list
+# The list is validated as in earlier releases (agents, claude, or the agent
+# names codex, opencode, junie, which mean agents); 'claude' in it turns Claude
+# Code on unless --claude was given.
+claude_conventions() {
+    local claude="$2" token mapped="" list
+    if [ "$3" = 1 ]; then
+        for token in $(printf '%s' "$4" | tr ',' ' ' | tr '[:upper:]' '[:lower:]'); do
+            case "$token" in codex|opencode|junie) token=agents ;; esac
+            mapped="${mapped},${token}"
+        done
+        list="$(parse_csv "${mapped#,}" "$1" --conventions "agents claude")" || exit 1
+        [ -n "$claude" ] || case " $list " in *" claude "*) claude=1 ;; esac
+    fi
+    if [ "$claude" = 1 ]; then printf 'agents claude'; else printf 'agents'; fi
 }
 
 # Reads a line from /dev/tty so prompts work under `curl ... | bash`.
@@ -259,9 +274,8 @@ Jmix AI Agents Toolkit installer.
 
 Usage:
   install.sh                                                  # interactive wizard
-  install.sh skills     --conventions CSV [--scope global|local]
-                                                              # install skills into a store and link them
-  install.sh agents-md  --conventions CSV                     # install project guidelines
+  install.sh skills     [--scope global|local] [--claude]     # install skills into a store and link them
+  install.sh agents-md  [--claude]                            # install project guidelines
   install.sh mcp        --servers CSV --agents CSV [--scope local|global] [--context7-key KEY]
                                                               # register MCP servers
   install.sh mcp-jetbrains | mcp-context7 | playwright --agents CSV [--scope local|global]
@@ -294,17 +308,17 @@ Common options:
   -h, --help                 Show this help.
 
 skills / agents-md options:
-  --conventions CSV      Where the skills and guidelines go: "agents"
-                         (.agents/skills, AGENTS.md -- Codex, OpenCode, Junie
-                         and other agents of these conventions) and/or "claude"
-                         (.claude/skills, CLAUDE.md -- Claude Code). Agent names
-                         work too: codex, opencode and junie mean agents.
+  --claude[=true|false]  Also set up Claude Code. Without it the skills go to
+                         .agents/skills and the guidelines to AGENTS.md, read
+                         by Codex, OpenCode, Junie, Cursor, GitHub Copilot,
+                         Gemini CLI and others; with it the skills are also
+                         linked into .claude/skills and the guidelines added
+                         to CLAUDE.md, for Claude Code.
   --scope global|local   skills: "global" (default) links the skills into the
                          user home, "local" into the current project: there
-                         the skills are kept in .agents/skills (also when only
-                         "claude" is chosen) and linked into .claude/skills.
-                         The .skills store of earlier versions is migrated
-                         and removed.
+                         the skills are kept in .agents/skills (and linked
+                         into .claude/skills with --claude). The .skills store
+                         of earlier versions is migrated and removed.
 
 mcp / mcp-jetbrains / mcp-context7 / playwright options:
   --agents CSV           claude, codex, opencode, junie. claude also sets up
@@ -407,18 +421,15 @@ convention_skills_dir() {
 }
 
 # Earlier versions also linked the skills into .junie/skills. Junie reads
-# .agents/skills now, and its CLI reads ~/.junie/skills first, so links left
-# there would shadow newer skills: the toolkit's own links are removed. Only
-# when .agents/skills holds the skills, because this run linked it or it is the
-# store (local scope; otherwise Junie would be left with no skills), and never
-# from a .junie/skills that is the same dir as an agent skills dir: its links
-# are the ones this run just created.
-# $1 - scope root (the user home or the project dir)   $2 - conventions of this run
-# $3 - store dir
+# .agents/skills now, which every run links (or which is the store), and its
+# CLI reads ~/.junie/skills first, so links left there would shadow newer
+# skills: the toolkit's own links are removed -- never from a .junie/skills
+# that is the same dir as an agent skills dir: its links are the ones this run
+# just created.
+# $1 - scope root (the user home or the project dir)
 remove_old_junie_skill_links() {
     local dir="$1/.junie/skills" link
     [ -d "$dir" ] || return 0
-    case " $2 " in *" agents "*) ;; *) [ "$1/.agents/skills" -ef "$3" ] || return 0 ;; esac
     if [ "$dir" -ef "$1/.agents/skills" ] || [ "$dir" -ef "$1/.claude/skills" ]; then
         return 0
     fi
@@ -565,12 +576,12 @@ link_store_into_agents() {
         emit_change "$([ "$existed" -eq 1 ] && printf updated || printf created)" dir "$agent_dir"
         log "  Linked skills into ${agent_dir}"
     done
-    remove_old_junie_skill_links "$root" "$conventions" "$store_dir"
+    remove_old_junie_skill_links "$root"
 }
 
 # Sets SKILLS_ROOT, SKILLS_STORE and SKILL_BACKUP_DIR for scope $1. Local skills
-# are real folders in the project's .agents/skills (also when only claude is
-# chosen: .claude/skills links into it), and replaced ones are backed up to
+# are real folders in the project's .agents/skills (.claude/skills links into
+# it), and replaced ones are backed up to
 # .agents/.jmix/backups, out of the dirs agents read. Global skills live in
 # ~/.agents/.jmix/skills/<branch>, backed up beside themselves.
 select_skills_scope() {
@@ -686,13 +697,6 @@ agent_label() {
     esac
 }
 
-skills_label() {
-    case "$1" in
-        agents) printf '.agents/skills (Codex, OpenCode, Junie, ...)' ;;
-        claude) printf '.claude/skills (Claude Code)' ;;
-    esac
-}
-
 guidelines_label() {
     case "$1" in
         agents) printf 'AGENTS.md (Codex, OpenCode, Junie, ...)' ;;
@@ -701,7 +705,7 @@ guidelines_label() {
 }
 
 cmd_skills() {
-    local conventions_csv=""
+    local claude="" alias_given=0 alias_csv=""
     local scope="global"
 
     local _argc=-1
@@ -709,9 +713,13 @@ cmd_skills() {
         [ "$#" -ne "$_argc" ] || die "argument parser made no progress near: $1"
         _argc=$#
         case "$1" in
+            --claude) claude=1; shift ;;
+            --claude=*) claude="$(parse_claude_value "${1#*=}")"; shift ;;
+            # Hidden aliases for older Studio metadata and released jmix-cli.
+            # No warning: Studio <= 3.0.4 fails a step on any stderr output.
             --conventions|--agents)
                 [ $# -ge 2 ] || die "$1 requires an argument"
-                conventions_csv="$2"; shift 2 ;;
+                alias_given=1; alias_csv="$2"; shift 2 ;;
             --scope)
                 [ $# -ge 2 ] || die "--scope requires an argument"
                 scope="$2"; shift 2 ;;
@@ -726,7 +734,7 @@ cmd_skills() {
     done
 
     local conventions
-    conventions="$(parse_conventions_csv "$conventions_csv" skills)"
+    conventions="$(claude_conventions skills "$claude" "$alias_given" "$alias_csv")"
     scope="$(parse_scope "$scope" skills)"
 
     ensure_tarball
@@ -1033,7 +1041,7 @@ write_guidelines_block() {
 }
 
 # Installs the block for every convention in $1 (space-separated, agents before
-# claude as parse_conventions_csv orders them, so claude_md_covered_by_agents_md
+# claude as claude_conventions orders them, so claude_md_covered_by_agents_md
 # sees AGENTS.md in its final state). $2=1 keeps going after a failed one
 # (wizard).
 install_guidelines_blocks() {
@@ -1048,16 +1056,20 @@ install_guidelines_blocks() {
 }
 
 cmd_agents_md() {
-    local conventions_csv=""
+    local claude="" alias_given=0 alias_csv=""
 
     local _argc=-1
     while [ $# -gt 0 ]; do
         [ "$#" -ne "$_argc" ] || die "argument parser made no progress near: $1"
         _argc=$#
         case "$1" in
+            --claude) claude=1; shift ;;
+            --claude=*) claude="$(parse_claude_value "${1#*=}")"; shift ;;
+            # Hidden aliases for older Studio metadata and released jmix-cli.
+            # No warning: Studio <= 3.0.4 fails a step on any stderr output.
             --conventions|--agents)
                 [ $# -ge 2 ] || die "$1 requires an argument"
-                conventions_csv="$2"; shift 2 ;;
+                alias_given=1; alias_csv="$2"; shift 2 ;;
             --backup-existing-files)
                 BACKUP_EXISTING=1; shift ;;
             --source)
@@ -1069,7 +1081,7 @@ cmd_agents_md() {
     done
 
     local conventions
-    conventions="$(parse_conventions_csv "$conventions_csv" agents-md)"
+    conventions="$(claude_conventions agents-md "$claude" "$alias_given" "$alias_csv")"
 
     log "Project guidelines target directory: $(pwd -P)"
     ensure_tarball
@@ -1793,14 +1805,20 @@ cmd_wizard() {
     local summary_skills="skipped"
     local summary_guidelines="skipped"
     local summary_mcp="skipped"
-    local sel scope="local"
+    local sel scope="local" claude_default="y"
 
-    # Step 1: skills
-    sel="$(wizard_pick all '[1/3] Install Jmix skills into:' skills_label "$CONVENTIONS")"
-    if [ "$sel" != "skip" ]; then
+    # Step 1: skills, into .agents/skills and, for Claude Code, .claude/skills.
+    log ""
+    if prompt_yes_no '[1/3] Install Jmix skills into .agents/skills?' y; then
         case "$(prompt 'Install scope: (l)ocal project dir or (g)lobal user home' 'l')" in
             g|G|global|GLOBAL) scope="global" ;;
         esac
+        sel="agents"
+        if prompt_yes_no 'For Claude Code too (links in .claude/skills)?' y; then
+            sel="agents claude"
+        else
+            claude_default="n"
+        fi
         ensure_tarball
         select_skills_scope "$scope"
         install_skills_to_store "$SKILLS_STORE" || true
@@ -1808,19 +1826,20 @@ cmd_wizard() {
         if link_store_into_agents "$SKILLS_ROOT" "$SKILLS_STORE" "$sel" && [ "$scope" = "local" ]; then
             migrate_legacy_local_store "$SKILLS_ROOT" "$SKILLS_STORE" || true
         fi
-        summary_skills="$sel (${scope})"
+        summary_skills="${sel// /, } (${scope})"
     fi
 
-    # Step 2: agents-md
-    sel="$(wizard_pick all '[2/3] Merge Jmix coding guidelines in this directory into:' guidelines_label "$CONVENTIONS")"
-    if [ "$sel" != "skip" ]; then
-        if prompt_yes_no "Target directory: $(pwd -P). Proceed?" "y"; then
-            ensure_tarball
-            install_guidelines_blocks "$sel" 1
-            summary_guidelines="$sel"
-        else
-            summary_guidelines="skipped (declined)"
+    # Step 2: agents-md, into AGENTS.md and, for Claude Code, CLAUDE.md. The
+    # Claude Code answer defaults to the one given for the skills.
+    log ""
+    if prompt_yes_no "[2/3] Merge Jmix coding guidelines into AGENTS.md in $(pwd -P)?" y; then
+        sel="agents"
+        if prompt_yes_no 'For Claude Code too (CLAUDE.md)?' "$claude_default"; then
+            sel="agents claude"
         fi
+        ensure_tarball
+        install_guidelines_blocks "$sel" 1
+        summary_guidelines="${sel// /, }"
     fi
 
     # Step 3: MCP servers. cmd_mcp's only exits are argument errors, which

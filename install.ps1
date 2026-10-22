@@ -5,20 +5,20 @@
 .DESCRIPTION
     Default invocation (no subcommand) launches an interactive wizard that
     guides through:
-      1. Installing Jmix skills (globally or into the project) for the chosen
-         conventions (.agents/skills, .claude/skills).
-      2. Adding project-level guidelines (AGENTS.md / CLAUDE.md).
+      1. Installing Jmix skills (globally or into the project) into
+         .agents/skills, and for Claude Code into .claude/skills too.
+      2. Adding project-level guidelines (AGENTS.md, and for Claude Code
+         CLAUDE.md too).
       3. Registering MCP servers (JetBrains, Context7, Playwright) with the agents.
 
     Subcommands are available for non-interactive use:
-      install.ps1 skills     -Conventions CSV [-Scope global|local]
+      install.ps1 skills     [-Scope global|local] [-Claude]
                              Installs skills into a canonical store once, then links
-                             them into the skills dir of each convention. Local
-                             skills are kept in the project's .agents/skills (also
-                             when only claude is chosen) and linked into
-                             .claude/skills; an old .skills store is migrated and
+                             them into .agents/skills (and .claude/skills with
+                             -Claude). Local skills are kept in the project's
+                             .agents/skills; an old .skills store is migrated and
                              removed.
-      install.ps1 agents-md  -Conventions CSV
+      install.ps1 agents-md  [-Claude]
       install.ps1 mcp        -Servers CSV -Agents CSV [-Scope local|global] [-Context7Key KEY]
       install.ps1 mcp-jetbrains | mcp-context7 | playwright -Agents CSV [-Scope local|global]
                              (mcp-context7 also takes -Context7Key)
@@ -48,12 +48,12 @@
     Repository branch/ref to download and use. Defaults to this release branch
     (v3). Studio passes its resolved toolkit branch here.
 
-.PARAMETER Conventions
-    skills / agents-md: where the skills and guidelines go, comma-separated:
-    "agents" (.agents/skills, AGENTS.md -- Codex, OpenCode, Junie and other
-    agents of these conventions) and/or "claude" (.claude/skills, CLAUDE.md --
-    Claude Code). Agent names work too (-Agents of earlier releases): codex,
-    opencode and junie mean agents.
+.PARAMETER Claude
+    skills / agents-md: set up Claude Code too. Without it the skills go to
+    .agents/skills and the guidelines to AGENTS.md, which Codex, OpenCode,
+    Junie, Cursor, GitHub Copilot, Gemini CLI and others read; with it the
+    skills are also linked into .claude/skills and the guidelines merged into
+    CLAUDE.md, for Claude Code. -Claude:$true / -Claude:$false work too.
 
 .PARAMETER Agents
     MCP subcommands: comma-separated agents (e.g. "claude,codex"): claude,
@@ -65,9 +65,9 @@
 
 .PARAMETER Scope
     skills: "global" (default) links the skills into the user home, "local"
-    into the current project: they are kept in its .agents/skills (also when
-    only "claude" is chosen) and linked into .claude/skills. An old .skills
-    store of the project is migrated and removed.
+    into the current project: they are kept in its .agents/skills (with
+    -Claude also linked into .claude/skills). An old .skills store of the
+    project is migrated and removed.
     MCP subcommands: "local" (default) writes the project files in the current
     directory (.mcp.json, .codex\config.toml, opencode.json,
     .junie\mcp\mcp.json); "global" writes each agent's user config. Claude
@@ -100,7 +100,7 @@
     Invoke-RestMethod https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/HEAD/install.ps1 | Invoke-Expression
 
 .EXAMPLE
-    & ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/HEAD/install.ps1).Content)) skills -Conventions claude
+    & ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/HEAD/install.ps1).Content)) skills -Scope local -Claude
 #>
 [CmdletBinding()]
 param(
@@ -109,6 +109,7 @@ param(
     [string]$Source = '',
     [string]$Agents = '',
     [string]$Conventions = '',
+    [switch]$Claude,
     [string]$Servers = '',
     [string]$Scope = '',
     [string]$Context7Key = '',
@@ -119,6 +120,9 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# The parameters given at all: an explicit -Claude:$false counts too.
+$script:GivenParams = @($PSBoundParameters.Keys)
+
 # Branch identity defaults to this release branch. Studio overrides it when a
 # feature branch is pinned in the Registry.
 
@@ -127,8 +131,8 @@ $script:RepoName  = 'jmix-agent-toolkit'
 
 $script:AllAgents = @('claude', 'codex', 'opencode', 'junie')
 # Where skills and guidelines go: 'agents' -- .agents/skills and AGENTS.md
-# (Codex, OpenCode, Junie and other agents of those open conventions) -- and
-# 'claude' -- .claude/skills and CLAUDE.md (Claude Code).
+# (Codex, OpenCode, Junie and other agents of those open conventions), always
+# -- and 'claude' -- .claude/skills and CLAUDE.md (Claude Code), with -Claude.
 $script:AllConventions = @('agents', 'claude')
 $script:AllMcpServers = @('jetbrains', 'context7', 'playwright')
 
@@ -254,14 +258,6 @@ function Get-AgentLabel {
     }
 }
 
-function Get-SkillsLabel {
-    param([string]$Convention)
-    switch ($Convention) {
-        'agents' { '.agents/skills (Codex, OpenCode, Junie, ...)' }
-        'claude' { '.claude/skills (Claude Code)' }
-    }
-}
-
 function Get-GuidelinesLabel {
     param([string]$Convention)
     switch ($Convention) {
@@ -362,9 +358,9 @@ function Resolve-AgentsCsv {
     return Resolve-Csv -Csv $Csv -Subcommand $Subcommand -Option '-Agents' -Valid $script:AllAgents
 }
 
-# -Conventions of skills / agents-md. Agent names (the -Agents of earlier
-# releases) are accepted too: codex, opencode and junie follow the agents
-# convention.
+# The hidden -Conventions / -Agents of skills / agents-md (see
+# Get-ConventionList). Agent names are accepted too: codex, opencode and junie
+# follow the agents convention.
 function Resolve-ConventionsCsv {
     param([string]$Csv, [string]$Subcommand)
     $mapped = @($Csv -split ',' | ForEach-Object {
@@ -476,17 +472,14 @@ function Get-ConventionSkillsDir {
 }
 
 # Earlier versions also linked the skills into .junie/skills. Junie reads
-# .agents/skills now, and its CLI reads ~/.junie/skills first, so links left
-# there would shadow newer skills: the toolkit's own links are removed. Only
-# when .agents/skills holds the skills -- this run linked it, or it is the local
-# store (otherwise Junie would be left with no skills) -- and never from a
-# .junie/skills that is the same folder as an agent skills dir: its links are
-# the ones this run just created.
+# .agents/skills now, which every run fills, and its CLI reads ~/.junie/skills
+# first, so links left there would shadow newer skills: the toolkit's own links
+# are removed. Never from a .junie/skills that is the same folder as an agent
+# skills dir: its links are the ones this run just created.
 function Remove-OldJunieSkillLinks {
-    param([string]$Root, [string[]]$Conventions, [string]$Scope)
+    param([string]$Root)
     $dir = Join-Path $Root '.junie/skills'
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return }
-    if ($Scope -ne 'local' -and $Conventions -notcontains 'agents') { return }
     foreach ($rel in '.agents/skills', '.claude/skills') {
         if (Test-SameDirectory -Path (Join-Path $Root $rel) -Other $dir) { return }
     }
@@ -647,16 +640,26 @@ function New-SkillSymlinks {
     Write-Info "  Linked skills into $AgentDir"
 }
 
-# The -Conventions of skills / agents-md, or the -Agents of earlier releases.
-function Get-ConventionsArg {
-    if ($Conventions) { return $Conventions }
-    return $Agents
+# The conventions of skills / agents-md $Subcommand: always 'agents', plus
+# 'claude' with -Claude.
+function Get-ConventionList {
+    param([string]$Subcommand)
+    $withClaude = [bool]$Claude
+    # Hidden aliases for older Studio metadata and released jmix-cli.
+    # No warning: Studio <= 3.0.4 fails a step on any stderr output.
+    if ($script:GivenParams -contains 'Conventions' -or $script:GivenParams -contains 'Agents') {
+        $csv = if ($script:GivenParams -contains 'Conventions') { $Conventions } else { $Agents }
+        $aliasClaude = (Resolve-ConventionsCsv -Csv $csv -Subcommand $Subcommand) -contains 'claude'
+        if ($script:GivenParams -notcontains 'Claude') { $withClaude = $aliasClaude }
+    }
+    if ($withClaude) { return @('agents', 'claude') }
+    return @('agents')
 }
 
 # The skills store of scope $Scope under $Root (the project or the user home).
-# Local skills are kept in the project's .agents/skills -- also when only
-# "claude" is chosen -- and linked into .claude/skills; global ones in
-# ~/.agents/.jmix/skills/<branch>, so multiple Jmix majors coexist.
+# Local skills are kept in the project's .agents/skills (with -Claude linked
+# into .claude/skills); global ones in ~/.agents/.jmix/skills/<branch>, so
+# multiple Jmix majors coexist.
 function Get-SkillsStoreDir {
     param([string]$Scope, [string]$Root)
     if ($Scope -eq 'local') { return Join-Path $Root '.agents/skills' }
@@ -778,7 +781,7 @@ function Install-Skills {
     foreach ($c in $ConventionList) {
         New-SkillSymlinks -AgentDir (Join-Path $root (Get-ConventionSkillsDir -Convention $c)) -StoreDir $storeDir
     }
-    Remove-OldJunieSkillLinks -Root $root -Conventions $ConventionList -Scope $Scope
+    Remove-OldJunieSkillLinks -Root $root
     if ($Scope -eq 'local') { Remove-LegacySkillsStore -Root $root -StoreDir $storeDir }
 
     Write-Info ''
@@ -786,7 +789,7 @@ function Install-Skills {
 }
 
 function Invoke-CmdSkills {
-    $conventionList = Resolve-ConventionsCsv -Csv (Get-ConventionsArg) -Subcommand 'skills'
+    $conventionList = Get-ConventionList -Subcommand 'skills'
     $resolvedScope = Resolve-Scope -Scope $Scope
     Initialize-Tarball
     Install-Skills -ConventionList $conventionList -Scope $resolvedScope
@@ -1112,7 +1115,7 @@ function Install-GuidelinesBlocks {
 }
 
 function Invoke-CmdAgentsMd {
-    $conventionList = Resolve-ConventionsCsv -Csv (Get-ConventionsArg) -Subcommand 'agents-md'
+    $conventionList = Get-ConventionList -Subcommand 'agents-md'
     Write-Info "Project guidelines target directory: $((Get-Location).Path)"
     Initialize-Tarball
     Install-GuidelinesBlocks -ConventionList $conventionList
@@ -1583,6 +1586,7 @@ function Assert-McpArgs {
     param([string]$Subcommand, [switch]$AllowServers, [switch]$AllowKey)
     if ($Servers -and -not $AllowServers) { Write-ErrAndExit "${Subcommand}: unknown argument: -Servers" }
     if ($Context7Key -and -not $AllowKey) { Write-ErrAndExit "${Subcommand}: unknown argument: -Context7Key" }
+    if ($script:GivenParams -contains 'Claude') { Write-ErrAndExit "${Subcommand}: unknown argument: -Claude" }
 }
 
 # =================================================================
@@ -1888,16 +1892,20 @@ function Invoke-Wizard {
         mcp        = 'skipped'
     }
     $resolvedScope = 'local'
-
-    # Each Read-Choice result is wrapped in @() so a one-element return stays an
-    # array: PowerShell unwraps it, and $sel[0] would index its first character.
+    # The guidelines' Claude Code answer defaults to the skills' one.
+    $claudeDefault = 'y'
 
     # Step 1: skills
-    $sel = @(Read-Choice -Title '[1/3] Install Jmix skills into:' -Options $script:AllConventions `
-        -Label { param($o) Get-SkillsLabel -Convention $o } -Default 'all')
-    if ($sel[0] -ne 'skip') {
+    Write-Host ''
+    if (Read-YesNo -Message '[1/3] Install Jmix skills into .agents/skills?' -Default 'y') {
         $scopeAnswer = Read-Prompt -Message 'Install scope: (l)ocal project dir or (g)lobal user home' -Default 'l'
         if ($scopeAnswer -match '^(g|global)$') { $resolvedScope = 'global' }
+        $sel = @('agents')
+        $claudeDefault = 'n'
+        if (Read-YesNo -Message 'For Claude Code too (links in .claude/skills)?' -Default 'y') {
+            $sel = @('agents', 'claude')
+            $claudeDefault = 'y'
+        }
         Initialize-Tarball
         try { Install-Skills -ConventionList $sel -Scope $resolvedScope }
         catch { Write-Info "error: $($_.Exception.Message)" }
@@ -1905,20 +1913,19 @@ function Invoke-Wizard {
     }
 
     # Step 2: agents-md
-    $sel = @(Read-Choice -Title '[2/3] Merge Jmix coding guidelines in this directory into:' -Options $script:AllConventions `
-        -Label { param($o) Get-GuidelinesLabel -Convention $o } -Default 'all')
-    if ($sel[0] -ne 'skip') {
-        if (Read-YesNo -Message "Target directory: $((Get-Location).Path). Proceed?" -Default 'y') {
-            Initialize-Tarball
-            Install-GuidelinesBlocks -ConventionList $sel -Lenient
-            $summaryStrings.guidelines = $sel -join ', '
-        } else {
-            $summaryStrings.guidelines = 'skipped (declined)'
-        }
+    Write-Host ''
+    if (Read-YesNo -Message "[2/3] Merge Jmix coding guidelines into AGENTS.md in $((Get-Location).Path)?" -Default 'y') {
+        $sel = @('agents')
+        if (Read-YesNo -Message 'For Claude Code too (CLAUDE.md)?' -Default $claudeDefault) { $sel = @('agents', 'claude') }
+        Initialize-Tarball
+        Install-GuidelinesBlocks -ConventionList $sel -Lenient
+        $summaryStrings.guidelines = $sel -join ', '
     }
 
     # Step 3: MCP servers; a failed agent there is reported and the wizard moves
-    # on. The scope defaults to the one chosen for the skills.
+    # on. The scope defaults to the one chosen for the skills. Each Read-Choice
+    # result is wrapped in @() so a one-element return stays an array:
+    # PowerShell unwraps it, and $x[0] would index its first character.
     $serverList = @(Read-Choice -Title '[3/3] Connect agents to MCP servers:' -Options $script:AllMcpServers `
         -Label { param($o) Get-ServerLabel -Server $o })
     $agentList = @('skip')

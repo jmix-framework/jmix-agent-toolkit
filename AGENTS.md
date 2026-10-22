@@ -21,7 +21,7 @@ No build step: shell and PowerShell scripts, Markdown skills, JSON metadata.
 
 ## Documentation
 
-- `README.md` — for users: install commands, conventions, flags, skills store layout, MCP.
+- `README.md` — for users: install commands, Claude Code option, flags, skills store layout, MCP.
 - `MAINTAINING.md` — branch model, how install works, skill frontmatter rules, cutting a new
   version branch.
 

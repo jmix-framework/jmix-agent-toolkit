@@ -22,14 +22,24 @@
 - **CLI**: `curl -fsSL .../jmix-agent-toolkit/<branch>/install.sh | bash` starts the
   wizard. The script downloads its own branch tarball (`CONTENT_REF`), copies
   `content/skills` into a store (`~/.agents/.jmix/skills/<branch>/` globally,
-  `<project>/.agents/skills/` locally, even for a Claude-only choice), symlinks each
-  skill folder into the selected `.agents/skills` / `.claude/skills` that is not the
-  store, merges `content/guidelines-block.md` into the project's `AGENTS.md` /
-  `CLAUDE.md`, and registers the chosen MCP servers. A local run migrates the old
-  `<project>/.skills/` store; with `--backup-existing-files` it moves replaced local
+  `<project>/.agents/skills/` locally), symlinks each skill folder into `.agents/skills`
+  unless that is the store, merges `content/guidelines-block.md` into the project's
+  `AGENTS.md`, and registers the chosen MCP servers. The open convention
+  (`.agents/skills`, `AGENTS.md`) is always on; Claude Code is the only choice:
+  `--claude` / `-Claude` (Studio passes `--claude=true|false` / `-Claude:$true|$false`)
+  adds the `.claude/skills` links and the block in `CLAUDE.md`. A local run migrates the
+  old `<project>/.skills/` store; with `--backup-existing-files` it moves replaced local
   skill folders to `<project>/.agents/.jmix/backups/`, outside the dirs agents scan.
   The store paths in `skills-manifest.json` (`STORE` in `gen_skills_manifest.py`) must
   match the installers'; the test suites check the local one.
+- **Hidden compatibility aliases**: the old `--conventions` / `--agents` CSV
+  (`-Conventions` / `-Agents`) of `skills` and `agents-md` still work: `claude` in the
+  list means the Claude flag, other values change nothing, and an explicit Claude flag
+  wins. They stay because released jmix-cli and user scripts pass them. Never document
+  them publicly (help, README) and never print a deprecation warning: Studio <= 3.0.4
+  treats any stderr output as a failed step.
+  PowerShell's generated `Get-Help` syntax still lists the named parameters; the
+  authored help text and examples omit these aliases.
 - **Jmix Studio**: the **AI Agents Toolkit** wizard computes the branch from the project's
   Jmix major (`v<major>`), fetches `.../v<major>/.studio/studio-meta-data.json` (falling
   back to the default branch if that branch does not exist yet), then runs that branch's

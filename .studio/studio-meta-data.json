@@ -5,7 +5,7 @@
       {
         "id": "skills",
         "title": "Skills",
-        "message": "🛠️ Install Jmix <code>skills</code> into the selected skills folders, in the project or the user home. <br>📁 In the project, the skills are kept in <code>.agents/skills</code> and linked into <code>.claude/skills</code> when it is selected. <br>⏭️ Click <i>Skip</i> to opt out.",
+        "message": "🛠️ Install Jmix <code>skills</code> in the project or the user home. <br>📁 Agents find them in <code>.agents/skills</code>: Codex, OpenCode, Junie, Cursor, GitHub Copilot, Gemini CLI and others. For Claude Code, each skill is also linked into <code>.claude/skills</code>. <br>⏭️ Click <i>Skip</i> to opt out.",
         "inputs": [
           {
             "id": "skillsScope",
@@ -24,58 +24,54 @@
             ]
           },
           {
-            "id": "skillsConventions",
-            "label": "📁 Skills folders",
+            "id": "skillsClaude",
+            "label": "🤖 Claude Code",
             "type": "options",
-            "multi": true,
             "choices": [
               {
-                "value": "agents",
-                "label": ".agents (Codex, OpenCode, etc)",
+                "value": "true",
+                "label": "Yes, also link into .claude/skills",
                 "default": true
               },
               {
-                "value": "claude",
-                "label": ".claude",
-                "default": true
+                "value": "false",
+                "label": "No, .agents/skills only"
               }
             ]
           }
         ],
         "command": {
-          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) skills -ContentRef \"${guidelinesBranch}\" -Conventions \"${skillsConventions}\" -Scope \"${skillsScope}\"",
-          "macos": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- skills --content-ref \"${guidelinesBranch}\" --conventions \"${skillsConventions}\" --scope \"${skillsScope}\"",
-          "linux": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- skills --content-ref \"${guidelinesBranch}\" --conventions \"${skillsConventions}\" --scope \"${skillsScope}\""
+          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) skills -ContentRef \"${guidelinesBranch}\" -Scope \"${skillsScope}\" -Claude:$${skillsClaude}",
+          "macos": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- skills --content-ref \"${guidelinesBranch}\" --scope \"${skillsScope}\" --claude=\"${skillsClaude}\"",
+          "linux": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- skills --content-ref \"${guidelinesBranch}\" --scope \"${skillsScope}\" --claude=\"${skillsClaude}\""
         }
       },
       {
         "id": "guidelines",
         "title": "Guidelines",
-        "message": "📘 Add a few lines to the selected guidelines files that point the agents at the Jmix skills. <br>✍️ Your own instructions are kept — the lines are merged in. A guidelines file installed by an older version of this toolkit is replaced instead. Changed user or legacy files are backed up. If <code>CLAUDE.md</code> imports <code>@AGENTS.md</code>, it is left untouched after <code>AGENTS.md</code> is updated. <br>⏭️ Click <i>Skip</i> to leave the project as is; the Jmix skills are then installed but nothing routes the agents to them.",
+        "message": "📘 Add a few lines to <code>AGENTS.md</code> that point the agents at the Jmix skills, and for Claude Code to <code>CLAUDE.md</code> as well. <br>✍️ Your own instructions are kept — the lines are merged in. A guidelines file installed by an older version of this toolkit is replaced instead. Changed user or legacy files are backed up. If <code>CLAUDE.md</code> imports <code>@AGENTS.md</code>, it is left untouched after <code>AGENTS.md</code> is updated. <br>⏭️ Click <i>Skip</i> to leave the project as is; the Jmix skills are then installed but nothing routes the agents to them.",
         "inputs": [
           {
-            "id": "guidelinesConventions",
-            "label": "📄 Guidelines files",
+            "id": "guidelinesClaude",
+            "label": "🤖 Claude Code",
             "type": "options",
-            "multi": true,
             "choices": [
               {
-                "value": "agents",
-                "label": "AGENTS.md (Codex, OpenCode, etc)",
+                "value": "true",
+                "label": "Yes, also CLAUDE.md",
                 "default": true
               },
               {
-                "value": "claude",
-                "label": "CLAUDE.md",
-                "default": true
+                "value": "false",
+                "label": "No, AGENTS.md only"
               }
             ]
           }
         ],
         "command": {
-          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) agents-md -ContentRef \"${guidelinesBranch}\" -Conventions \"${guidelinesConventions}\"",
-          "macos": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- agents-md --content-ref \"${guidelinesBranch}\" --conventions \"${guidelinesConventions}\"",
-          "linux": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- agents-md --content-ref \"${guidelinesBranch}\" --conventions \"${guidelinesConventions}\""
+          "windows": "& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.ps1).Content)) agents-md -ContentRef \"${guidelinesBranch}\" -Claude:$${guidelinesClaude}",
+          "macos": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- agents-md --content-ref \"${guidelinesBranch}\" --claude=\"${guidelinesClaude}\"",
+          "linux": "set -o pipefail; curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/${guidelinesBranch}/install.sh | bash -s -- agents-md --content-ref \"${guidelinesBranch}\" --claude=\"${guidelinesClaude}\""
         }
       },
       {
