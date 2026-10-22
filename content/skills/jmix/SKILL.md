@@ -53,6 +53,7 @@ READ the most specific skill for each artifact:
 - Fetch plans / unfetched-reference / N+1 tuning: `jmix-configure-fetch-plan`
 - DTO / non-persistent UI-bound model: `jmix-create-dto-entity`
 - Reusable Flow UI fragment: `jmix-create-fragment`
+- Custom UI component (new web component or JS-library wrapper): `jmix-create-custom-ui-component`
 - Component styling / theme tokens (`--aura-*`, `--lumo-*`) / CSS classes: `jmix-style-ui`
 - Moving a project upgraded from Jmix 2.x off Lumo onto Aura: `jmix-migrate-theme-to-aura`
 
