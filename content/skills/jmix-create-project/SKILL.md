@@ -5,8 +5,9 @@ description: Create a new Jmix application with Jmix CLI using non-interactive p
 
 # Create a Jmix Project with Jmix CLI
 
-Use Jmix CLI to generate the initial project from official templates. For changes
-inside an existing application, use the matching artifact skills in `jmix`.
+Use [Jmix CLI](https://github.com/jmix-framework/jmix-cli#readme) to generate the
+initial project from official templates. For changes inside an existing
+application, use the matching artifact skills in `jmix`.
 
 ## Prepare
 
@@ -81,5 +82,3 @@ jmix --no-update new demo --non-interactive --jmix-version "<exact-3.x-version>"
 4. Before adding entities, views, or other application code, read `jmix` and its
    matching artifact skills. Use `jmix-verify-bootrun` for context and render
    verification when continuing application development.
-
-Reference: [Jmix CLI usage and options](https://github.com/jmix-framework/jmix-cli#readme).
