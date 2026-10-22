@@ -106,7 +106,6 @@ param(
     [string]$Subcommand = '',
     [string]$Source = '',
     [string]$Agents = '',
-    [string]$Conventions = '',
     [switch]$Claude,
     [string]$Servers = '',
     [string]$Scope = '',
@@ -354,18 +353,6 @@ function Resolve-Csv {
 function Resolve-AgentsCsv {
     param([string]$Csv, [string]$Subcommand)
     return Resolve-Csv -Csv $Csv -Subcommand $Subcommand -Option '-Agents' -Valid $script:AllAgents
-}
-
-# The hidden -Conventions / -Agents of skills / agents-md (see
-# Get-ConventionList). Agent names are accepted too: codex, opencode and junie
-# follow the agents convention.
-function Resolve-ConventionsCsv {
-    param([string]$Csv, [string]$Subcommand)
-    $mapped = @($Csv -split ',' | ForEach-Object {
-        $t = $_.Trim()
-        if ($t -in 'codex', 'opencode', 'junie') { 'agents' } else { $t }
-    }) -join ','
-    return Resolve-Csv -Csv $mapped -Subcommand $Subcommand -Option '-Conventions' -Valid $script:AllConventions
 }
 
 # =================================================================
@@ -642,17 +629,11 @@ function New-SkillSymlinks {
 # 'claude' unless -Claude:$false is given.
 function Get-ConventionList {
     param([string]$Subcommand)
-    $withClaude = $true
-    if ($script:GivenParams -contains 'Claude') { $withClaude = [bool]$Claude }
-    # Hidden aliases for older Studio metadata and released jmix-cli.
-    # No warning: Studio <= 3.0.4 fails a step on any stderr output.
-    if ($script:GivenParams -contains 'Conventions' -or $script:GivenParams -contains 'Agents') {
-        $csv = if ($script:GivenParams -contains 'Conventions') { $Conventions } else { $Agents }
-        $aliasClaude = (Resolve-ConventionsCsv -Csv $csv -Subcommand $Subcommand) -contains 'claude'
-        if ($script:GivenParams -notcontains 'Claude') { $withClaude = $aliasClaude }
+    if ($script:GivenParams -contains 'Agents') {
+        Write-ErrAndExit "${Subcommand}: -Agents is only supported for MCP commands"
     }
-    if ($withClaude) { return @('agents', 'claude') }
-    return @('agents')
+    if ($script:GivenParams -contains 'Claude' -and -not $Claude) { return @('agents') }
+    return @('agents', 'claude')
 }
 
 # The skills store of scope $Scope under $Root (the project or the user home).
@@ -1008,7 +989,7 @@ function Install-GuidelinesBlockFor {
 # Four branches, in order, plus an early exit for a destination path that exists
 # but is not a file (e.g. CLAUDE.md is a directory) -- there is nothing to merge
 # into, so this reports an error and exits rather than attempting anything else:
-#   1. no file             -> write the block alone
+#   1. no file             -> write the block, or @AGENTS.md for a new CLAUDE.md
 #   2. markers present     -> replace only that region, no backup
 #   3. legacy toolkit file -> back up, replace whole file
 #   4. anything else       -> back up, add the block, keep everything they wrote
@@ -1028,6 +1009,13 @@ function Write-GuidelinesBlock {
     if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
 
     if (-not (Test-Path -LiteralPath $Dest)) {
+        $agentsMd = Join-Path $destDir 'AGENTS.md'
+        if ($Convention -eq 'claude' -and
+            -not (Get-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue) -and
+            (Test-Path -LiteralPath $agentsMd -PathType Leaf) -and
+            $null -ne (Get-BlockRange -Text (Get-FileTextRaw -Path $agentsMd))) {
+            $block = "@AGENTS.md`n"
+        }
         Set-FileTextRaw -Path $Dest -Text $block
         Write-Info "  Installed: $Dest"
         Write-ChangeMarker -Action 'created' -Type 'file' -Path $Dest

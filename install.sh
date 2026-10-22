@@ -211,22 +211,9 @@ parse_claude_value() {
 # Prints the conventions of a skills / agents-md run: "agents" -- .agents/skills
 # and AGENTS.md, read by Codex, OpenCode, Junie and other agents, always -- and
 # "claude" -- .claude/skills and CLAUDE.md -- when Claude Code is on.
-# $1 - subcommand   $2 - --claude: 1, 0, or empty when not given
-# $3 - 1 when a hidden --conventions / --agents list was given   $4 - that list
-# The list is validated as in earlier releases (agents, claude, or the agent
-# names codex, opencode, junie, which mean agents); 'claude' in it turns Claude
-# Code on unless --claude was given. Without flags, Claude Code is on.
+# $1 - --claude: 1 or 0
 claude_conventions() {
-    local claude="$2" token mapped="" list
-    if [ "$3" = 1 ]; then
-        for token in $(printf '%s' "$4" | tr ',' ' ' | tr '[:upper:]' '[:lower:]'); do
-            case "$token" in codex|opencode|junie) token=agents ;; esac
-            mapped="${mapped},${token}"
-        done
-        list="$(parse_csv "${mapped#,}" "$1" --conventions "agents claude")" || exit 1
-        [ -n "$claude" ] || case " $list " in *" claude "*) claude=1 ;; *) claude=0 ;; esac
-    fi
-    if [ "${claude:-1}" = 1 ]; then printf 'agents claude'; else printf 'agents'; fi
+    if [ "$1" = 1 ]; then printf 'agents claude'; else printf 'agents'; fi
 }
 
 # Reads a line from /dev/tty so prompts work under `curl ... | bash`.
@@ -703,7 +690,7 @@ guidelines_label() {
 }
 
 cmd_skills() {
-    local claude="" alias_given=0 alias_csv=""
+    local claude=1
     local scope="global"
 
     local _argc=-1
@@ -713,11 +700,6 @@ cmd_skills() {
         case "$1" in
             --claude) claude=1; shift ;;
             --claude=*) claude="$(parse_claude_value "${1#*=}")"; shift ;;
-            # Hidden aliases for older Studio metadata and released jmix-cli.
-            # No warning: Studio <= 3.0.4 fails a step on any stderr output.
-            --conventions|--agents)
-                [ $# -ge 2 ] || die "$1 requires an argument"
-                alias_given=1; alias_csv="$2"; shift 2 ;;
             --scope)
                 [ $# -ge 2 ] || die "--scope requires an argument"
                 scope="$2"; shift 2 ;;
@@ -732,7 +714,7 @@ cmd_skills() {
     done
 
     local conventions
-    conventions="$(claude_conventions skills "$claude" "$alias_given" "$alias_csv")"
+    conventions="$(claude_conventions "$claude")"
     scope="$(parse_scope "$scope" skills)"
 
     ensure_tarball
@@ -944,7 +926,7 @@ install_guidelines_block_for() {
 
 # Writes the toolkit-managed block for convention $1 into guidelines file $2.
 # Four branches, in order:
-#   1. no file            -> write the block alone
+#   1. no file            -> write the block, or @AGENTS.md for a new CLAUDE.md
 #   2. markers present    -> replace only that region, no backup
 #   3. legacy toolkit file-> back up, replace whole file
 #   4. anything else      -> back up, add the block, keep everything they wrote:
@@ -965,7 +947,11 @@ write_guidelines_block() {
     mkdir -p "$dest_dir" || die "cannot create directory ${dest_dir}"
 
     if [ ! -e "$dest" ]; then
-        cp "$SOURCE_GUIDELINES_BLOCK" "$dest" || die "cannot copy to ${dest}"
+        if [ "$conv" = claude ] && [ ! -L "$dest" ] && has_guidelines_block "${dest_dir}/AGENTS.md"; then
+            printf '@AGENTS.md\n' > "$dest" || die "cannot write ${dest}"
+        else
+            cp "$SOURCE_GUIDELINES_BLOCK" "$dest" || die "cannot copy to ${dest}"
+        fi
         log "  Installed: ${dest}"
         emit_change created file "$dest"
         log "  Project guidelines installed for ${label}"
@@ -1054,7 +1040,7 @@ install_guidelines_blocks() {
 }
 
 cmd_agents_md() {
-    local claude="" alias_given=0 alias_csv=""
+    local claude=1
 
     local _argc=-1
     while [ $# -gt 0 ]; do
@@ -1063,11 +1049,6 @@ cmd_agents_md() {
         case "$1" in
             --claude) claude=1; shift ;;
             --claude=*) claude="$(parse_claude_value "${1#*=}")"; shift ;;
-            # Hidden aliases for older Studio metadata and released jmix-cli.
-            # No warning: Studio <= 3.0.4 fails a step on any stderr output.
-            --conventions|--agents)
-                [ $# -ge 2 ] || die "$1 requires an argument"
-                alias_given=1; alias_csv="$2"; shift 2 ;;
             --backup-existing-files)
                 BACKUP_EXISTING=1; shift ;;
             --source)
@@ -1079,7 +1060,7 @@ cmd_agents_md() {
     done
 
     local conventions
-    conventions="$(claude_conventions agents-md "$claude" "$alias_given" "$alias_csv")"
+    conventions="$(claude_conventions "$claude")"
 
     log "Project guidelines target directory: $(pwd -P)"
     ensure_tarball

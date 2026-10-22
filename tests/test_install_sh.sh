@@ -44,19 +44,19 @@ BEGIN_MARK='<!-- BEGIN jmix-agent-toolkit -->'
 END_MARK='<!-- END jmix-agent-toolkit -->'
 
 # Fails unless project $1 has the guidelines files of Claude setting $2 (1 or
-# 0): AGENTS.md always, CLAUDE.md only with Claude, each exactly the block.
+# 0): AGENTS.md holds the block, CLAUDE.md only imports it when Claude is enabled.
 # $3 names the case. The files are removed afterwards.
 assert_guidelines() {
     cmp -s "$1/AGENTS.md" "$BLOCK" || fail "$3: AGENTS.md is not exactly the block"
     if [ "$2" = 1 ]; then
-        cmp -s "$1/CLAUDE.md" "$BLOCK" || fail "$3: CLAUDE.md is not exactly the block"
+        printf '@AGENTS.md\n' | cmp -s - "$1/CLAUDE.md" || fail "$3: CLAUDE.md is not exactly the import"
     else
         [ ! -e "$1/CLAUDE.md" ] || fail "$3: CLAUDE.md written without Claude Code"
     fi
     rm -f "$1/AGENTS.md" "$1/CLAUDE.md"
 }
 
-# 1a. Both guidelines files are created by default, holding exactly the block.
+# 1a. AGENTS.md holds the block; a new CLAUDE.md imports it.
 bash "$INSTALL" agents-md --source "$SOURCE" >/dev/null
 # Junie reads AGENTS.md; the deprecated .junie/guidelines.md is not created.
 [ ! -e "${PROJECT}/.junie/guidelines.md" ] || fail "agents-md: Junie got a .junie/guidelines.md it would not read"
@@ -77,30 +77,30 @@ case "$err_out" in *"--claude takes true or false (got 'maybe')"*) ;; *) fail "a
 [ ! -e "${PROJECT}/AGENTS.md" ] || fail "agents-md: --claude=maybe still wrote AGENTS.md"
 pass "agents-md takes --claude=true|false and rejects other values"
 
-# 1a3. Hidden aliases of earlier releases, never documented: --conventions and
-#      --agents. 'claude' in the list turns Claude on, the other names change
-#      nothing; an explicit --claude wins whatever the order. Released jmix-cli
-#      passes exactly 'agents-md --agents claude,codex,opencode,junie', and
-#      Studio <= 3.0.4 fails a step on any stderr output.
-for args in "--agents claude,codex,opencode,junie|1" "--conventions agents|0" "--conventions claude|1" \
-            "--conventions Claude,AGENTS|1" "--agents Codex|0" "--claude=false --conventions claude|0" \
-            "--conventions claude --claude=false|0" "--conventions agents --claude|1"; do
-    # shellcheck disable=SC2086 # the args are split on purpose
-    err_out="$(bash "$INSTALL" agents-md ${args%|*} --source "$SOURCE" 2>&1 >/dev/null)" \
-        || fail "agents-md ${args%|*} failed"
-    [ -z "$err_out" ] || fail "agents-md ${args%|*} wrote to stderr: ${err_out}"
-    assert_guidelines "$PROJECT" "${args#*|}" "agents-md ${args%|*}"
+# 1a3. Skills and guidelines no longer accept an agents/conventions list.
+for command in skills agents-md; do
+    for old_flag in --agents --conventions; do
+        if bash "$INSTALL" "$command" "$old_flag" claude --source "$SOURCE" >/dev/null 2>&1; then
+            fail "$command: removed $old_flag still accepted"
+        fi
+    done
 done
-for args in "--conventions cursor" "--agents claude-desktop"; do
-    if bash "$INSTALL" agents-md "${args% *}" "${args#* }" --source "$SOURCE" >/dev/null 2>&1; then
-        fail "agents-md ${args} should fail"
-    fi
-done
-if bash "$INSTALL" agents-md --conventions "" --source "$SOURCE" >/dev/null 2>&1; then
-    fail "agents-md: an empty --conventions should fail"
-fi
-rm -f "${PROJECT}/AGENTS.md" "${PROJECT}/CLAUDE.md"
-pass "agents-md keeps the hidden --conventions / --agents aliases"
+pass "skills and agents-md reject the removed flags"
+
+# A new CLAUDE.md imports an existing AGENTS.md, including the user's rules.
+printf '# Shared team rules\n' > "${PROJECT}/AGENTS.md"
+marker_output="$(JMIX_EMIT_CHANGE_MARKERS=1 bash "$INSTALL" agents-md --source "$SOURCE")"
+printf '@AGENTS.md\n' | cmp -s - "${PROJECT}/CLAUDE.md" || fail "agents-md: new CLAUDE.md duplicates the shared block"
+grep -q '^# Shared team rules' "${PROJECT}/AGENTS.md" || fail "agents-md: shared team rules lost"
+printf '%s\n' "$marker_output" | grep -qF $'action=created\ttype=file\tpath='"$(pwd -P)/CLAUDE.md" \
+    || fail "agents-md: new import not reported to Studio"
+printf '# Shared team rules\n\n%s\nstale shared block\n%s\n' "$BEGIN_MARK" "$END_MARK" > "${PROJECT}/AGENTS.md"
+bash "$INSTALL" agents-md --source "$SOURCE" >/dev/null
+printf '@AGENTS.md\n' | cmp -s - "${PROJECT}/CLAUDE.md" || fail "agents-md: shared block update changed the import"
+! grep -q 'stale shared block' "${PROJECT}/AGENTS.md" || fail "agents-md: shared block not updated"
+[ ! -e "${PROJECT}/CLAUDE.md.bak" ] || fail "agents-md: import backed up on shared block update"
+pass "agents-md creates a Claude import and preserves it when the shared block changes"
+rm -f "${PROJECT}/AGENTS.md.bak"
 
 # 1b. An up-to-date file is left completely alone: no rewrite, no backup (issue #22).
 bash "$INSTALL" agents-md --claude --source "$SOURCE" >/dev/null
@@ -568,12 +568,7 @@ local_skills "$PROJECT" --claude >/dev/null || fail "skills(local): re-run faile
 pass "skills(local) re-run keeps the layout and the project's own skills"
 
 # 2d. Without --claude the skills go to .agents/skills alone, no .claude dir;
-#     --claude also links them into .claude/skills. --claude=true|false is
-#     Studio's form, in any case. The hidden aliases of earlier releases
-#     (--conventions, --agents) still work, with no stderr output (Studio <=
-#     3.0.4 fails a step on any): 'claude' in the list turns Claude on, an
-#     explicit --claude wins. '--agents claude,codex,opencode --scope local' is
-#     exactly what released jmix-cli passes.
+#     Claude is enabled by default. --claude=true|false is Studio's form.
 # Fails unless project $1 got the local skills of Claude setting $2 (1 or 0).
 # $3 names the case.
 assert_local_claude() {
@@ -585,10 +580,7 @@ assert_local_claude() {
         || fail "$3: .agents/skills/${SKILL} is not a real skill folder"
     [ ! -e "$1/.claude" ] || fail "$3: created .claude without Claude Code"
 }
-for args in "|1" "--claude|1" "--claude=true|1" "--claude=TRUE|1" "--claude=false|0" \
-            "--agents claude,codex,opencode|1" "--agents claude,codex,opencode,junie|1" \
-            "--conventions agents|0" "--conventions claude|1" \
-            "--claude=false --conventions claude|0" "--conventions agents --claude|1"; do
+for args in "|1" "--claude|1" "--claude=true|1" "--claude=TRUE|1" "--claude=false|0"; do
     CONV_PROJ="$(new_project conventions-project)"
     # shellcheck disable=SC2086 # the args are split on purpose
     err_out="$(cd "$CONV_PROJ" && bash "$INSTALL" skills ${args%|*} --scope local --source "$SOURCE" 2>&1 >/dev/null)" \
@@ -596,15 +588,15 @@ for args in "|1" "--claude|1" "--claude=true|1" "--claude=TRUE|1" "--claude=fals
     [ -z "$err_out" ] || fail "skills ${args%|*} wrote to stderr: ${err_out}"
     assert_local_claude "$CONV_PROJ" "${args#*|}" "skills(local) ${args%|*}"
 done
-for args in "--claude=maybe" "--conventions cursor" "--agents claude-desktop" "--conventions ''"; do
+for args in --claude=maybe --claude=; do
     CONV_PROJ="$(new_project conventions-project)"
-    if (cd "$CONV_PROJ" && eval "bash \"\$INSTALL\" skills ${args} --scope local --source \"\$SOURCE\"" >/dev/null 2>&1); then
+    if (cd "$CONV_PROJ" && bash "$INSTALL" skills "$args" --scope local --source "$SOURCE" >/dev/null 2>&1); then
         fail "skills ${args} should fail"
     fi
     [ ! -e "${CONV_PROJ}/.agents" ] || fail "skills ${args} installed anyway"
 done
 rm -rf "$CONV_PROJ"
-pass "skills includes Claude Code by default, supports explicit opt-out, and keeps the hidden aliases"
+pass "skills includes Claude Code by default and supports explicit opt-out"
 
 # Links an earlier version put into .junie/skills are removed (Junie's CLI
 # reads that dir first, so they would shadow newer skills); other skills stay.
@@ -1450,9 +1442,9 @@ STUDIO
     run_studio_commands "$studio_false"
     [ -d ".agents/skills/${SKILL}" ] && [ -f AGENTS.md ] && [ ! -e .claude ] && [ ! -e CLAUDE.md ] \
         || fail "studio: with Claude Code off the commands did not keep to .agents/skills and AGENTS.md"
-    # The hidden aliases of earlier releases are not shown in Studio.
+    # Studio commands use the current flags.
     if jq -r '.["install-flow"].steps[].command[]' "$STUDIO_META" | grep -qi -- '-conventions'; then
-        fail "studio: a command passes the hidden --conventions / -Conventions"
+        fail "studio: a command passes the removed --conventions / -Conventions"
     fi
     jq -e '[.["install-flow"].steps[].command | .linux == .macos] | all' "$STUDIO_META" >/dev/null \
         || fail "studio: a Linux command differs from the macOS one"
@@ -1528,7 +1520,7 @@ PY
         case "$out" in *"For Claude Code too (CLAUDE.md)? [Y/n]"*) ;; *) fail "wizard(no skills): the Claude question does not default to yes" ;; esac
         case "$out" in *"Skills:      skipped"*) ;; *) fail "wizard(no skills): wrong skills summary" ;; esac
         case "$out" in *"Guidelines:  agents, claude"*) ;; *) fail "wizard(no skills): wrong guidelines summary" ;; esac
-        cmp -s AGENTS.md "$BLOCK" && cmp -s CLAUDE.md "$BLOCK" || fail "wizard(no skills): guidelines not as chosen"
+        cmp -s AGENTS.md "$BLOCK" && printf '@AGENTS.md\n' | cmp -s - CLAUDE.md || fail "wizard(no skills): guidelines not as chosen"
         cd "$MCP_PROJ"
         rm -rf "$WIZ_PROJ" "$WIZ_HOME"
         pass "the wizard installs what was chosen, Claude Code and the MCP scope following the skills answers"
@@ -1603,24 +1595,19 @@ fi
 # ---------------------------------------------------------------------------
 # 6. Negative cases
 # ---------------------------------------------------------------------------
-if bash "$INSTALL" skills --conventions bogus --scope local --source "$SOURCE" >/dev/null 2>&1; then
-    fail "negative: unknown convention should fail"
-fi
-pass "unknown convention fails as expected"
-
 if bash "$INSTALL" agents-md --claude --source "${WORK}/does-not-exist" >/dev/null 2>&1; then
     fail "negative: missing --source dir should fail"
 fi
 pass "missing --source directory fails as expected"
 
-# The help shows --claude; the hidden aliases of skills / agents-md stay out of it.
+# The help shows --claude and no removed flags.
 help_out="$(bash "$INSTALL" --help)"
 case "$help_out" in *"--claude"*) ;; *) fail "help: --claude not documented" ;; esac
-case "$help_out" in *"--conventions"*) fail "help: shows the hidden --conventions" ;; esac
+case "$help_out" in *"--conventions"*) fail "help: shows the removed --conventions" ;; esac
 case "$(printf '%s\n' "$help_out" | grep -E '^  install.sh (skills|agents-md) ')" in
-    *"--agents"*) fail "help: shows the hidden --agents of skills / agents-md" ;;
+    *"--agents"*) fail "help: shows --agents for skills / agents-md" ;;
 esac
-pass "help documents --claude and hides the old aliases"
+pass "help documents the current flags"
 
 echo ""
 echo "ALL BASH INSTALLER TESTS PASSED"

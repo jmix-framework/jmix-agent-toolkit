@@ -49,7 +49,7 @@
       {
         "id": "guidelines",
         "title": "Guidelines",
-        "message": "📘 Add a few lines to <code>AGENTS.md</code> that point the agents at the Jmix skills, and for Claude Code to <code>CLAUDE.md</code> as well. <br>✍️ Your own instructions are kept — the lines are merged in. A guidelines file installed by an older version of this toolkit is replaced instead. Changed user or legacy files are backed up. If <code>CLAUDE.md</code> imports <code>@AGENTS.md</code>, it is left untouched after <code>AGENTS.md</code> is updated. <br>⏭️ Click <i>Skip</i> to leave the project as is; the Jmix skills are then installed but nothing routes the agents to them.",
+        "message": "📘 Add a few lines to <code>AGENTS.md</code> that point the agents at the Jmix skills. For Claude Code, a new <code>CLAUDE.md</code> contains only <code>@AGENTS.md</code> to share these instructions. <br>✍️ Your own instructions are kept — the lines are merged in. A guidelines file installed by an older version of this toolkit is replaced instead. Changed user or legacy files are backed up. If <code>CLAUDE.md</code> imports <code>@AGENTS.md</code>, it is left untouched after <code>AGENTS.md</code> is updated. <br>⏭️ Click <i>Skip</i> to leave the project as is; the Jmix skills are then installed but nothing routes the agents to them.",
         "inputs": [
           {
             "id": "guidelinesClaude",

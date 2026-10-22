@@ -94,13 +94,6 @@ function Invoke-InstallerResult {
     $out = & $pwshPath -NoProfile -File $install @InstallerArgs 2>&1 | Out-String
     return [PSCustomObject]@{ Code = $LASTEXITCODE; Output = $out }
 }
-# Run install.ps1 in a child process; return its exit code and its stderr alone.
-function Invoke-InstallerStderr {
-    param([string[]]$InstallerArgs)
-    $errFile = Join-Path $work 'stderr.txt'
-    & $pwshPath -NoProfile -File $install @InstallerArgs 2> $errFile > $null
-    return [PSCustomObject]@{ Code = $LASTEXITCODE; Stderr = [System.IO.File]::ReadAllText($errFile) }
-}
 # Run install.ps1 in a child process the way Studio does, as a script block made
 # from its text; $ArgText is PowerShell source (e.g. "skills -Claude:`$false").
 # Returns the exit code.
@@ -112,25 +105,26 @@ function Invoke-InstallerScriptBlock {
 
 $helpText = [regex]::Match([System.IO.File]::ReadAllText($install), '(?s)<#(.*?)#>').Groups[1].Value
 Check ($helpText -match '\.PARAMETER Claude\b' -and $helpText -notmatch '-Conventions|\.PARAMETER Conventions\b') `
-    'help: documents -Claude and leaves the compatibility aliases undocumented'
+    'help: documents -Claude and has no -Conventions'
 
 # ---------------------------------------------------------------------------
 # 1. agents-md (project guidelines block)
 # ---------------------------------------------------------------------------
 $blockPath  = Join-Path $Source 'content/guidelines-block.md'
 $blockText  = [System.IO.File]::ReadAllText($blockPath)
+$claudeImport = "@AGENTS.md`n"
 $beginMark  = '<!-- BEGIN jmix-agent-toolkit -->'
 $endMark    = '<!-- END jmix-agent-toolkit -->'
 $claudeMd   = Join-Path $proj 'CLAUDE.md'
 $agentsMd   = Join-Path $proj 'AGENTS.md'
 $junieDir   = Join-Path $proj '.junie'
 
-# 1a. No guidelines file yet -> the file is created holding exactly the block.
+# 1a. AGENTS.md holds the block; a new CLAUDE.md imports it.
 Check ((Invoke-Installer @('agents-md', '-Source', $Source)) -eq 0) `
     'agents-md exits 0'
 Check (Test-Path $claudeMd)                                'agents-md: CLAUDE.md'
-Check (([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
-    'agents-md: fresh CLAUDE.md is exactly the block'
+Check (([System.IO.File]::ReadAllText($claudeMd)) -ceq $claudeImport) `
+    'agents-md: fresh CLAUDE.md is exactly the import'
 Check (([System.IO.File]::ReadAllText($agentsMd)) -eq $blockText) `
     'agents-md: AGENTS.md shared by codex/opencode/junie is exactly the block'
 # Junie reads AGENTS.md; the deprecated .junie/guidelines.md is not created.
@@ -146,38 +140,37 @@ Check ((Invoke-Installer @('agents-md', '-Claude:$false', '-Source', $Source)) -
 $null = Invoke-Installer @('agents-md', '-Claude:$false', '-Source', $Source)
 Check (-not (Test-Path $claudeMd)) 'agents-md: -Claude:$false writes no CLAUDE.md'
 $null = Invoke-Installer @('agents-md', '-Claude:$true', '-Source', $Source)
-Check ((Test-Path $claudeMd) -and ([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) 'agents-md: -Claude:$true writes CLAUDE.md'
+Check ((Test-Path $claudeMd) -and ([System.IO.File]::ReadAllText($claudeMd)) -ceq $claudeImport) 'agents-md: -Claude:$true writes the import'
 Remove-Item -LiteralPath $claudeMd, $agentsMd -Force
 Check ((Invoke-InstallerScriptBlock "agents-md -Source '$Source' -Claude:`$false") -eq 0 -and
        (Test-Path $agentsMd) -and -not (Test-Path $claudeMd)) 'agents-md: -Claude:$false as a script block writes AGENTS.md alone'
 Check ((Invoke-InstallerScriptBlock "agents-md -Source '$Source' -Claude:`$true") -eq 0 -and (Test-Path $claudeMd)) `
     'agents-md: -Claude:$true as a script block writes CLAUDE.md too'
 
-# 1a3. The hidden aliases of earlier releases, -Conventions / -Agents CSV:
-#      claude there means -Claude, the other values change nothing, an explicit
-#      -Claude wins, and nothing goes to stderr (Studio <= 3.0.4 fails a step on
-#      it). Released jmix-cli runs the first call exactly.
+# 1a3. Skills and guidelines no longer accept an agents/conventions list.
+foreach ($command in 'skills', 'agents-md') {
+    foreach ($oldFlag in '-Agents', '-Conventions') {
+        Check ((Invoke-Installer @($command, $oldFlag, 'claude', '-Source', $Source)) -ne 0) `
+            "$command rejects the removed $oldFlag flag"
+    }
+}
+
+# A new CLAUDE.md imports an existing AGENTS.md, including the user's rules.
 Remove-Item -LiteralPath $claudeMd, $agentsMd -Force
-$r = Invoke-InstallerStderr @('agents-md', '-Agents', 'claude,codex,opencode,junie', '-Source', $Source)
-Check ($r.Code -eq 0 -and $r.Stderr -eq '' -and ([System.IO.File]::ReadAllText($agentsMd)) -eq $blockText -and
-       ([System.IO.File]::ReadAllText($claudeMd)) -eq $blockText) `
-    'agents-md: the jmix-cli call (-Agents claude,codex,opencode,junie) writes both files, nothing on stderr'
-foreach ($case in @(
-        @{ Args = @('-Conventions', 'agents'); Claude = $false },
-        @{ Args = @('-Conventions', 'claude'); Claude = $true },
-        # Case-insensitive, as in install.sh, the agent names too.
-        @{ Args = @('-Conventions', 'Claude,AGENTS'); Claude = $true },
-        @{ Args = @('-Agents', 'Codex'); Claude = $false },
-        @{ Args = @('-Claude:$false', '-Conventions', 'claude'); Claude = $false },
-        @{ Args = @('-Conventions', 'agents', '-Claude'); Claude = $true })) {
-    Remove-Item -LiteralPath $claudeMd, $agentsMd -Force -ErrorAction SilentlyContinue
-    $r = Invoke-InstallerStderr (@('agents-md', '-Source', $Source) + $case.Args)
-    Check ($r.Code -eq 0 -and $r.Stderr -eq '' -and (Test-Path $agentsMd) -and (Test-Path $claudeMd) -eq $case.Claude) `
-        "agents-md: $($case.Args -join ' ') writes $(if ($case.Claude) { 'CLAUDE.md too' } else { 'AGENTS.md alone' })"
-}
-foreach ($bad in @(@('-Conventions', 'cursor'), @('-Agents', 'claude-desktop'), @('-Conventions', ''))) {
-    Check ((Invoke-Installer (@('agents-md', '-Source', $Source) + $bad)) -ne 0) "agents-md: -$($bad[0].TrimStart('-')) '$($bad[1])' fails"
-}
+[System.IO.File]::WriteAllText($agentsMd, "# Shared team rules`n")
+$env:JMIX_EMIT_CHANGE_MARKERS = '1'
+$markerOutput = Invoke-InstallerCapture @('agents-md', '-Source', $Source)
+Remove-Item Env:JMIX_EMIT_CHANGE_MARKERS
+Check (([System.IO.File]::ReadAllText($claudeMd)) -ceq $claudeImport -and
+       ([System.IO.File]::ReadAllText($agentsMd)).Contains('# Shared team rules')) `
+    'agents-md: a new CLAUDE.md imports the shared block and team rules'
+Check ($markerOutput -match 'action=created\ttype=file\tpath=[^\r\n]*[/\\]CLAUDE\.md(\r?\n|$)') `
+    'agents-md: new import reported to Studio'
+[System.IO.File]::WriteAllText($agentsMd, "# Shared team rules`n`n$beginMark`nstale shared block`n$endMark`n")
+$null = Invoke-Installer @('agents-md', '-Source', $Source)
+Check (([System.IO.File]::ReadAllText($claudeMd)) -ceq $claudeImport -and
+       -not ([System.IO.File]::ReadAllText($agentsMd)).Contains('stale shared block') -and
+       -not (Test-Path "$claudeMd.bak")) 'agents-md: shared block update preserves the import without a backup'
 
 # 1b. An up-to-date file is left completely alone: no rewrite, no backup (issue #22).
 $mtimeBefore = (Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc
@@ -194,7 +187,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $crlfContent 'skills') | Ou
 $crlfBlock = [regex]::Replace($blockText, '\r?\n', "`r`n")
 [System.IO.File]::WriteAllText((Join-Path $crlfContent 'guidelines-block.md'), $crlfBlock,
     (New-Object System.Text.UTF8Encoding($false)))
-Remove-Item -LiteralPath $claudeMd -Force
+[System.IO.File]::WriteAllText($claudeMd, $crlfBlock, (New-Object System.Text.UTF8Encoding($false)))
 $null = Invoke-Installer @('agents-md', '-Claude', '-Source', $crlfSource)
 $crlfHashBefore = (Get-FileHash -LiteralPath $claudeMd -Algorithm SHA256).Hash
 (Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc = [datetime]'2001-01-01T00:00:00Z'
@@ -724,24 +717,6 @@ foreach ($withClaude in $false, $true) {
     Check ($code -eq 0 -and (Test-RealDir (Join-Path $convProj ".agents/skills/$skill")) -and
            (Test-LinkIntoStore (Join-Path $convProj ".claude/skills/$skill")) -eq $withClaude) `
         "skills: -Claude:`$$withClaude as a script block"
-}
-
-# The hidden aliases (see 1a3). Released jmix-cli runs the first call exactly.
-foreach ($case in @(
-        @{ Args = @('-Agents', 'claude,codex,opencode'); Claude = $true },
-        @{ Args = @('-Agents', 'claude,codex,opencode,junie'); Claude = $true },
-        @{ Args = @('-Conventions', 'agents'); Claude = $false },
-        @{ Args = @('-Conventions', 'claude'); Claude = $true },
-        @{ Args = @('-Claude:$false', '-Conventions', 'claude'); Claude = $false },
-        @{ Args = @('-Conventions', 'agents', '-Claude'); Claude = $true })) {
-    $aliasProj = New-TestProject "alias-$($case.Args -join '' -replace '[^A-Za-z]', '')-project"
-    Push-Location $aliasProj
-    try { $r = Invoke-InstallerStderr (@('skills', '-Scope', 'local', '-Source', $Source) + $case.Args) }
-    finally { Pop-Location }
-    Check ($r.Code -eq 0 -and $r.Stderr -eq '' -and (Test-RealDir (Join-Path $aliasProj ".agents/skills/$skill")) -and
-           (Test-LinkIntoStore (Join-Path $aliasProj ".claude/skills/$skill")) -eq $case.Claude -and
-           (Test-Path (Join-Path $aliasProj '.claude')) -eq $case.Claude) `
-        "skills: $($case.Args -join ' ') $(if ($case.Claude) { 'links .claude/skills too' } else { 'installs .agents/skills alone' })"
 }
 
 # The user's own skills in both dirs survive an install and a re-install, and
@@ -1639,7 +1614,7 @@ Remove-Item -LiteralPath $localProj -Recurse -Force
 #     its text, against this checkout. Each input gets its Studio default (the
 #     default choices, or the default text); then the Claude Code choices once
 #     more with "false". Only ${id} is replaced, so "-Claude:$${skillsClaude}"
-#     becomes "-Claude:$true". The hidden -Conventions alias is not used.
+#     becomes "-Claude:$true".
 $studioMeta = [System.IO.File]::ReadAllText((Join-Path $Source '.studio/studio-meta-data.json')) | ConvertFrom-Json
 $studioDefaults = @{ guidelinesBranch = 'v3' }
 foreach ($inp in $studioMeta.'install-flow'.steps.inputs) {
@@ -1762,12 +1737,6 @@ Set-Location $proj
 # ---------------------------------------------------------------------------
 Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex', '-Claude')) -ne 0) `
     'negative: -Claude is for skills and agents-md only'
-Check ((Invoke-Installer @('skills', '-Conventions', 'bogus', '-Scope', 'local', '-Source', $Source)) -ne 0) `
-    'negative: unknown convention fails'
-Check ((Invoke-Installer @('skills', '-Agents', 'claude-desktop', '-Scope', 'local', '-Source', $Source)) -ne 0) `
-    'negative: skills rejects claude-desktop'
-Check ((Invoke-Installer @('agents-md', '-Agents', 'claude-desktop', '-Source', $Source)) -ne 0) `
-    'negative: agents-md rejects claude-desktop'
 Check ((Invoke-Installer @('agents-md', '-Claude', '-Source', (Join-Path $work 'does-not-exist'))) -ne 0) `
     'negative: missing -Source dir fails'
 

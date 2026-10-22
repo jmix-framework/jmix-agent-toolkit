@@ -67,7 +67,7 @@ PowerShell takes the same subcommands and flags (e.g. `install.ps1 skills -Scope
 
 Quote lists: unquoted, `claude,codex` is an array in PowerShell.
 
-`skills` always installs the skills into `.agents/skills`, and `agents-md` always merges the guidelines into `AGENTS.md`: Codex, OpenCode, Junie, Cursor, GitHub Copilot, Gemini CLI and others read them there. Claude Code is included by default: each skill is linked into `.claude/skills`, and the guidelines go into `CLAUDE.md` too. Use `--claude=false` (`-Claude:$false`) to skip Claude Code.
+`skills` always installs the skills into `.agents/skills`, and `agents-md` always merges the guidelines into `AGENTS.md`: Codex, OpenCode, Junie, Cursor, GitHub Copilot, Gemini CLI and others read them there. Claude Code is included by default: each skill is linked into `.claude/skills`, and a new `CLAUDE.md` contains only `@AGENTS.md`, so the shared instructions have one copy. Existing `CLAUDE.md` files keep the current merge and backup rules; a file that already imports `AGENTS.md` is left untouched. Use `--claude=false` (`-Claude:$false`) to skip Claude Code.
 
 The MCP subcommands take **agents**, each with its own config: `claude`, `codex`, `opencode`, `junie`. `claude` also sets up [Claude Desktop](#claude-desktop) when it is installed.
 
