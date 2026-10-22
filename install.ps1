@@ -5,16 +5,20 @@
 .DESCRIPTION
     Default invocation (no subcommand) launches an interactive wizard that
     guides through:
-      1. Installing Jmix skills (globally or into the project) for the chosen
-         conventions (.agents/skills, .claude/skills).
-      2. Adding project-level guidelines (AGENTS.md / CLAUDE.md).
+      1. Installing Jmix skills (globally or into the project) into
+         .agents/skills, and for Claude Code into .claude/skills too.
+      2. Adding project-level guidelines (AGENTS.md, and for Claude Code
+         CLAUDE.md too).
       3. Registering MCP servers (JetBrains, Context7, Playwright) with the agents.
 
     Subcommands are available for non-interactive use:
-      install.ps1 skills     -Conventions CSV [-Scope global|local]
+      install.ps1 skills     [-Scope global|local] [-Claude:$false]
                              Installs skills into a canonical store once, then links
-                             them into the skills dir of each convention.
-      install.ps1 agents-md  -Conventions CSV
+                             them into .agents/skills and, by default, .claude/skills.
+                             Local skills are kept in the project's
+                             .agents/skills; an old .skills store is migrated and
+                             removed.
+      install.ps1 agents-md  [-Claude:$false]
       install.ps1 mcp        -Servers CSV -Agents CSV [-Scope local|global] [-Context7Key KEY]
       install.ps1 mcp-jetbrains | mcp-context7 | playwright -Agents CSV [-Scope local|global]
                              (mcp-context7 also takes -Context7Key)
@@ -24,6 +28,8 @@
 
     Add -BackupExistingFiles to any subcommand to rename overwritten files/dirs
     to <name>.bak (deduped: .bak, .bak1, .bak2, ...) instead of deleting them.
+    Replaced local skill folders are moved to the project's
+    .agents/.jmix/backups/ instead, out of the dirs the agents read skills from.
     Project guidelines (CLAUDE.md / AGENTS.md) are merged rather than
     overwritten and are not covered by this switch: a backup is made only when
     the toolkit rewrites content it does not own -- replacing a guidelines file
@@ -42,12 +48,10 @@
     Repository branch/ref to download and use. Defaults to this release branch
     (v2). Studio passes its resolved toolkit branch here.
 
-.PARAMETER Conventions
-    skills / agents-md: where the skills and guidelines go, comma-separated:
-    "agents" (.agents/skills, AGENTS.md -- Codex, OpenCode, Junie and other
-    agents of these conventions) and/or "claude" (.claude/skills, CLAUDE.md --
-    Claude Code). Agent names work too (-Agents of earlier releases): codex,
-    opencode and junie mean agents.
+.PARAMETER Claude
+    skills / agents-md: set up Claude Code (on by default). Use -Claude:$false
+    to skip .claude/skills links and CLAUDE.md. The skills in .agents/skills
+    and guidelines in AGENTS.md are always installed.
 
 .PARAMETER Agents
     MCP subcommands: comma-separated agents (e.g. "claude,codex"): claude,
@@ -59,7 +63,9 @@
 
 .PARAMETER Scope
     skills: "global" (default) links the skills into the user home, "local"
-    into the current project.
+    into the current project: they are kept in its .agents/skills and linked
+    into .claude/skills unless -Claude:$false is given. An old .skills store of the
+    project is migrated and removed.
     MCP subcommands: "local" (default) writes the project files in the current
     directory (.mcp.json, .codex\config.toml, opencode.json,
     .junie\mcp\mcp.json); "global" writes each agent's user config. Claude
@@ -74,7 +80,9 @@
 .PARAMETER BackupExistingFiles
     When set, an existing destination file or folder is renamed to a deduped
     <name>.bak (then .bak1, .bak2, ... if that name is taken) instead of being
-    deleted before the new content is copied. Off by default. Project
+    deleted before the new content is copied. Off by default. Local skill
+    folders that get replaced are moved to the project's .agents/.jmix/backups/
+    (deduped the same way) instead, so no agent reads them as skills. Project
     guidelines are merged rather than overwritten and are not covered by this
     switch: a backup is made only when the toolkit rewrites content it does
     not own -- replacing a guidelines file an older toolkit version installed,
@@ -90,7 +98,7 @@
     Invoke-RestMethod https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/HEAD/install.ps1 | Invoke-Expression
 
 .EXAMPLE
-    & ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/HEAD/install.ps1).Content)) skills -Conventions claude
+    & ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/HEAD/install.ps1).Content)) skills -Scope local -Claude
 #>
 [CmdletBinding()]
 param(
@@ -98,7 +106,7 @@ param(
     [string]$Subcommand = '',
     [string]$Source = '',
     [string]$Agents = '',
-    [string]$Conventions = '',
+    [switch]$Claude,
     [string]$Servers = '',
     [string]$Scope = '',
     [string]$Context7Key = '',
@@ -109,6 +117,9 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# The parameters given at all: an explicit -Claude:$false counts too.
+$script:GivenParams = @($PSBoundParameters.Keys)
+
 # Branch identity defaults to this release branch. Studio overrides it when a
 # feature branch is pinned in the Registry.
 
@@ -117,8 +128,8 @@ $script:RepoName  = 'jmix-agent-toolkit'
 
 $script:AllAgents = @('claude', 'codex', 'opencode', 'junie')
 # Where skills and guidelines go: 'agents' -- .agents/skills and AGENTS.md
-# (Codex, OpenCode, Junie and other agents of those open conventions) -- and
-# 'claude' -- .claude/skills and CLAUDE.md (Claude Code).
+# (Codex, OpenCode, Junie and other agents of those open conventions), always
+# -- and 'claude' -- .claude/skills and CLAUDE.md (Claude Code), on by default.
 $script:AllConventions = @('agents', 'claude')
 $script:AllMcpServers = @('jetbrains', 'context7', 'playwright')
 
@@ -146,6 +157,10 @@ $script:ExtractedDir     = $null
 $script:SourceSkillsDir  = $null
 $script:SourceGuidelinesBlock = $null
 $script:ResolvedVersionDir = $null
+# Where replaced skill folders are backed up: the project's .agents/.jmix/backups
+# at local scope, out of the dirs the agents read skills from. Empty: beside
+# the original, as every other backup.
+$script:SkillBackupDir   = ''
 $script:IsWindowsHost    = ($env:OS -eq 'Windows_NT')
 # The profile folder the agents keep their user configs in. Windows PowerShell
 # 5.1's $HOME is HOMEDRIVE+HOMEPATH, a mapped drive on some domain machines.
@@ -240,14 +255,6 @@ function Get-AgentLabel {
     }
 }
 
-function Get-SkillsLabel {
-    param([string]$Convention)
-    switch ($Convention) {
-        'agents' { '.agents/skills (Codex, OpenCode, Junie, ...)' }
-        'claude' { '.claude/skills (Claude Code)' }
-    }
-}
-
 function Get-GuidelinesLabel {
     param([string]$Convention)
     switch ($Convention) {
@@ -267,39 +274,60 @@ function Get-ServerLabel {
 
 # Returns a not-yet-existing backup file NAME (bare, no directory) for the item
 # at $Path: first "<name>.bak", then on collision "<name>.bak1", ".bak2", ... so
-# an earlier backup is never overwritten.
+# an earlier backup is never overwritten. The name is free in folder $Dir,
+# by default the item's own.
 function Get-DedupBackupName {
-    param([string]$Path)
-    $dir  = Split-Path -Parent $Path
+    param([string]$Path, [string]$Dir = '')
+    if (-not $Dir) { $Dir = Split-Path -Parent $Path }
     $name = [System.IO.Path]::GetFileName($Path)
     $candidate = "$name.bak"
     $n = 1
-    while (Test-Path -LiteralPath (Join-Path $dir $candidate)) {
+    while (Test-Path -LiteralPath (Join-Path $Dir $candidate)) {
         $candidate = "$name.bak$n"
         $n++
     }
     return $candidate
 }
 
+# Moves skill folder $Path to a deduped <name>.bak in $script:SkillBackupDir
+# (created on first use), or beside $Path when that is empty. Returns the
+# backup's path.
+function Backup-SkillDir {
+    param([string]$Path)
+    $dir = $script:SkillBackupDir
+    if (-not $dir) { $dir = Split-Path -Parent $Path }
+    elseif (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $backup = Join-Path $dir (Get-DedupBackupName -Path $Path -Dir $dir)
+    Move-Item -LiteralPath $Path -Destination $backup -ErrorAction Stop
+    return $backup
+}
+
+# Copies skill folder $Src to $Dest. A folder already there is backed up
+# (-BackupExistingFiles) or removed. A link there is never followed: only the
+# link itself goes. When backups go to $script:SkillBackupDir (local scope,
+# where an older layout linked the store's skills) a link is only removed:
+# moved there, a relative one would dangle; at global scope it is backed up
+# beside itself, as every global backup.
 function Write-Dest {
     param(
         [string]$Src,
         [string]$Dest,
         [string]$Label
     )
-    $existed = Test-Path $Dest
+    # Get-Item -Force also finds a dangling link, which Test-Path may not.
+    $existing = Get-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
     $backupInfo = ''
-    if ($existed) {
+    if ($existing -and $existing.LinkType -and ($script:SkillBackupDir -or -not $BackupExistingFiles)) {
+        Remove-Link -Item $existing
+    } elseif ($existing) {
         if ($BackupExistingFiles) {
-            $backupName = Get-DedupBackupName -Path $Dest
-            Rename-Item -Path $Dest -NewName $backupName -ErrorAction Stop
-            $backupInfo = " (backup: $backupName)"
+            $backupInfo = " (backup: $(Split-Path -Leaf (Backup-SkillDir -Path $Dest)))"
         } else {
-            Remove-Item -Path $Dest -Recurse -Force -ErrorAction Stop
+            Remove-Item -LiteralPath $Dest -Recurse -Force -ErrorAction Stop
         }
     }
     Copy-Item -Path $Src -Destination $Dest -Recurse -Force -ErrorAction Stop
-    if ($existed) {
+    if ($existing) {
         Write-Info "  Updated: $Label$backupInfo"
     } else {
         Write-Info "  Installed: $Label"
@@ -325,18 +353,6 @@ function Resolve-Csv {
 function Resolve-AgentsCsv {
     param([string]$Csv, [string]$Subcommand)
     return Resolve-Csv -Csv $Csv -Subcommand $Subcommand -Option '-Agents' -Valid $script:AllAgents
-}
-
-# -Conventions of skills / agents-md. Agent names (the -Agents of earlier
-# releases) are accepted too: codex, opencode and junie follow the agents
-# convention.
-function Resolve-ConventionsCsv {
-    param([string]$Csv, [string]$Subcommand)
-    $mapped = @($Csv -split ',' | ForEach-Object {
-        $t = $_.Trim()
-        if ($t -in 'codex', 'opencode', 'junie') { 'agents' } else { $t }
-    }) -join ','
-    return Resolve-Csv -Csv $mapped -Subcommand $Subcommand -Option '-Conventions' -Valid $script:AllConventions
 }
 
 # =================================================================
@@ -441,22 +457,20 @@ function Get-ConventionSkillsDir {
 }
 
 # Earlier versions also linked the skills into .junie/skills. Junie reads
-# .agents/skills now, and its CLI reads ~/.junie/skills first, so links left
-# there would shadow newer skills: the toolkit's own links are removed. Only
-# when this run linked .agents/skills (otherwise Junie would be left with no
-# skills), and never from a .junie/skills that is the same folder as an agent
+# .agents/skills now, which every run fills, and its CLI reads ~/.junie/skills
+# first, so links left there would shadow newer skills: the toolkit's own links
+# are removed. Never from a .junie/skills that is the same folder as an agent
 # skills dir: its links are the ones this run just created.
 function Remove-OldJunieSkillLinks {
-    param([string]$Root, [string[]]$Conventions)
+    param([string]$Root)
     $dir = Join-Path $Root '.junie/skills'
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return }
-    if ($Conventions -notcontains 'agents') { return }
     foreach ($rel in '.agents/skills', '.claude/skills') {
         if (Test-SameDirectory -Path (Join-Path $Root $rel) -Other $dir) { return }
     }
     foreach ($item in Get-ChildItem -LiteralPath $dir -Force) {
         if (-not $item.LinkType -or $item.Name -notmatch '^jmix(-|$)') { continue }
-        # Only links into a toolkit store: ~/.agents/.jmix/skills/... or <project>/.skills/...
+        # Only links into a toolkit store: ~/.agents/.jmix/skills/... or the old <project>/.skills/...
         $target = [string](@($item.Target) | Select-Object -First 1)
         if ($target -notmatch '(?:^|[\\/])(?:\.agents[\\/]\.jmix[\\/]skills|\.skills)[\\/].') { continue }
         Remove-Link -Item $item
@@ -473,8 +487,9 @@ function Write-SymlinkGuidance {
     Write-Info '  - run this terminal as Administrator.'
 }
 
-# Creates/refreshes a whole-dir link $Link -> $Target. Replaces an existing link;
-# an existing real dir is backed up (when -BackupExistingFiles) or removed.
+# Creates/refreshes a whole-dir link $Link -> $Target. Replaces an existing link,
+# dangling or not; an existing real dir is backed up (when -BackupExistingFiles,
+# see Backup-SkillDir) or removed.
 # Link strategy, best-effort in order:
 #   1. Directory junction (Windows only) -- needs no Developer Mode / admin and
 #      covers every link here (store and agent dir share the local user home).
@@ -487,20 +502,18 @@ function Write-SymlinkGuidance {
 # per-step catch skip gracefully while the non-interactive subcommand exits non-zero.
 function New-DirSymlink {
     param([string]$Link, [string]$Target)
-    if (Test-Path $Link) {
-        $item = Get-Item $Link -Force
-        if ($item.LinkType) {
-            # Delete the reparse point itself, never the target. `Remove-Item -Force`
-            # without -Recurse prompts on Windows PowerShell 5.1 (the junction looks
-            # non-empty), which hangs a non-interactive (Studio) re-run; -Recurse would
-            # instead delete the target's contents. Directory.Delete(path, $false) does
-            # neither -- it unlinks the junction/symlink without prompting.
-            [System.IO.Directory]::Delete($Link, $false)
-        } elseif ($BackupExistingFiles) {
-            Rename-Item -Path $Link -NewName (Get-DedupBackupName -Path $Link)
-        } else {
-            Remove-Item $Link -Recurse -Force
-        }
+    # Get-Item -Force also finds a dangling link, which Test-Path may not.
+    $item = Get-Item -LiteralPath $Link -Force -ErrorAction SilentlyContinue
+    if ($item -and $item.LinkType) {
+        # Delete the reparse point itself, never the target. `Remove-Item -Force`
+        # without -Recurse prompts on Windows PowerShell 5.1 (the junction looks
+        # non-empty), which hangs a non-interactive (Studio) re-run; -Recurse would
+        # instead delete the target's contents. Remove-Link does neither -- it
+        # unlinks the junction/symlink without prompting.
+        Remove-Link -Item $item
+    } elseif ($item) {
+        if ($BackupExistingFiles) { $null = Backup-SkillDir -Path $Link }
+        else { Remove-Item -LiteralPath $Link -Recurse -Force }
     }
     $parent = Split-Path -Parent $Link
     if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
@@ -523,6 +536,9 @@ function Install-SkillsToStore {
     param([string]$StoreDir)
     Write-Info ''
     Write-Info "Installing skills into store $StoreDir"
+    # Clear a broken-symlink store or store base (e.g. .agents -> missing) so creation works.
+    Clear-DanglingSymlink -Path (Split-Path -Parent $StoreDir)
+    Clear-DanglingSymlink -Path $StoreDir
     if (-not (Test-Path $StoreDir)) { New-Item -ItemType Directory -Path $StoreDir -Force | Out-Null }
     foreach ($skill in Get-ChildItem -Path $script:SourceSkillsDir -Directory) {
         $dest = Join-Path $StoreDir $skill.Name
@@ -578,10 +594,11 @@ function Test-SameDirectory {
 
 # Per-skill symlinks: link each store skill folder into the agent skills dir,
 # so Jmix skills coexist with other skills already present there. Only the
-# skills being installed are linked: the store also keeps the backups that
-# -BackupExistingFiles makes there. An agent dir that is the store itself
-# (e.g. .claude/skills -> ../.skills) already holds the skills; links there
-# would point at themselves.
+# skills being installed are linked: at global scope the store also keeps the
+# backups that -BackupExistingFiles makes there. An agent dir that is the store
+# itself (.agents/skills at local scope, or e.g. .claude/skills ->
+# ../.agents/skills) already holds the skills; links there would point at
+# themselves.
 function New-SkillSymlinks {
     param([string]$AgentDir, [string]$StoreDir)
     $existed = Test-Path $AgentDir
@@ -608,39 +625,154 @@ function New-SkillSymlinks {
     Write-Info "  Linked skills into $AgentDir"
 }
 
-# The -Conventions of skills / agents-md, or the -Agents of earlier releases.
-function Get-ConventionsArg {
-    if ($Conventions) { return $Conventions }
-    return $Agents
+# The conventions of skills / agents-md $Subcommand: always 'agents', plus
+# 'claude' unless -Claude:$false is given.
+function Get-ConventionList {
+    param([string]$Subcommand)
+    if ($script:GivenParams -contains 'Agents') {
+        Write-ErrAndExit "${Subcommand}: -Agents is only supported for MCP commands"
+    }
+    if ($script:GivenParams -contains 'Claude' -and -not $Claude) { return @('agents') }
+    return @('agents', 'claude')
 }
 
-function Invoke-CmdSkills {
-    $conventionList = Resolve-ConventionsCsv -Csv (Get-ConventionsArg) -Subcommand 'skills'
-    $resolvedScope = Resolve-Scope -Scope $Scope
-    Initialize-Tarball
+# The skills store of scope $Scope under $Root (the project or the user home).
+# Local skills are kept in the project's .agents/skills (linked into
+# .claude/skills by default); global ones in ~/.agents/.jmix/skills/<branch>, so
+# multiple Jmix majors coexist.
+function Get-SkillsStoreDir {
+    param([string]$Scope, [string]$Root)
+    if ($Scope -eq 'local') { return Join-Path $Root '.agents/skills' }
+    return Join-Path $Root (Join-Path '.agents/.jmix/skills' $script:ResolvedVersionDir)
+}
 
-    if ($resolvedScope -eq 'local') {
-        $root = (Get-Location).Path
-        $storeDir = Join-Path $root '.skills'
-    } else {
-        $root = $script:UserHome
-        $storeDir = Join-Path $script:UserHome (Join-Path '.agents/.jmix/skills' $script:ResolvedVersionDir)
+# Earlier versions kept the local skills in <project>/.skills and linked them
+# into .agents/skills and .claude/skills. Runs once the new store is filled and
+# linked, so a failure before it leaves the old layout working: every
+# <project>/.*/skills dir (other agents' too) is swept of the old store (see
+# Update-LegacySkillLinks), then .skills is emptied of its Jmix entries (see
+# Remove-LegacySkillEntries). A .skills that is a link is the user's own setup:
+# left alone. One that is an agent skills dir (e.g. .claude/skills -> ../.skills)
+# is live: kept, and linked like .claude/skills so it does not go stale. Names
+# match case-sensitively, as in install.sh.
+function Remove-LegacySkillsStore {
+    param([string]$Root, [string]$StoreDir)
+    $legacy = Join-Path $Root '.skills'
+    $legacyItem = Get-Item -LiteralPath $legacy -Force -ErrorAction SilentlyContinue
+    if ($legacyItem -and $legacyItem.LinkType) { return }
+    $skillNames = @(Get-ChildItem -Path $script:SourceSkillsDir -Directory | ForEach-Object { $_.Name })
+    # ponytail: agent dirs are <root>/.*/skills; add others if an agent reads elsewhere.
+    $agentDirs = @(Get-ChildItem -LiteralPath $Root -Directory -Force | Where-Object { $_.Name.StartsWith('.') } |
+        ForEach-Object { Join-Path $_.FullName 'skills' } | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
+    foreach ($dir in $agentDirs) {
+        if (-not (Test-SameDirectory -Path $legacy -Other $dir)) { continue }
+        if (-not (Test-SameDirectory -Path $dir -Other $StoreDir)) {
+            foreach ($name in $skillNames) { New-DirSymlink -Link (Join-Path $dir $name) -Target (Join-Path $StoreDir $name) }
+        }
+        Write-Info "  Kept the old skills store ${legacy}: $dir links to it"
+        return
     }
+    foreach ($dir in $agentDirs) { Update-LegacySkillLinks -Dir $dir -Root $Root -StoreDir $StoreDir -SkillNames $skillNames }
+    if ($legacyItem -and $legacyItem.PSIsContainer) { Remove-LegacySkillEntries -Legacy $legacy -SkillNames $skillNames }
+}
+
+# In agent skills dir $Dir, links named jmix* into the old <project>/.skills are
+# re-linked to the store (a skill being installed) or removed (retired skills,
+# old backups), and real jmix*.bak* folders older versions left beside the
+# skills move to the backups dir, where agents do not read them.
+function Update-LegacySkillLinks {
+    param([string]$Dir, [string]$Root, [string]$StoreDir, [string[]]$SkillNames)
+    $legacyFull = [System.IO.Path]::GetFullPath((Join-Path $Root '.skills'))
+    # A relative link target counts from the dir's real folder.
+    # ponytail: follows one level of link, enough for a linked agent dir.
+    $dirItem = Get-Item -LiteralPath $Dir -Force
+    $realDir = $Dir
+    if ($dirItem.LinkType) { $realDir = Resolve-LinkTarget -Link $Dir -Target ([string](@($dirItem.Target) | Select-Object -First 1)) }
+    $moved = 0
+    foreach ($item in Get-ChildItem -LiteralPath $Dir -Force) {
+        if ($item.Name -cnotmatch '^jmix($|[-.])') { continue }
+        if (-not $item.LinkType) {
+            if ($item.PSIsContainer -and $item.Name -clike '*.bak*') { $null = Backup-SkillDir -Path $item.FullName; $moved++ }
+            continue
+        }
+        $target = Resolve-LinkTarget -Link (Join-Path $realDir $item.Name) -Target ([string](@($item.Target) | Select-Object -First 1))
+        $parent = Split-Path -Parent $target
+        # .skills under another spelling of the project path (e.g. macOS
+        # /var -> /private/var) counts too.
+        # ponytail: one marker write per link; cache by folder if it shows.
+        if ($parent -ne $legacyFull -and -not ((Split-Path -Leaf $parent) -eq '.skills' -and
+                (Test-SameDirectory -Path $Root -Other (Split-Path -Parent $parent)))) { continue }
+        # In the store a skill being installed is a real folder by now, so
+        # such a link is in another agent's dir.
+        if ($SkillNames -ccontains $item.Name) {
+            New-DirSymlink -Link $item.FullName -Target (Join-Path $StoreDir $item.Name)
+        } else {
+            Remove-Link -Item $item
+        }
+        $moved++
+    }
+    if ($moved) { Write-Info "  Re-linked, removed or backed up $moved entries of the old skills store in $Dir" }
+}
+
+# Removes the Jmix entries of the old store $Legacy: the toolkit's skills and
+# their old backups are deleted (backed up with -BackupExistingFiles), any other
+# jmix* entry, retired or the user's own, is always backed up. $Legacy goes when
+# nothing else is left in it.
+function Remove-LegacySkillEntries {
+    param([string]$Legacy, [string[]]$SkillNames)
+    foreach ($item in Get-ChildItem -LiteralPath $Legacy -Force) {
+        if ($item.Name -cnotmatch '^jmix($|[-.])') { continue }
+        $isToolkit = $SkillNames -ccontains ($item.Name -creplace '\.bak.*$', '')
+        if ($item.LinkType) { Remove-Link -Item $item }
+        elseif ($BackupExistingFiles -or -not $isToolkit) {
+            $backup = Backup-SkillDir -Path $item.FullName
+            Write-Info "  Backed up $($item.FullName) to $backup"
+        }
+        else { Remove-Item -LiteralPath $item.FullName -Recurse -Force }
+    }
+    # Clutter Finder and Explorer leave is not the user's.
+    foreach ($n in '.DS_Store', 'Thumbs.db', 'desktop.ini') {
+        Remove-Item -LiteralPath (Join-Path $Legacy $n) -Force -ErrorAction SilentlyContinue
+    }
+    if (@(Get-ChildItem -LiteralPath $Legacy -Force).Count -eq 0) {
+        [System.IO.Directory]::Delete($Legacy, $false)
+        Write-Info "  Removed the old skills store $Legacy"
+    } else {
+        Write-Info "  Kept the old skills store ${Legacy}: it holds other files"
+    }
+}
+
+# Installs the skills for conventions $ConventionList at scope $Scope: fills the
+# store, links it into each convention's skills dir and tidies up after earlier
+# versions. Shared by the skills subcommand and the wizard.
+function Install-Skills {
+    param([string[]]$ConventionList, [string]$Scope)
+    $root = if ($Scope -eq 'local') { (Get-Location).Path } else { $script:UserHome }
+    $storeDir = Get-SkillsStoreDir -Scope $Scope -Root $root
+    $script:SkillBackupDir = if ($Scope -eq 'local') { Join-Path $root '.agents/.jmix/backups' } else { '' }
 
     $storeExisted = Test-Path $storeDir
-    Write-Verbose "scope=$resolvedScope root=$root store=$storeDir"
+    Write-Verbose "scope=$Scope root=$root store=$storeDir"
     Install-SkillsToStore -StoreDir $storeDir
     Write-ChangeMarker -Action $(if ($storeExisted) { 'updated' } else { 'created' }) -Type 'dir' -Path $storeDir
 
     Write-Info ''
     Write-Info 'Linking store skills into agent dirs'
-    foreach ($c in $conventionList) {
+    foreach ($c in $ConventionList) {
         New-SkillSymlinks -AgentDir (Join-Path $root (Get-ConventionSkillsDir -Convention $c)) -StoreDir $storeDir
     }
-    Remove-OldJunieSkillLinks -Root $root -Conventions $conventionList
+    Remove-OldJunieSkillLinks -Root $root
+    if ($Scope -eq 'local') { Remove-LegacySkillsStore -Root $root -StoreDir $storeDir }
 
     Write-Info ''
-    Write-Info "Done. Installed $resolvedScope skills store at $storeDir and linked: $($conventionList -join ', ')"
+    Write-Info "Done. Installed $Scope skills store at $storeDir and linked: $($ConventionList -join ', ')"
+}
+
+function Invoke-CmdSkills {
+    $conventionList = Get-ConventionList -Subcommand 'skills'
+    $resolvedScope = Resolve-Scope -Scope $Scope
+    Initialize-Tarball
+    Install-Skills -ConventionList $conventionList -Scope $resolvedScope
 }
 
 # =================================================================
@@ -857,7 +989,7 @@ function Install-GuidelinesBlockFor {
 # Four branches, in order, plus an early exit for a destination path that exists
 # but is not a file (e.g. CLAUDE.md is a directory) -- there is nothing to merge
 # into, so this reports an error and exits rather than attempting anything else:
-#   1. no file             -> write the block alone
+#   1. no file             -> write the block, or @AGENTS.md for a new CLAUDE.md
 #   2. markers present     -> replace only that region, no backup
 #   3. legacy toolkit file -> back up, replace whole file
 #   4. anything else       -> back up, add the block, keep everything they wrote
@@ -877,6 +1009,13 @@ function Write-GuidelinesBlock {
     if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
 
     if (-not (Test-Path -LiteralPath $Dest)) {
+        $agentsMd = Join-Path $destDir 'AGENTS.md'
+        if ($Convention -eq 'claude' -and
+            -not (Get-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue) -and
+            (Test-Path -LiteralPath $agentsMd -PathType Leaf) -and
+            $null -ne (Get-BlockRange -Text (Get-FileTextRaw -Path $agentsMd))) {
+            $block = "@AGENTS.md`n"
+        }
         Set-FileTextRaw -Path $Dest -Text $block
         Write-Info "  Installed: $Dest"
         Write-ChangeMarker -Action 'created' -Type 'file' -Path $Dest
@@ -963,7 +1102,7 @@ function Install-GuidelinesBlocks {
 }
 
 function Invoke-CmdAgentsMd {
-    $conventionList = Resolve-ConventionsCsv -Csv (Get-ConventionsArg) -Subcommand 'agents-md'
+    $conventionList = Get-ConventionList -Subcommand 'agents-md'
     Write-Info "Project guidelines target directory: $((Get-Location).Path)"
     Initialize-Tarball
     Install-GuidelinesBlocks -ConventionList $conventionList
@@ -1434,6 +1573,7 @@ function Assert-McpArgs {
     param([string]$Subcommand, [switch]$AllowServers, [switch]$AllowKey)
     if ($Servers -and -not $AllowServers) { Write-ErrAndExit "${Subcommand}: unknown argument: -Servers" }
     if ($Context7Key -and -not $AllowKey) { Write-ErrAndExit "${Subcommand}: unknown argument: -Context7Key" }
+    if ($script:GivenParams -contains 'Claude') { Write-ErrAndExit "${Subcommand}: unknown argument: -Claude" }
 }
 
 # =================================================================
@@ -1739,51 +1879,40 @@ function Invoke-Wizard {
         mcp        = 'skipped'
     }
     $resolvedScope = 'local'
-
-    # Each Read-Choice result is wrapped in @() so a one-element return stays an
-    # array: PowerShell unwraps it, and $sel[0] would index its first character.
+    # The guidelines' Claude Code answer defaults to the skills' one.
+    $claudeDefault = 'y'
 
     # Step 1: skills
-    $sel = @(Read-Choice -Title '[1/3] Install Jmix skills into:' -Options $script:AllConventions `
-        -Label { param($o) Get-SkillsLabel -Convention $o } -Default 'all')
-    if ($sel[0] -ne 'skip') {
+    Write-Host ''
+    if (Read-YesNo -Message '[1/3] Install Jmix skills into .agents/skills?' -Default 'y') {
         $scopeAnswer = Read-Prompt -Message 'Install scope: (l)ocal project dir or (g)lobal user home' -Default 'l'
         if ($scopeAnswer -match '^(g|global)$') { $resolvedScope = 'global' }
+        $sel = @('agents')
+        $claudeDefault = 'n'
+        if (Read-YesNo -Message 'For Claude Code too (links in .claude/skills)?' -Default 'y') {
+            $sel = @('agents', 'claude')
+            $claudeDefault = 'y'
+        }
         Initialize-Tarball
-        try {
-            if ($resolvedScope -eq 'local') {
-                $wizRoot = (Get-Location).Path
-                $wizStoreDir = Join-Path $wizRoot '.skills'
-            } else {
-                $wizRoot = $script:UserHome
-                $wizStoreDir = Join-Path $script:UserHome (Join-Path '.agents/.jmix/skills' $script:ResolvedVersionDir)
-            }
-            Install-SkillsToStore -StoreDir $wizStoreDir
-            Write-Info ''
-            Write-Info 'Linking store skills into agent dirs'
-            foreach ($c in $sel) {
-                New-SkillSymlinks -AgentDir (Join-Path $wizRoot (Get-ConventionSkillsDir -Convention $c)) -StoreDir $wizStoreDir
-            }
-            Remove-OldJunieSkillLinks -Root $wizRoot -Conventions $sel
-        } catch { Write-Info "error: $($_.Exception.Message)" }
+        try { Install-Skills -ConventionList $sel -Scope $resolvedScope }
+        catch { Write-Info "error: $($_.Exception.Message)" }
         $summaryStrings.skills = "$($sel -join ', ') ($resolvedScope)"
     }
 
     # Step 2: agents-md
-    $sel = @(Read-Choice -Title '[2/3] Merge Jmix coding guidelines in this directory into:' -Options $script:AllConventions `
-        -Label { param($o) Get-GuidelinesLabel -Convention $o } -Default 'all')
-    if ($sel[0] -ne 'skip') {
-        if (Read-YesNo -Message "Target directory: $((Get-Location).Path). Proceed?" -Default 'y') {
-            Initialize-Tarball
-            Install-GuidelinesBlocks -ConventionList $sel -Lenient
-            $summaryStrings.guidelines = $sel -join ', '
-        } else {
-            $summaryStrings.guidelines = 'skipped (declined)'
-        }
+    Write-Host ''
+    if (Read-YesNo -Message "[2/3] Merge Jmix coding guidelines into AGENTS.md in $((Get-Location).Path)?" -Default 'y') {
+        $sel = @('agents')
+        if (Read-YesNo -Message 'For Claude Code too (CLAUDE.md)?' -Default $claudeDefault) { $sel = @('agents', 'claude') }
+        Initialize-Tarball
+        Install-GuidelinesBlocks -ConventionList $sel -Lenient
+        $summaryStrings.guidelines = $sel -join ', '
     }
 
     # Step 3: MCP servers; a failed agent there is reported and the wizard moves
-    # on. The scope defaults to the one chosen for the skills.
+    # on. The scope defaults to the one chosen for the skills. Each Read-Choice
+    # result is wrapped in @() so a one-element return stays an array:
+    # PowerShell unwraps it, and $x[0] would index its first character.
     $serverList = @(Read-Choice -Title '[3/3] Connect agents to MCP servers:' -Options $script:AllMcpServers `
         -Label { param($o) Get-ServerLabel -Server $o })
     $agentList = @('skip')

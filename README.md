@@ -46,8 +46,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -Command "Invoke-RestMethod 'https://raw
 Each runs one step without the wizard. **CSV** is a comma-separated list (e.g. `claude,codex`) or a single value.
 
 ```bash
-install.sh skills     --conventions CSV [--scope global|local]
-install.sh agents-md  --conventions CSV
+install.sh skills     [--scope global|local] [--claude=false]
+install.sh agents-md  [--claude=false]
 install.sh mcp        --servers CSV --agents CSV [--scope local|global] [--context7-key KEY]
 install.sh mcp-jetbrains | mcp-context7 | playwright --agents CSV [--scope local|global]
                                      # mcp-context7 also takes [--context7-key KEY]
@@ -59,7 +59,7 @@ Piped from `curl`, pass the subcommand after `bash -s --`:
 curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/v2/install.sh | bash -s -- mcp --servers jetbrains,playwright --agents claude,codex
 ```
 
-PowerShell takes the same subcommands and flags (e.g. `install.ps1 skills -Conventions 'agents,claude'`). To run one straight from the URL:
+PowerShell takes the same subcommands and flags (e.g. `install.ps1 skills -Scope local -Claude:$false` to skip Claude Code). To run one straight from the URL:
 
 ```powershell
 & ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/v2/install.ps1).Content)) mcp -Servers 'jetbrains,playwright' -Agents 'claude,codex'
@@ -67,14 +67,9 @@ PowerShell takes the same subcommands and flags (e.g. `install.ps1 skills -Conve
 
 Quote lists: unquoted, `claude,codex` is an array in PowerShell.
 
-`skills` and `agents-md` take **conventions**, i.e. where the files go. Any agent that follows a convention picks them up:
+`skills` always installs the skills into `.agents/skills`, and `agents-md` always merges the guidelines into `AGENTS.md`: Codex, OpenCode, Junie, Cursor, GitHub Copilot, Gemini CLI and others read them there. Claude Code is included by default: each skill is linked into `.claude/skills`, and a new `CLAUDE.md` contains only `@AGENTS.md`, so the shared instructions have one copy. Existing `CLAUDE.md` files keep the current merge and backup rules; a file that already imports `AGENTS.md` is left untouched. Use `--claude=false` (`-Claude:$false`) to skip Claude Code.
 
-| Convention | Skills           | Guidelines  | Followed by                       |
-|:-----------|:-----------------|:------------|:----------------------------------|
-| `agents`   | `.agents/skills` | `AGENTS.md` | Codex, OpenCode, Junie and others |
-| `claude`   | `.claude/skills` | `CLAUDE.md` | Claude Code                       |
-
-The MCP subcommands take **agents** instead: `claude`, `codex`, `opencode`, `junie`. `claude` also sets up [Claude Desktop](#claude-desktop) when it is installed.
+The MCP subcommands take **agents**, each with its own config: `claude`, `codex`, `opencode`, `junie`. `claude` also sets up [Claude Desktop](#claude-desktop) when it is installed.
 
 ### Flags
 
@@ -82,7 +77,7 @@ The MCP subcommands take **agents** instead: `claude`, `codex`, `opencode`, `jun
 |:--------------------------|:-----------------------|:--------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--content-ref REF`       | `-ContentRef REF`      | `v2`    | Branch/ref whose `content/` is downloaded; it also names the global skills store. Studio passes its resolved toolkit branch.                                                                                                                                                                                         |
 | `--source DIR`            | `-Source DIR`          | -       | Install from a local checkout of this repository instead of downloading (CI, offline use).                                                                                                                                                                                                                           |
-| `--conventions CSV`       | `-Conventions CSV`     | -       | `skills`, `agents-md`: `agents`, `claude`. Required. `--agents` / `-Agents` and the agent names `codex`, `opencode`, `junie` (meaning `agents`) are accepted too.                                                                                                                                                    |
+| `--claude[=true\|false]`  | `-Claude`              | on      | `skills`, `agents-md`: set up Claude Code by default. Use `--claude=false` / `-Claude:$false` to skip `.claude/skills` links and `CLAUDE.md`. `.agents/skills` and `AGENTS.md` are always installed. |
 | `--agents CSV`            | `-Agents CSV`          | -       | MCP subcommands: `claude`, `codex`, `opencode`, `junie`. Required.                                                                                                                                                                                                                                                   |
 | `--servers CSV`           | `-Servers CSV`         | -       | `mcp`: `jetbrains`, `context7`, `playwright`. Required.                                                                                                                                                                                                                                                              |
 | `--scope global\|local`   | `-Scope global\|local` | global  | `skills`: install into the user home or the current project, see **Skills store** below.                                                                                                                                                                                                                             |
@@ -93,9 +88,11 @@ The MCP subcommands take **agents** instead: `claude`, `codex`, `opencode`, `jun
 
 **Environment:** `JMIX_IDE_MCP_PORT` sets the port of the IntelliJ IDEA MCP server (default `64342`), e.g. `curl ... | JMIX_IDE_MCP_PORT=64343 bash -s -- mcp-jetbrains --agents claude`.
 
-**Skills store:** the skills are copied into a store, and each skill folder is linked into the skills dir of every chosen convention, next to any other skills there.
-- **Global:** store at `~/.agents/.jmix/skills/<ref>/` (the `--content-ref`, e.g. `v2`), linked into `~/.agents/skills` / `~/.claude/skills`.
-- **Local:** store at `<project>/.skills/`, linked into `<project>/.agents/skills` / `<project>/.claude/skills`.
+**Skills store:** the skills are copied into a store, and each skill folder is linked into `.agents/skills` (unless that dir is the store) and, unless `--claude=false`, into `.claude/skills`, next to any other skills there.
+- **Global:** store at `~/.agents/.jmix/skills/<ref>/` (the `--content-ref`, e.g. `v2`), linked into `~/.agents/skills` and, unless `--claude=false`, into `~/.claude/skills`.
+- **Local:** the store is `<project>/.agents/skills/` itself, so the skills are real folders there. Each skill is linked into `<project>/.claude/skills` unless `--claude=false`. With `--backup-existing-files`, replaced skill folders go to `<project>/.agents/.jmix/backups/`, where no agent reads them as skills.
+
+**Upgrading from an older local install:** older versions kept the local store in `<project>/.skills/`. A re-run moves the skills into `.agents/skills`, re-points the links into `.skills` in `.claude/skills` (and in any other `<project>/.*/skills` you linked the same way), deletes the toolkit's skills from `.skills`, moves any other `jmix*` entry there (a retired skill or your own) to `.agents/.jmix/backups/`, and deletes `.skills` when nothing else is left. A `.skills` that is a link is left alone. One that a skills dir links to (e.g. `.claude/skills -> ../.skills`) is kept: behind `.agents/skills` it stays the store, behind any other dir its Jmix skills become links to `.agents/skills`. If the old layout is committed, git shows `.skills` deleted, the `.agents/skills` entries changed from symlinks to folders and the `.claude/skills` links re-pointed.
 
 > The installer writes MCP servers straight into each agent's config file (see [MCP Servers](#3-mcp-servers)), keeping its other servers and settings; only Claude CLI at `global` scope goes through `claude mcp add`. A file that is already up to date is not rewritten. On macOS/Linux, merging into an existing JSON config file needs `jq` or `node`; a new file is written without them. Servers started through `npx` need Node.js 20+ when the agent starts them, not at install time.
 

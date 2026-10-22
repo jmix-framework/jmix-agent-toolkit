@@ -17,7 +17,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Studio reads this from the manifest; install.sh / install.ps1 mirror it.
 STORE = {
     "global": ".agents/.jmix/skills",
-    "local": ".skills",
+    "local": ".agents/skills",
 }
 
 def list_skill_names(skills_dir):

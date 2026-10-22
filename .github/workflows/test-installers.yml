@@ -8,6 +8,8 @@ on:
       - 'install.ps1'
       - 'content/guidelines-block.md'
       - '.studio/studio-meta-data.json'
+      - '.studio/skills-manifest.json'
+      - '.studio/gen_skills_manifest.py'
       - 'tests/**'
       - '.github/workflows/test-installers.yml'
   pull_request:
@@ -16,6 +18,8 @@ on:
       - 'install.ps1'
       - 'content/guidelines-block.md'
       - '.studio/studio-meta-data.json'
+      - '.studio/skills-manifest.json'
+      - '.studio/gen_skills_manifest.py'
       - 'tests/**'
       - '.github/workflows/test-installers.yml'
   workflow_dispatch:
