@@ -1,16 +1,24 @@
 ---
 name: jmix-create-resource-role
-description: Create or update Jmix resource roles with entity, attribute, view, and menu policies, including the CREATE-implies-MODIFY rule.
+description: Create or update Jmix resource and row-level roles and role assignments — entity, attribute, view, menu, and specific policies, UI login permission, "own records / only in status X" edit rules, and the CREATE-implies-MODIFY rule.
 ---
 
 # Create Resource Role
 
 Use this skill when adding or changing Jmix security access.
 
-The model is ADDITIVE / no-deny: if any assigned role grants access the user has
-it, and there is no deny-policy. A role interface may `extend` several role
+Resource roles are ADDITIVE / no-deny: if any assigned resource role grants access
+the user has it, and there is no deny-policy. Row-level roles only narrow (see
+"Row-Level roles"). A role interface may `extend` several role
 interfaces of the SAME kind to compose their policies (a role cannot mix
 `@ResourceRole` and `@RowLevelRole`).
+
+## Every UI user needs `ui.loginToUi`
+
+The login view refuses a user without the specific policy `ui.loginToUi`, whatever
+else their roles grant. Give every UI user the project's `UiMinimalRole` (`ui-minimal`:
+`ui.loginToUi`, `MainView`, `LoginView`) — the business role extends it, or the user
+gets a `ui-minimal` assignment, in seed changelogs too.
 
 ## TOP RULE — CREATE implies MODIFY
 
@@ -38,6 +46,15 @@ role right (`MODIFY`) but leaving a read/employee role on `VIEW` while it still 
 read-only even at creation (e.g. auto-generated audit fields), exclude them from the
 `attributes` list or use a second `VIEW` policy for that subset — NOT a blanket
 `VIEW` on `*`.
+
+## Where attribute policies are enforced
+
+An attribute policy is enforced by the Flow UI value bindings and grid columns,
+and by `EntitySerialization` — NOT by `DataManager`. The data layer checks
+entity-level and row-level rules only. So a service, a scheduled job, or a custom
+controller running under the role's session persists an attribute the role was
+never granted, with no error. Guard the non-granted attributes in that code
+yourself; the policy will not do it for you.
 
 ## Requirement wording → policy actions
 
@@ -96,6 +113,11 @@ live in their own interface annotated with `@RowLevelRole` and never mix with
   the method returns a `RowLevelPredicate` / `RowLevelBiPredicate`. Use for logic
   that JPQL cannot express and for non-read operations.
 
+**Row-level policies are joined with AND** — JPQL conditions and predicates alike, across
+all the user's row-level roles. A user with both "own orders" and "department orders"
+sees only their own. Assign only the wider role, or write one role whose condition
+contains the `or`; check seed role assignments too.
+
 Gotcha: a JPQL policy only affects the root entity of a loaded graph. If the same
 entity is also loaded as a *collection* inside another entity's graph, define BOTH
 a `@JpqlRowLevelPolicy` and a `@PredicateRowLevelPolicy` for it to keep access
@@ -109,6 +131,22 @@ public interface OwnOrdersOnlyRole {
     void orderPolicy();
 }
 ```
+
+Gotcha: an UPDATE predicate is checked against two different states of the entity.
+`StandardDetailView` and the list `EditAction` check it against the entity as loaded,
+to decide whether the view (or the child dialog) opens read-only. The data store checks
+it against the entity as it is being saved, with the user's changes applied. So a
+predicate on a field that the same user changes in that save judges the NEW value: an
+`Order` predicate `status == DRAFT` lets the owner edit a draft, and then denies, with
+`AccessDeniedException`, the owner's own save that moves the order to SUBMITTED.
+
+- Put ownership in the predicate (the requester is the current user); it does not change
+  during the save.
+- Keep status rules for the entity itself in the service or the view.
+- A status rule fits on child entities that the transition does not touch, for example
+  `OrderLine` changes allowed only while the parent `Order` is a draft. Then save the
+  user's pending line edits BEFORE the status change, in a separate save: in one save the
+  changed lines are checked against the parent's new status and denied.
 
 ## Mechanical self-check before finishing
 
@@ -125,6 +163,9 @@ your own code:
    `<menu id="...">` GROUP id does NOT grant its items.
 3. **Every reachable view has a `@ViewPolicy` entry.** Include composition-dialog
    detail views opened from a parent grid even though they have no menu item.
+4. **Every UI user holds `ui.loginToUi`** (`ui-minimal`), seed assignments included.
+5. **No user holds two row-level roles narrowing the same entity** unless the
+   intersection is intended.
 
 To assert a permission in Java at runtime, inject `AccessManager` and call
 `applyRegisteredConstraints(...)` on a context (e.g. `EntityOperationContext`), then

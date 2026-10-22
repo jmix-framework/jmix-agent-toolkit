@@ -1,6 +1,6 @@
 ---
 name: jmix-ide-static-analysis
-description: Gate-1 static checks. PRIMARY when connected: run a Jmix-aware IDE/semantic inspection (e.g. JetBrains get_file_problems) on every file you created/edited — it catches the *-view.xml defects a compiler cannot (unresolved msg://, invalid property paths, missing data containers). Fall back to compileJava plus mechanical descriptor checks when no inspection is available. Read before relying on any static check.
+description: "Gate-1 static checks. PRIMARY when connected: run a Jmix-aware IDE/semantic inspection (e.g. JetBrains get_file_problems) on every file you created/edited — it catches the *-view.xml defects a compiler cannot (unresolved msg://, invalid property paths, missing data containers). Fall back to compileJava plus mechanical descriptor checks when no inspection is available. Read before relying on any static check."
 ---
 
 # Static analysis (Gate 1)
@@ -18,16 +18,12 @@ catch for the descriptor defects a compiler cannot see: unresolved `msg://` keys
 invalid property paths, missing data containers, broken component bindings (and it
 flags the same Java errors a compile would). Rules when you use one:
 
-- **Always pass `projectPath` — your project's absolute root (`pwd`).** The project
-  you work in is opened as its own root, so `projectPath` = your current working
-  directory. Pass it on EVERY JetBrains MCP call (`get_file_problems`,
-  `get_project_modules`, `create_new_file`, …): with more than one project open the
-  IDE cannot tell which you mean and the call fails — `No exact project is specified`
-  or a malformed `-32602` response — so the gate silently does nothing. **If you do
-  not know the root:** issue any JetBrains MCP call once WITHOUT `projectPath`; the
-  error lists every open project as `Currently open projects: {"projects":[{"path":
-  …}]}`. Pick the entry equal to (or the deepest one containing) your `pwd`, then
-  reuse it as `projectPath` for all later calls.
+- **Read the connected tool schema before choosing the project.** When a call
+  supports `projectPath`, pass the absolute root of the intended open project on
+  every call. Use the server's documented project-discovery mechanism if needed;
+  do not assume omitting the argument will return a list. Some servers expose no
+  project argument: do not invent one. Confirm the intended project with a known
+  diagnostic as described below, or report the inspection unavailable.
 - **Surface WARNINGS, not just errors.** Jmix-plugin findings (unresolved
   `msg://`, bad fetch/entity refs, broken bindings) are typically reported as
   WARNINGS — an errors-only view looks clean when it is not. Include warnings and
@@ -35,7 +31,14 @@ flags the same Java errors a compile would). Rules when you use one:
 - **Never trust an EMPTY result you did not confirm.** An inspection that
   silently targeted the wrong project/module returns "no problems" on a file it
   never looked at — that is false-clean. Confirm the file was actually inspected
-  before calling it clean.
+  before calling it clean. Require a result for every requested path; a batch
+  omission or timeout means UNVERIFIED, not clean. Prefer individual calls for
+  descriptors. Check a file with a known diagnostic in the intended project. If
+  necessary, inspect a disposable descriptor copy with a deliberately invalid
+  `msg://` key in an IDE-indexed resource directory; confirm the defect is reported,
+  then remove only that probe. Leave the original unchanged. A property-path
+  check with no resolvable data container in an abstract descriptor does not prove
+  that its bindings are valid; inspect or test the concrete inheriting view too.
 - **The inspection needs the project opened as a STANDALONE Gradle project** (its
   own root, not a subdirectory of another open project) — a nested path resolves to
   the wrong module and returns generic noise (e.g. "URI is not registered"), not
@@ -45,6 +48,65 @@ flags the same Java errors a compile would). Rules when you use one:
   only generic/non-Jmix findings on a file you KNOW has a descriptor (a `*-view.xml`
   you just edited), treat the inspection as UNAVAILABLE for this run — do NOT call
   the file clean. Fall through to `compileJava` + the mechanical descriptor checks.
+- **Never trust an ALL-ERRORS result either — the IDE may not index the file.**
+  If the inspection reports "Cannot resolve symbol" for practically EVERY symbol,
+  including JDK types such as `String`, `List`, `Map`, that signature means "the
+  IDE is not indexing this file" — the result is garbage, not a broken file. The
+  bogus findings carry severity ERROR, so an errors-only filter does not remove
+  them; do NOT fix code from them. Disregard the whole result and fall back to
+  `compileJava` + the mechanical descriptor checks. For an XML-only edit, where
+  there are no JDK types to look for, the analogue is "message not found" on
+  `msg://` keys that grep DOES resolve in the module's `messages_*.properties`.
+  The most common cause is a git worktree nested under the project root (agent
+  tooling creates these routinely) while the IDE is opened on the main checkout:
+  the file IS inside the project directory, so the inspection accepts the path
+  and returns bogus findings instead of refusing loudly. Mechanical precondition
+  for any file type: `git rev-parse --show-toplevel` run in the edited file's
+  directory must equal the confirmed IDE project root (`projectPath` when
+  supported) — if it differs, the file lives in another
+  worktree and the inspection of that path is not authoritative. The same
+  signature also arises from a file outside any source root, a never-imported
+  Gradle project, or indexing lag right after files were written from outside
+  the IDE.
+- **A compile-only fallback leaves debt — record it.** When no inspection is
+  connected, LIST the files that got only `compileJava` in your completion report,
+  and re-inspect them the next time a session has the inspection available. A green
+  compile is not a substitute: it misses every Jmix semantic finding below.
+
+### Jmix semantic findings only this inspection catches — fix them
+
+These are TRUE positives. They are invisible to `compileJava`, to the mechanical
+checks, and to a green `clean test`:
+
+- **Unresolved `msg://` key** — renders as the literal key at runtime.
+- **Invalid property path / missing data container** in a `*-view.xml`.
+- **Unfetched-attribute risk** on a property a view reads but the fetch plan omits
+  (see `jmix-configure-fetch-plan`).
+- **`Result of DataManager.save() is not used; use saveWithoutReload()`** —
+  `save()` re-selects the entity after persisting; when the caller discards the
+  result that reload is wasted work. See `jmix-create-service`.
+
+### Known false positives — do NOT chase these
+
+Expected noise; state them as understood and move on:
+
+| Finding | Why it is not a defect |
+|---|---|
+| "Method is never used" on `@ConfigurationProperties` getters/setters | called by Spring through reflection |
+| "Method is never used" on entity getters/setters | called by Jmix/JPA through reflection and by view descriptors |
+| "Unused property" on an i18n key | normal when the view that references it does not exist yet (e.g. a detail-view title key added while building the list view) |
+| "Field can be converted to a local variable" in a test class | fields hold `@Autowired`/fixture state across methods |
+| "Result of `DataManager.save()` is not used" in a TEST that keeps the entity for cleanup | only a false positive if the returned instance IS used (e.g. added to a cleanup list); if the result is truly discarded it is the real finding above |
+
+### What NO static check covers
+
+- A CSS custom property that does not exist in the app's active theme. A
+  `--lumo-*` variable in an Aura-themed app is undefined: the browser silently
+  falls back (color → inherited, `border-radius` → 0), nothing errors, and every
+  gate stays green. Only reading the COMPUTED style in a real browser catches it.
+  See `jmix-style-ui`.
+- Code paths that only run outside a user request — schedulers, `@Async`,
+  message listeners. See `jmix-run-background-code`.
 
 ## 2. Compile — Java ground truth, and floor when no inspection
 
@@ -73,6 +135,11 @@ automatically a failure, but you MUST explain every hit (e.g. each `msg://` key
 must actually resolve in a `messages_*.properties`; each `= :` loader param must
 be bound/guarded).
 
+For `*-view.xml`, the file must start cleanly with an XML tag: either
+`<?xml ...?>` or `<view ...>`. Any BOM, whitespace, or stray content before the
+first `<` is a defect; it can surface as `SAXParseException: Content is not
+allowed in prolog`.
+
 ```bash
 # package line on every new .java (missing → view-registry / import breakage)
 find src/main/java -name '*.java' | while read f; do head -1 "$f" | grep -q '^package ' || echo "MISSING package: $f"; done
@@ -88,6 +155,8 @@ grep -rn "itemsQuery" src/main/resources --include='*-view.xml'
 grep -rn "com.vaadin.flow.component.dialog.Dialog" src/main/java --include='*.java'
 # every msg:// key must resolve in a messages_*.properties (else literal key renders)
 grep -rhoE 'msg://[^"<> ]+' src/main/resources --include='*.xml' | sort -u
+# no BOM / leading content before the XML tag (else SAX "Content is not allowed in prolog")
+find src/main/resources -name '*-view.xml' | while read f; do LC_ALL=C head -c 1 "$f" | grep -q '<' || echo "BAD XML prolog/BOM: $f"; done
 # no 0-byte source file (empty role drops policies; empty *-view.xml poisons registry)
 find src/main -type f \( -name '*.java' -o -name '*.xml' \) -size 0
 ```

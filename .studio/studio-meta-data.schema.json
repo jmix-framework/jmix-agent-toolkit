@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://raw.githubusercontent.com/jmix-framework/jmix-agent-guidelines/main/.studio/studio-meta-data.schema.json",
+  "$id": "https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/main/.studio/studio-meta-data.schema.json",
   "title": "Jmix Studio install-flow metadata",
   "description": "Metadata consumed by Jmix Studio to drive the AI Agent Toolkit wizard. Defines a sequence of multi-input steps; each step optionally executes a shell command assembled from collected input values.",
   "type": "object",

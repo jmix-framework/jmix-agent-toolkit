@@ -1,23 +1,65 @@
 ---
 name: jmix-add-i18n-keys
-description: Add complete Jmix message keys for entities, enums, views, actions, and validation text.
+description: Add complete Jmix message keys for entities, enums, views, actions, and validation text, and configure official Jmix framework translations for non-English applications.
 ---
 
 # Add I18n Keys
 
-Use this skill whenever adding user-visible text, entities, enum values, views, or validation messages.
+Use this skill whenever adding user-visible text, entities, enum values, views,
+validation messages, or a non-English application locale.
 
 ## Steps
 
-1. Find all locale files in the application message bundle.
-2. Add the same keys to every locale file.
-3. Use entity keys for entity captions and attributes.
-4. Use enum keys for every enum constant.
-5. Use view-local keys for titles, button text, labels, and dialog text.
-6. Use `msg://` in XML descriptors.
-7. Use `MessageBundle` in view controllers and `Messages` in services/beans.
-8. Check every `msg://` reference against the bundle key exactly; key lookup is case-sensitive.
-9. Use full `msg://<message-group>/<key>` references when the key belongs to another message group.
+1. For a non-English application, add the official Jmix translation dependency for the target language before writing framework or add-on message overrides, and list the locale in the application's `jmix.core.available-locales`.
+2. Find all locale files in the application message bundle.
+3. Add the same application-owned keys to every locale file.
+4. Use entity keys for entity captions and attributes.
+5. Use enum keys for every enum constant.
+6. Use view-local keys for titles, button text, labels, and dialog text.
+7. Use `msg://` in XML descriptors.
+8. Use `MessageBundle` in view controllers and `Messages` in services/beans.
+9. Check every `msg://` reference against the bundle key exactly; key lookup is case-sensitive.
+10. Use full `msg://<message-group>/<key>` references when the key belongs to another message group.
+
+## Official framework translations
+
+Application message bundles translate application-owned text only. For a
+non-English application, add the official translation module for the target
+locale to `build.gradle`:
+
+```groovy
+implementation 'io.jmix.translations:jmix-translations-<locale>'
+```
+
+Existing locales: `ar` (Arabic), `ckb` (Central Kurdish), `cs` (Czech), `da`
+(Danish), `de` (German), `el` (Greek), `es` (Spanish), `fr` (French), `it`
+(Italian), `nl` (Dutch), `pt-br` (Brazilian Portuguese), `ro` (Romanian), `ru`
+(Russian), `tr` (Turkish), `zh-cn` (Simplified Chinese), and `zh-tw`
+(Traditional Chinese).
+
+Replace `<locale>` with one of these codes. Add only the dependencies for the
+application's supported locales. Do not add a version: let the Jmix BOM resolve
+the compatible version.
+
+Add this dependency before creating files such as
+`src/main/resources/io/jmix/core/messages_<lang>.properties` or message bundles
+inside add-on packages. Official translations normally contain most Jmix
+framework and supported add-on messages, but some messages may be missing. Add
+local overrides only for missing messages or intentional wording changes; do not
+copy complete bundles that can become outdated after a Jmix upgrade.
+
+Run the application in the target locale and inspect framework-owned views,
+filter dialogs, and add-on views. Also inspect a Boolean value rendered by Jmix:
+English `True` and `False` captions are a visible sign that the framework
+translation is not active or does not contain those keys. Only add narrow
+application overrides for messages that the official translation does not
+provide or that the application intentionally changes.
+
+## Available locales
+
+The login view offers the locales in `jmix.core.available-locales`. Set the full list
+(`jmix.core.available-locales=en,es`) in the APPLICATION's `application.properties`:
+an add-on's `module.properties` has the lowest precedence and cannot add a locale.
 
 ## Key Patterns
 
@@ -32,6 +74,10 @@ customerListView.title=Customers
 customerDetailView.title=Customer
 createOrderButton.text=Create order
 ```
+
+Follow the key style of the project's existing views: a generated project may use
+`UserListView.title` where this example uses `customerListView.title`. Mixing the two
+renders raw keys as titles.
 
 ## XML Usage
 
@@ -77,7 +123,12 @@ For localized entity/attribute captions (not bundle-key formatting), inject `io.
 
 ## Exact Reference Audit
 
-Before finishing, search changed XML and Java for message references and verify the keys exist in the correct bundle with identical casing.
+Before finishing, perform both audit passes below.
+
+### 1. Verify references
+
+Search changed XML and Java for message references and verify the keys exist in
+the correct bundle with identical casing.
 
 ```xml
 <button id="createOrderButton" text="msg://createOrderButton.text"/>
@@ -89,6 +140,37 @@ createOrderButton.text=Create order
 
 Do not rely on similar casing such as `CreateOrderButton.text` or `createorderButton.text`.
 
+### 2. Verify translated values
+
+Every locale bundle other than the one whose language the keys are authored in must be reviewed for leftover template
+values — including in an `en,<other>` application, where the second bundle is generated as an English template and every
+key in it resolves.
+
+Read each such `messages_<locale>.properties` file complete, not only the lines
+changed during the task. Project templates can contain English values under keys
+that resolve correctly, so the reference audit does not detect them. Check seed keys
+for the login view, main view, menu, and user entity as well as newly added keys.
+
+For a locale that normally uses non-Latin text, use this search to find likely
+English values left from the template:
+
+```bash
+rg -n '^[^#=]+=[\x00-\x7F]+$' \
+  -g 'messages_<locale>.properties' src/main/resources
+```
+
+Review every match; this is a heuristic, not proof of an error. Product names,
+URLs, abbreviations, numbers, and intentionally untranslated technical terms can
+be valid. Values such as `MainView.title=App`, `User=User`, or
+`loginForm.username=Username` usually require translation in a non-English-only
+application.
+
+When the task adds keys to a bundle that is still an untouched template, pick one of
+two outcomes and say which — translating the whole bundle, or translating only the
+new keys and recording the rest as a known gap. Both are defensible. Translating the
+new keys and silently leaving the seed keys is not: it produces a half-translated UI
+that reads as an oversight.
+
 ## Forbidden
 
 - Hardcoded user-visible text in XML or Java controllers.
@@ -97,3 +179,7 @@ Do not rely on similar casing such as `CreateOrderButton.text` or `createorderBu
 - Brief `msg://key` references to keys stored in another message group.
 - Missing enum constant messages.
 - `${0}` placeholders in `formatMessage`; use Java formatter placeholders such as `%s`.
+- Copies of framework or add-on message bundles created before checking for an
+  official `jmix-translations-<lang>` artifact.
+- English template values left without explicit review in any locale bundle other
+  than the one the keys are authored in — an `en,<other>` application included.

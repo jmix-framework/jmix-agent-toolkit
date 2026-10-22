@@ -75,7 +75,7 @@ audit timestamps).
 
 1. Create Java controller under `view/<entityname>/`.
 2. Extend `StandardDetailView<Entity>`.
-3. Add `@Route(value = ".../:id", layout = MainView.class)`.
+3. Add `@Route(value = ".../:id", layout = MainView.class)`. In a Jmix add-on module, which has no `MainView` and must not reference the application, use `layout = DefaultMainViewParent.class` (`io.jmix.flowui.view.DefaultMainViewParent`); the application's main view is used as the parent at runtime.
 4. Add `@ViewController(id = "Entity.detail")`.
 5. Add `@ViewDescriptor(path = "entity-detail-view.xml")`.
 6. Add `@EditedEntityContainer("<entity>Dc")`.
@@ -145,6 +145,32 @@ Choose form components by property type:
 | Jmix enum | `select` or `comboBox` |
 | Entity reference | `entityComboBox` or `entityPicker` |
 
+For free-text fields with `EAGER`, `LAZY`, or `TIMEOUT` value updates, set
+`trimEnabled="false"`. Otherwise a client-originated update can trim the trailing
+space or newline and rewrite the text before the user types the next word:
+
+```xml
+<textArea id="descriptionField" property="description"
+          valueChangeMode="TIMEOUT" trimEnabled="false"/>
+```
+
+If normalization is required, do it at an explicit commit or validation boundary.
+Test a client-originated value ending in a space and a newline (or real typing),
+not only server-side `setValue`, which bypasses this trimming branch.
+
+For a `Boolean` property annotated with `@NotNull`, `false` is still a valid
+value: the constraint rejects only `null`. A bound checkbox inherits the
+required state from the entity metadata, but Vaadin treats an unchecked checkbox
+as empty. The form then rejects `false` and the save action leaves the view open.
+Declare `required="false"` explicitly so the checkbox can represent both Boolean
+values without weakening the entity constraint:
+
+```xml
+<checkbox id="subscribedField" property="subscribed" required="false"/>
+```
+
+A `comboBox` whose items are set in the controller's `BeforeShowEvent` must not be bound in the descriptor: the binding sets the value when the entity arrives, before `setItems`, and opening a saved record fails. Either call `setItems(…)` in `InitEvent`, or use `setValueSource(new ContainerValueSource<>(container, "property"))` for binding. 
+
 Do not expose technical fields (`id`, `version`) in user-facing forms. Hide parent/default fields only when they are initialized elsewhere.
 
 ## Final XML Type Audit
@@ -154,8 +180,11 @@ After creating or editing the descriptor, inspect each field:
 - `Integer` is not a `textField`; use `integerField`.
 - `BigDecimal` is not a `textField`; use `bigDecimalField`.
 - Date/time properties use date/time picker components.
-- Boolean properties use checkbox or the project's boolean component pattern.
+- Boolean properties use checkbox or the project's boolean component pattern. A
+  checkbox bound to an `@NotNull Boolean` that may be `false` declares
+  `required="false"` explicitly.
 - Entity references use reference components, not text fields.
+- Live free-text editors preserve whitespace while typing (`trimEnabled="false"`).
 
 If an existing project uses a different compiled pattern for a type, follow the existing pattern and keep it consistent.
 
@@ -172,22 +201,31 @@ For `@ManyToOne` and other entity references, pick the pattern by candidate-set 
 The combo passes a `searchString` parameter for type-ahead, so the
 JPQL MUST `like :searchString`; ignoring it throws `DevelopmentException:
 Parameter 'searchString' is not used in the query` at dropdown fetch.
-The JPQL must use the JPA/Jmix entity name, not the database table
-name.
+The parameter is the BARE combo input unless `searchStringFormat` wraps it:
+an empty string when the dropdown opens, so `like ''` returns no rows, and
+the exact, case-sensitive text afterwards. Set the format and the escaping
+on the `itemsQuery` element — without them every gate stays green and only
+the browser shows an empty dropdown. The JPQL must use the JPA/Jmix entity
+name, not the database table name.
 
 ```xml
 <entityComboBox id="refField" property="ref">
-    <itemsQuery class="com.company.app.entity.Ref">
+    <itemsQuery class="com.company.app.entity.Ref"
+                searchStringFormat="(?i)%${inputString}%"
+                escapeValueForLike="true">
         <query>
             <![CDATA[
             select e from Ref e
-            where e.name like :searchString
+            where e.name like :searchString escape '\'
             order by e.name
             ]]>
         </query>
     </itemsQuery>
 </entityComboBox>
 ```
+
+A UI test that fetches the picker's items only with a partial filter does not
+catch a missing `searchStringFormat` — fetch with the empty filter too.
 
 `itemsQuery` does NOT auto-bind `:container_*` / `:component_*`
 parameters — when the reference list depends on another component or
@@ -225,9 +263,88 @@ loader takes a `:container_*` / `:component_*` parameter that
 
 Before finishing, verify that saved reference entities can appear in the component data provider. If a field is required, do not leave a reference component without a working item source or lookup action.
 
+## To-many data grid
+
+To show a to-many composition or association (`Order.products`, `Customer.tags`) on a detail
+view, nest a property-bound `<collection>` INSIDE the `<instance>` container and
+bind a `dataGrid` to it. The container infers its metaclass from the property, so
+a `class` attribute here is a descriptor defect:
+
+```xml
+<instance id="orderDc" class="com.company.app.entity.Order">
+    <fetchPlan extends="_base">
+        <property name="products" fetchPlan="_instance_name"/>
+    </fetchPlan>
+    <loader id="orderDl"/>
+    <!-- property-bound: NO class, NO loader, NO query -->
+    <collection id="productsDc" property="products"/>
+</instance>
+```
+
+```xml
+<dataGrid id="productsDataGrid" dataContainer="productsDc" width="100%">
+    <columns>
+        <column property="name"/>
+    </columns>
+</dataGrid>
+```
+
+The trap is that a TOP-LEVEL `<collection>` (a list view's own loader) REQUIRES
+`class`. A nested property-bound collection takes `property` and nothing else — no `class`,
+no loader, no query. The parent's fetch plan must include the property, or the
+grid is empty (see `jmix-configure-fetch-plan`).
+
+For a read-only grid, declare no `list_create` / `list_edit` / `list_remove`
+actions on it.
+
+## Styling
+
+Styling a field, a card, or a component you build in the controller — CSS classes,
+component theme variants, `getStyle().set(...)`, `--aura-*` / `--lumo-*` tokens —
+is covered by `jmix-style-ui`. Read it before typing a CSS custom property: a
+token the active theme does not define fails silently and passes every gate.
+
+## Asking for confirmation before saving
+
+`ValidationEvent` can only REJECT a save; it cannot ask a question and continue.
+The only hook that suspends a save and resumes it afterwards is
+`StandardDetailView.BeforeSaveEvent` with `preventSave()` / `resume()`:
+
+```java
+@Autowired
+private Dialogs dialogs;
+
+@Subscribe
+public void onBeforeSave(final BeforeSaveEvent event) {
+    if (!reissuesRelatedCodes()) {
+        return;
+    }
+    event.preventSave();
+    dialogs.createOptionDialog()
+            .withHeader(messageBundle.getMessage("confirmDialog.header"))
+            .withText(messageBundle.getMessage("confirmDialog.text"))
+            .withActions(
+                    new DialogAction(DialogAction.Type.YES)
+                            .withHandler(e -> event.resume()),
+                    new DialogAction(DialogAction.Type.NO))
+            .open();
+}
+```
+
+Note `Dialogs.createOptionDialog()` takes NO view argument, unlike
+`createInputDialog(View)`. Without `preventSave()` the save runs on regardless of what
+a dialog is showing, so a home-made confirmation dialog does not hold anything back.
+
 ## Cross-field validation
 
 For cross-field/manual validation, add a `@Subscribe` handler on `ValidationEvent` and report failures via `event.getErrors().add("...")`; for programmatic checks (e.g. before a custom save) use the `ViewValidation` bean (`validateUiComponents`, `showValidationErrors`).
+
+Do not rely solely on `required` or field validators for an invariant on a
+secondary `tabSheet` tab. Inactive tab content is disabled, and field validation
+skips disabled components. Keep those checks as UI affordances, but enforce the
+save invariant in a `ValidationEvent` handler reading `getEditedEntity()`, not
+only the currently enabled fields. Test saving without visiting the secondary
+tab and after switching away from it; neither path may persist invalid state.
 
 ## Forbidden
 
@@ -239,4 +356,9 @@ For cross-field/manual validation, add a `@Subscribe` handler on `ValidationEven
 - `itemsQuery` with unresolved `container_` or `component_` parameters.
 - Hardcoded labels or titles.
 - Hiding required fields without setting defaults elsewhere.
+- A checkbox bound to an `@NotNull Boolean` without `required="false"` when
+  unchecked `false` is a valid value.
 - Missing view policy for dialog-opened detail views.
+- A `class` attribute on a nested property-bound `<collection property="..."/>`.
+- `<markdown>` with an empty or absent `content` attribute (throws at view load), or a guessed `io.jmix.flowui...Markdown` import.
+- CSS custom properties from a theme the app does not run (e.g. `--lumo-*` in an Aura app) — see `jmix-style-ui`.

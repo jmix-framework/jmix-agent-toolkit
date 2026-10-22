@@ -1,7 +1,8 @@
 {
   "schemaVersion": 1,
-  "sha256": "477e962ff37f745254966e31b85c80b9199910a345a00873f53602055fae04a5",
+  "sha256": "a3249c9a5d1e18ca8fb38535e1bb0ec94aa1956eef0545780753ce5d2ef4a6b0",
   "skills": [
+    "jmix",
     "jmix-add-dialog-detail-flow",
     "jmix-add-entity-event-listener",
     "jmix-add-i18n-keys",
@@ -19,11 +20,14 @@
     "jmix-create-service",
     "jmix-create-test",
     "jmix-ide-static-analysis",
+    "jmix-migrate-theme-to-aura",
+    "jmix-run-background-code",
+    "jmix-style-ui",
     "jmix-verify-api-symbol",
     "jmix-verify-bootrun"
   ],
   "store": {
     "global": ".agents/.jmix/skills",
-    "local": ".skills"
+    "local": ".agents/skills"
   }
 }

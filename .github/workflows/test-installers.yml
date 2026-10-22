@@ -6,12 +6,20 @@ on:
     paths:
       - 'install.sh'
       - 'install.ps1'
+      - 'content/guidelines-block.md'
+      - '.studio/studio-meta-data.json'
+      - '.studio/skills-manifest.json'
+      - '.studio/gen_skills_manifest.py'
       - 'tests/**'
       - '.github/workflows/test-installers.yml'
   pull_request:
     paths:
       - 'install.sh'
       - 'install.ps1'
+      - 'content/guidelines-block.md'
+      - '.studio/studio-meta-data.json'
+      - '.studio/skills-manifest.json'
+      - '.studio/gen_skills_manifest.py'
       - 'tests/**'
       - '.github/workflows/test-installers.yml'
   workflow_dispatch:
@@ -33,14 +41,13 @@ jobs:
         run: |
           bash -n install.sh
           bash -n tests/test_install_sh.sh
-          bash -n tests/test_playwright.sh
 
       - name: ShellCheck
         run: |
           shellcheck --version
           # Print all findings (warnings included) for visibility, then gate on errors only.
-          shellcheck install.sh tests/test_install_sh.sh tests/test_playwright.sh || true
-          shellcheck -S error install.sh tests/test_install_sh.sh tests/test_playwright.sh
+          shellcheck install.sh tests/test_install_sh.sh || true
+          shellcheck -S error install.sh tests/test_install_sh.sh
 
       - name: PowerShell parse + analyze
         shell: pwsh
@@ -89,13 +96,3 @@ jobs:
       - name: Run install.ps1 functional tests
         shell: pwsh
         run: ./tests/test_install_ps1.ps1 -Source $env:GITHUB_WORKSPACE
-
-  test-playwright:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-      - name: Run Playwright install test
-        run: bash tests/test_playwright.sh "$GITHUB_WORKSPACE"

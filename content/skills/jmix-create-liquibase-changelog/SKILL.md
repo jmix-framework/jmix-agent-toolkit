@@ -1,11 +1,12 @@
 ---
 name: jmix-create-liquibase-changelog
-description: Create Liquibase changelogs that exactly match Jmix entity model changes.
+description: Create Liquibase changelogs that exactly match Jmix entity model changes, and register database changelogs supplied by Jmix add-ons that own persistent entities.
 ---
 
 # Create Liquibase Changelog
 
-Use this skill for every persistent entity or schema change.
+Use this skill for every persistent entity or schema change, including adding a
+Jmix add-on that owns database tables.
 
 ## Steps
 
@@ -13,13 +14,15 @@ Use this skill for every persistent entity or schema change.
 2. Follow the existing naming style: sequential files or date/time folders.
 3. Create a new changelog file for the schema change.
 4. Make sure it is reachable from the root `changelog.xml`: usually by placing it under the directory covered by the project's `<includeAll>`, or by adding an explicit `<include>` only when the project uses explicit includes.
-5. Use a changeset id and author that match project style; do not reuse an id within the same changelog file.
-6. Add `ID` and `VERSION` columns for standard Jmix entities.
-7. Add every persistent entity field with exact type, length, precision, scale, and nullability.
-8. Add foreign keys for references.
-9. Add indexes and unique constraints required by the entity or domain.
-10. Verify the table and column names match Java annotations.
-11. Use only type macros already present in the project. If no macro exists, use the standard Liquibase type.
+5. Check whether the project also keeps a **baseline** changelog — one that creates the whole schema for a fresh database. If it does, mirror the change there too. See "Baseline changelogs" below.
+6. When adding a Jmix add-on that owns persistent entities, add its module changelog to the root changelog with an explicit `<include>`.
+7. Use a changeset id and author that match project style; do not reuse an id within the same changelog file.
+8. Add `ID` and `VERSION` columns for standard Jmix entities.
+9. Add every persistent entity field with exact type, length, precision, scale, and nullability.
+10. Add foreign keys for references.
+11. Add indexes and unique constraints required by the entity or domain.
+12. Verify the table and column names match Java annotations.
+13. Use only type macros already present in the project. If no macro exists, use the standard Liquibase type.
 
 ## Standard Types
 
@@ -33,7 +36,30 @@ Use this skill for every persistent entity or schema change.
 | Boolean | `boolean` |
 | LocalDate | `date` |
 | LocalDateTime | `timestamp` |
+| OffsetDateTime / ZonedDateTime | `timestamp with time zone` |
+| `@Lob` String (unlimited text) | `clob` |
+| `@Lob` byte[] | `blob` |
+| FileRef | `varchar(1024)` |
 | Enum id string | `varchar(50)` |
+
+A column NAME is not a free choice either: if it is a reserved word in any
+targeted dialect the `createTable` fails there, and the dialects disagree —
+PostgreSQL rejects `END` outright (check with
+`select catcode from pg_get_keywords() where word = '<lower-case name>'`) while
+HSQLDB accepts SQL-standard keywords as identifiers by default and never warns.
+Liquibase emits the name unquoted, so this surfaces only when the changelog
+first reaches the production dialect. Rename instead of quoting. See
+`jmix-create-entity` (Column names).
+
+An entity with an **assigned natural key** takes the id column type of its Java
+field — `bigint` for a `Long` id, not `${uuid.type}`. See `jmix-create-entity`
+(Id strategy).
+
+An entity extending a framework `@MappedSuperclass` inherits its key, and usually
+a version and a tenant column with it. No field in the subclass names them, but
+the table must still create them: read the superclass and take each inherited
+column's name and type from there — do not assume `${uuid.type}` for the primary
+key, these base classes are commonly keyed by an `int`.
 
 ## Entity Table Skeleton
 
@@ -52,6 +78,77 @@ Use this skill for every persistent entity or schema change.
     </createTable>
 </changeSet>
 ```
+
+## Changing an existing table — `addColumn`, never a second `createTable`
+
+Widening an entity that already exists (see `jmix-create-entity`, "Widening an
+existing entity") means a NEW changelog file with `addColumn`. Do not edit the
+original `createTable` changeset — it is already applied, and changing it breaks
+the checksum and hard-fails startup.
+
+```xml
+<changeSet id="1" author="app">
+    <addColumn tableName="CUSTOMER">
+        <column name="NOTES" type="clob"/>
+        <column name="LAST_CONTACTED_AT" type="timestamp with time zone"/>
+        <column name="MANAGER_ID" type="${uuid.type}"/>
+    </addColumn>
+</changeSet>
+
+<!-- FK and index for the new reference column: separate changesets -->
+<changeSet id="2" author="app">
+    <addForeignKeyConstraint baseTableName="CUSTOMER" baseColumnNames="MANAGER_ID"
+                             referencedTableName="EMPLOYEE" referencedColumnNames="ID"
+                             constraintName="FK_CUSTOMER_ON_MANAGER"/>
+    <createIndex indexName="IDX_CUSTOMER_MANAGER" tableName="CUSTOMER">
+        <column name="MANAGER_ID"/>
+    </createIndex>
+</changeSet>
+```
+
+Rules for a widening changelog:
+
+- A column added to a table that already has rows CANNOT be `nullable="false"`
+  without a default or a data fix — existing rows have no value. Add it nullable,
+  or add it with a `defaultValue`, or backfill with `<update>` and then tighten.
+- The column type comes from the Java field, see Standard Types above.
+- Read the table's ORIGINAL changelog first and match its naming and type style.
+
+## Index parity — the changelog is only half of it
+
+Every index in a changelog must also exist as an `@Index` in the entity's
+`@Table(indexes = {...})`, with the SAME name — and the reverse. Nothing enforces
+this: `compileJava`, the Jmix inspection, and a green `clean test` all pass when
+the index exists only in the changelog. Write both sides in the same edit, while
+you still remember the column. See `jmix-create-entity` (Index parity).
+
+## One-time data fixes — `<update>`, and how to write NULL
+
+A schema change sometimes needs a matching data fix (backfilling a new column,
+clearing a timestamp so a job reprocesses every row). That is an ordinary
+`<update>` changeset.
+
+```xml
+<!-- literal value -->
+<changeSet id="3" author="app">
+    <update tableName="CUSTOMER">
+        <column name="STATUS" value="PENDING"/>
+    </update>
+</changeSet>
+
+<!-- set to NULL: a <column> with NO value attribute at all -->
+<changeSet id="4" author="app">
+    <update tableName="CUSTOMER">
+        <column name="LAST_CONTACTED_AT"/>
+        <column name="LAST_INVOICED_AT"/>
+    </update>
+</changeSet>
+```
+
+`value=""` is NOT null — on most databases it writes an empty string, and on a
+non-text column it fails. To write NULL, omit every `value`/`valueXxx` attribute.
+Add a `<where>` clause when the fix targets a subset of rows; without one it
+updates every row, which is usually what a one-time reset wants.
 
 ## Audit and soft-delete columns
 
@@ -107,11 +204,35 @@ Order the parent first, the child (with its FK) second:
 </changeSet>
 ```
 
-For a **composition** child, the delete cascade is enforced by Jmix at the
-application layer (`@Composition` + `@OnDelete(DeletePolicy.CASCADE)` on the
-entity), NOT by the database — Jmix uses soft delete by default, so a DB-level
-`onDelete="CASCADE"` would never fire. Leave the FK without `onDelete` unless
-you specifically need hard-delete DB-level enforcement.
+For a **composition** child, which layer actually removes the child rows depends
+on the **parent's** deletion traits. Check them before choosing `onDelete`:
+
+- **Parent carries `@DeletedDate`/`@DeletedBy`** (soft delete): the cascade is
+  enforced by Jmix at the application layer (`@Composition` +
+  `@OnDelete(DeletePolicy.CASCADE)` on the entity), NOT by the database. The
+  parent row is never physically deleted, so a DB-level `onDelete="CASCADE"`
+  would not fire. Leave the FK without `onDelete`.
+- **Parent carries neither** (hard delete): the application-layer policy never
+  runs, so the annotation is inert and the database clause is the ONLY thing that removes the children. 
+  The child's FK MUST carry `onDelete="CASCADE"`.
+
+## Two referential actions on one row
+
+`onDelete` is not an independent per-constraint choice once two foreign keys can
+act on the **same row in one statement**. The common shape is a self-referencing
+table that also belongs to a cascading owner:
+
+```
+EMPLOYEE(DEPARTMENT_ID -> DEPARTMENT ON DELETE CASCADE,
+         MANAGER_ID    -> EMPLOYEE   ON DELETE SET NULL)
+```
+
+Deleting a department whose head reports to a manager in that same department
+makes `FK_EMPLOYEE_ON_DEPARTMENT` delete the row while `FK_EMPLOYEE_ON_MANAGER`
+sets its `MANAGER_ID` to null. 
+
+In this case, separate statements from the application side: clear or delete the self-references first, 
+then delete the owner.
 
 ## Root Changelog Reachability
 
@@ -125,6 +246,62 @@ If the project uses explicit includes instead of `includeAll`, follow that exist
 <include file="/com/company/app/liquibase/changelog/030-customer.xml"/>
 ```
 
+## Baseline changelogs — the dated file is not always the whole job
+
+Some projects keep a BASELINE alongside the dated migrations: one changelog that
+creates every table for a fresh database, and usually a second one that adds every
+FK and index. A fresh database builds the schema from the baseline and MARK_RANs the
+dated migrations through their own preconditions, instead of replaying years of
+history.
+
+Read the root `changelog.xml` and look at what else it includes. Two signs of a
+baseline: it creates tables that predate the current release, and its changesets carry
+`<validCheckSum>ANY</validCheckSum>`. That marker is there so the baseline can be
+APPENDED TO in place — it is the one exception to "never edit an applied changeset".
+
+When a project has one, a schema change lands in both places, in the same commit:
+
+- the dated migration — for databases that already exist;
+- the baseline — put the `createTable` (or a new `<column>` on the table's existing
+  `createTable`) INSIDE the existing changeset, next to related tables; add the FK and
+  each index as a NEW changeset in the constraints changelog, following that file's own
+  pattern.
+
+Keep every name identical across the dated file, the baseline and the entity's
+`@Table(indexes = ...)`.
+
+## Jmix add-on changelogs
+
+Adding an add-on dependency does not make its module changelog reachable from a
+project master changelog that lists module changelogs explicitly. When the add-on
+owns persistent entities, find its changelog resource and add an explicit include
+to the root `changelog.xml`. For example, the Audit add-on requires:
+
+```xml
+<include file="/io/jmix/audit/liquibase/changelog.xml"/>
+```
+
+Jmix module changelogs commonly use this path pattern:
+
+```xml
+<include file="/io/jmix/<addon>/liquibase/changelog.xml"/>
+```
+
+Confirm the actual resource path in the add-on before adding it. Do not assume
+that the application's `<includeAll>` covers changelogs packaged in add-on JARs.
+
+After startup, verify that the add-on tables exist and exercise a feature that
+uses them. Also search the complete startup log for missing-schema errors:
+
+```bash
+rg -n 'does not exist|relation .* does not exist' /path/to/startup.log
+```
+
+Treat every match as a failure until it is explained. A green `clean test` proves
+that the context loads, but it does not prove the add-on schema was created when
+no test accesses its tables. Some add-ons log the missing-table error and allow
+the application to continue running with the feature unavailable.
+
 ## Forbidden
 
 - New changelog file that is not reachable from the root changelog.
@@ -137,3 +314,11 @@ If the project uses explicit includes instead of `includeAll`, follow that exist
 - Java precision/length different from Liquibase precision/length.
 - Missing FK for persistent references.
 - A child table / FK changeSet ordered BEFORE the parent table it references.
+- A second `createTable` for a table that already exists, when the change is new columns (use `addColumn`).
+- `nullable="false"` on a column added to a populated table without a default or a backfill.
+- `value=""` where NULL is meant — omit the value attribute instead.
+- An index in the changelog with no matching `@Index` in the entity's `@Table`.
+- A Jmix add-on with persistent entities whose module changelog is not explicitly
+  reachable from the root changelog.
+- A dated migration with no matching entry in the project's baseline changelogs, when
+  the project keeps one.
