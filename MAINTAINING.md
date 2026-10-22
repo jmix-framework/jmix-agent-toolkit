@@ -26,16 +26,17 @@
   unless that is the store, merges `content/guidelines-block.md` into the project's
   `AGENTS.md`, and registers the chosen MCP servers. The open convention
   (`.agents/skills`, `AGENTS.md`) is always on; Claude Code is the only choice:
-  `--claude` / `-Claude` (Studio passes `--claude=true|false` / `-Claude:$true|$false`)
-  adds the `.claude/skills` links and the block in `CLAUDE.md`. A local run migrates the
+  enabled by default, with `--claude=false` / `-Claude:$false` to skip the
+  `.claude/skills` links and the block in `CLAUDE.md`. Studio passes the choice
+  explicitly as `--claude=true|false` / `-Claude:$true|$false`. A local run migrates the
   old `<project>/.skills/` store; with `--backup-existing-files` it moves replaced local
   skill folders to `<project>/.agents/.jmix/backups/`, outside the dirs agents scan.
   The store paths in `skills-manifest.json` (`STORE` in `gen_skills_manifest.py`) must
   match the installers'; the test suites check the local one.
 - **Hidden compatibility aliases**: the old `--conventions` / `--agents` CSV
   (`-Conventions` / `-Agents`) of `skills` and `agents-md` still work: `claude` in the
-  list means the Claude flag, other values change nothing, and an explicit Claude flag
-  wins. They stay because released jmix-cli and user scripts pass them. Never document
+  list enables Claude Code, its absence disables it, and an explicit Claude flag wins.
+  They stay because released jmix-cli and user scripts pass them. Never document
   them publicly (help, README) and never print a deprecation warning: Studio <= 3.0.4
   treats any stderr output as a failed step.
   PowerShell's generated `Get-Help` syntax still lists the named parameters; the

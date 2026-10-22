@@ -56,15 +56,14 @@ assert_guidelines() {
     rm -f "$1/AGENTS.md" "$1/CLAUDE.md"
 }
 
-# 1a. No guidelines file yet -> AGENTS.md is created holding exactly the block;
-#     CLAUDE.md only with --claude.
+# 1a. Both guidelines files are created by default, holding exactly the block.
 bash "$INSTALL" agents-md --source "$SOURCE" >/dev/null
 # Junie reads AGENTS.md; the deprecated .junie/guidelines.md is not created.
 [ ! -e "${PROJECT}/.junie/guidelines.md" ] || fail "agents-md: Junie got a .junie/guidelines.md it would not read"
-assert_guidelines "$PROJECT" 0 "agents-md"
+assert_guidelines "$PROJECT" 1 "agents-md (Claude Code on by default)"
 bash "$INSTALL" agents-md --claude --source "$SOURCE" >/dev/null
 assert_guidelines "$PROJECT" 1 "agents-md --claude"
-pass "agents-md creates AGENTS.md, and CLAUDE.md with --claude, holding exactly the block"
+pass "agents-md creates both guidelines files by default and accepts --claude"
 
 # 1a2. --claude=true|false (Studio's form), in any case; any other value fails.
 for args in "--claude=true 1" "--claude=TRUE 1" "--claude=false 0" "--claude=False 0"; do
@@ -338,20 +337,20 @@ cmp -s "${PROJECT}/CLAUDE.md" "${WORK}/claude-import-orig" \
     || fail "agents-md: importing CLAUDE.md rewritten although AGENTS.md already carries the block"
 pass "agents-md keeps skipping an importing CLAUDE.md on a re-run"
 
-# 1o. Same import, AGENTS.md without the block, no --claude: AGENTS.md gets the
+# 1o. Same import, AGENTS.md without the block, --claude=false: AGENTS.md gets the
 #     block and CLAUDE.md is not touched; a later --claude run leaves it alone
 #     too, as it imports the block now.
 rm -f "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak* "${PROJECT}/AGENTS.md" "${PROJECT}"/AGENTS.md.bak*
 printf '# Team rules\n\nSee @AGENTS.md for the shared instructions.\n' > "${PROJECT}/CLAUDE.md"
 printf '# Shared\n\nNever push to main.\n' > "${PROJECT}/AGENTS.md"
-bash "$INSTALL" agents-md --source "$SOURCE" >/dev/null
-grep -qF "$BEGIN_MARK" "${PROJECT}/AGENTS.md" || fail "agents-md: block not added to AGENTS.md without --claude"
+bash "$INSTALL" agents-md --claude=false --source "$SOURCE" >/dev/null
+grep -qF "$BEGIN_MARK" "${PROJECT}/AGENTS.md" || fail "agents-md: block not added to AGENTS.md with --claude=false"
 cmp -s "${PROJECT}/CLAUDE.md" "${WORK}/claude-import-orig" && [ ! -e "${PROJECT}/CLAUDE.md.bak" ] \
-    || fail "agents-md: CLAUDE.md touched without --claude"
+    || fail "agents-md: CLAUDE.md touched with --claude=false"
 bash "$INSTALL" agents-md --claude --source "$SOURCE" >/dev/null
 cmp -s "${PROJECT}/CLAUDE.md" "${WORK}/claude-import-orig" \
     || fail "agents-md: importing CLAUDE.md rewritten by a later --claude run"
-pass "agents-md leaves CLAUDE.md alone without --claude"
+pass "agents-md leaves CLAUDE.md alone with --claude=false"
 
 # 1p. CLAUDE.md symlinked to AGENTS.md (a common setup): the block goes into
 #     the shared file once, the link survives, and a re-run duplicates nothing.
@@ -413,14 +412,14 @@ pass "agents-md fails cleanly when the destination is a directory"
 #     see 1d) still get it at the end.
 rm -rf "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak* "${PROJECT}/AGENTS.md" "${PROJECT}"/AGENTS.md.bak* "${PROJECT}/.junie"
 printf '\357\273\277# Shared\n\nNever push to main.\n' > "${PROJECT}/AGENTS.md"
-bash "$INSTALL" agents-md --source "$SOURCE" >/dev/null
+bash "$INSTALL" agents-md --claude=false --source "$SOURCE" >/dev/null
 [ "$(head -c 3 "${PROJECT}/AGENTS.md")" = $'\xef\xbb\xbf' ] || fail "agents-md: AGENTS.md lost its leading BOM"
 [ "$(tail -c +4 "${PROJECT}/AGENTS.md" | head -n 1)" = "$BEGIN_MARK" ] \
     || fail "agents-md: the block is not on top of an unmarked AGENTS.md"
 [ "$(tail -n 3 "${PROJECT}/AGENTS.md")" = "$(printf '# Shared\n\nNever push to main.')" ] \
     || fail "agents-md: developer content of AGENTS.md lost"
 [ -f "${PROJECT}/AGENTS.md.bak" ] || fail "agents-md: AGENTS.md not backed up"
-[ ! -e "${PROJECT}/CLAUDE.md" ] || fail "agents-md: wrote CLAUDE.md without --claude"
+[ ! -e "${PROJECT}/CLAUDE.md" ] || fail "agents-md: wrote CLAUDE.md with --claude=false"
 pass "agents-md puts the block on top of an unmarked AGENTS.md"
 
 # 1u. Codex: a block past 32 KiB and an AGENTS.override.md are reported.
@@ -428,7 +427,7 @@ rm -f "${PROJECT}/AGENTS.md" "${PROJECT}"/AGENTS.md.bak*
 awk 'BEGIN { for (i = 0; i < 700; i++) print "Rule " i ": keep the build green and the tests fast." }' > "${PROJECT}/AGENTS.md"
 cat "$BLOCK" >> "${PROJECT}/AGENTS.md"
 printf 'local rules\n' > "${PROJECT}/AGENTS.override.md"
-out="$(bash "$INSTALL" agents-md --source "$SOURCE")"
+out="$(bash "$INSTALL" agents-md --claude=false --source "$SOURCE")"
 case "$out" in *"first 32 KiB"*) ;; *) fail "agents-md: no warning for a block past Codex's 32 KiB" ;; esac
 case "$out" in *"AGENTS.override.md"*) ;; *) fail "agents-md: no warning for AGENTS.override.md" ;; esac
 rm -f "${PROJECT}/AGENTS.md" "${PROJECT}/AGENTS.override.md"
@@ -442,9 +441,9 @@ mkdir -p "${PROJECT}/.junie"
 printf '# Junie rules\n' > "${PROJECT}/.junie/AGENTS.md"
 printf '# Old Junie rules\n' > "${PROJECT}/.junie/guidelines.md"
 cp "${PROJECT}/.junie/AGENTS.md" "${WORK}/ja"; cp "${PROJECT}/.junie/guidelines.md" "${WORK}/jg"
-bash "$INSTALL" agents-md --source "$SOURCE" >/dev/null
+bash "$INSTALL" agents-md --claude=false --source "$SOURCE" >/dev/null
 cmp -s "${PROJECT}/AGENTS.md" "$BLOCK" || fail "agents-md: Junie's block not written to the root AGENTS.md"
-[ ! -e "${PROJECT}/CLAUDE.md" ] || fail "agents-md: wrote CLAUDE.md without --claude"
+[ ! -e "${PROJECT}/CLAUDE.md" ] || fail "agents-md: wrote CLAUDE.md with --claude=false"
 cmp -s "${PROJECT}/.junie/AGENTS.md" "${WORK}/ja" && cmp -s "${PROJECT}/.junie/guidelines.md" "${WORK}/jg" \
     || fail "agents-md: a .junie guidelines file was modified"
 rm -rf "${PROJECT}/AGENTS.md" "${PROJECT}/.junie"
@@ -586,7 +585,7 @@ assert_local_claude() {
         || fail "$3: .agents/skills/${SKILL} is not a real skill folder"
     [ ! -e "$1/.claude" ] || fail "$3: created .claude without Claude Code"
 }
-for args in "|0" "--claude|1" "--claude=true|1" "--claude=TRUE|1" "--claude=false|0" \
+for args in "|1" "--claude|1" "--claude=true|1" "--claude=TRUE|1" "--claude=false|0" \
             "--agents claude,codex,opencode|1" "--agents claude,codex,opencode,junie|1" \
             "--conventions agents|0" "--conventions claude|1" \
             "--claude=false --conventions claude|0" "--conventions agents --claude|1"; do
@@ -605,7 +604,7 @@ for args in "--claude=maybe" "--conventions cursor" "--agents claude-desktop" "-
     [ ! -e "${CONV_PROJ}/.agents" ] || fail "skills ${args} installed anyway"
 done
 rm -rf "$CONV_PROJ"
-pass "skills links into .claude/skills only with --claude, and keeps the hidden aliases"
+pass "skills includes Claude Code by default, supports explicit opt-out, and keeps the hidden aliases"
 
 # Links an earlier version put into .junie/skills are removed (Junie's CLI
 # reads that dir first, so they would shadow newer skills); other skills stay.
@@ -736,15 +735,15 @@ local_skills "$LEGACY_PROJ" >/dev/null \
     || fail "skills(local): .skills, linked from .github/skills, not linked to the store"
 pass "skills(local) keeps a .skills another agent dir links to, and links the skills into it"
 
-# 2f. Old layout, no --claude: the .claude/skills links into .skills would
+# 2f. Old layout, --claude=false: the .claude/skills links into .skills would
 #     dangle once it goes, so they are re-linked into .agents/skills.
 LEGACY_PROJ="$(new_project legacy-project)"
 make_legacy_layout "$LEGACY_PROJ" ".agents/skills .claude/skills"
-local_skills "$LEGACY_PROJ" >/dev/null || fail "skills(local): migrating without --claude failed"
-assert_local_skill "$LEGACY_PROJ" "$SKILL" "skills(local, migrated, no --claude)"
-assert_no_leftovers "$LEGACY_PROJ" "skills(local, migrated, no --claude)"
-[ ! -e "${LEGACY_PROJ}/.skills" ] || fail "skills(local, migrated, no --claude): .skills not removed"
-pass "skills(local) re-links .claude/skills when migrating without --claude"
+local_skills "$LEGACY_PROJ" --claude=false >/dev/null || fail "skills(local): migrating with --claude=false failed"
+assert_local_skill "$LEGACY_PROJ" "$SKILL" "skills(local, migrated, --claude=false)"
+assert_no_leftovers "$LEGACY_PROJ" "skills(local, migrated, --claude=false)"
+[ ! -e "${LEGACY_PROJ}/.skills" ] || fail "skills(local, migrated, --claude=false): .skills not removed"
+pass "skills(local) re-links .claude/skills when migrating with --claude=false"
 
 # 2g. Old claude-only layout (.skills linked from .claude/skills alone).
 LEGACY_PROJ="$(new_project legacy-project)"
@@ -875,18 +874,17 @@ pass "skills(local) backs up the old store's skills, never its links"
 # ---------------------------------------------------------------------------
 # 3. skills, global scope (under $HOME) -- store keyed by the branch (CONTENT_REF)
 # ---------------------------------------------------------------------------
-# Without --claude the skills are linked into ~/.agents/skills alone; --claude
-# adds ~/.claude/skills.
-bash "$INSTALL" skills --scope global --source "$SOURCE" >/dev/null
+# --claude=false links into ~/.agents/skills alone; the default includes Claude.
+bash "$INSTALL" skills --claude=false --scope global --source "$SOURCE" >/dev/null
 [ -d "${HOME}/.agents/.jmix/skills/v3" ]                  || fail "skills(global): v3 store missing"
 [ -L "${HOME}/.agents/skills/${SKILL}" ] && [ -e "${HOME}/.agents/skills/${SKILL}/SKILL.md" ] \
     || fail "skills(global): ~/.agents/skills link does not resolve"
-[ ! -e "${HOME}/.claude/skills/${SKILL}" ] || fail "skills(global): linked into ~/.claude/skills without --claude"
-bash "$INSTALL" skills --claude --scope global --source "$SOURCE" >/dev/null
+[ ! -e "${HOME}/.claude/skills/${SKILL}" ] || fail "skills(global): linked into ~/.claude/skills with --claude=false"
+bash "$INSTALL" skills --scope global --source "$SOURCE" >/dev/null
 [ -e "${HOME}/.agents/skills/${SKILL}/SKILL.md" ] && [ -e "${HOME}/.claude/skills/${SKILL}/SKILL.md" ] \
     || fail "skills(global): --claude links do not resolve"
 rm -rf "${HOME}/.agents/skills"
-pass "skills(global) builds v3 store under HOME and links ~/.claude/skills only with --claude"
+pass "skills(global) includes Claude Code by default and supports --claude=false"
 
 # An agent skills dir that is itself a symlink to another agent's dir (a common
 # way to share skills, here ~/.agents/skills -> ~/.claude/skills) gets links

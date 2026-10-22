@@ -215,7 +215,7 @@ parse_claude_value() {
 # $3 - 1 when a hidden --conventions / --agents list was given   $4 - that list
 # The list is validated as in earlier releases (agents, claude, or the agent
 # names codex, opencode, junie, which mean agents); 'claude' in it turns Claude
-# Code on unless --claude was given.
+# Code on unless --claude was given. Without flags, Claude Code is on.
 claude_conventions() {
     local claude="$2" token mapped="" list
     if [ "$3" = 1 ]; then
@@ -224,9 +224,9 @@ claude_conventions() {
             mapped="${mapped},${token}"
         done
         list="$(parse_csv "${mapped#,}" "$1" --conventions "agents claude")" || exit 1
-        [ -n "$claude" ] || case " $list " in *" claude "*) claude=1 ;; esac
+        [ -n "$claude" ] || case " $list " in *" claude "*) claude=1 ;; *) claude=0 ;; esac
     fi
-    if [ "$claude" = 1 ]; then printf 'agents claude'; else printf 'agents'; fi
+    if [ "${claude:-1}" = 1 ]; then printf 'agents claude'; else printf 'agents'; fi
 }
 
 # Reads a line from /dev/tty so prompts work under `curl ... | bash`.
@@ -274,8 +274,8 @@ Jmix AI Agents Toolkit installer.
 
 Usage:
   install.sh                                                  # interactive wizard
-  install.sh skills     [--scope global|local] [--claude]     # install skills into a store and link them
-  install.sh agents-md  [--claude]                            # install project guidelines
+  install.sh skills     [--scope global|local] [--claude=false] # install skills into a store and link them
+  install.sh agents-md  [--claude=false]                      # install project guidelines
   install.sh mcp        --servers CSV --agents CSV [--scope local|global] [--context7-key KEY]
                                                               # register MCP servers
   install.sh mcp-jetbrains | mcp-context7 | playwright --agents CSV [--scope local|global]
@@ -308,16 +308,14 @@ Common options:
   -h, --help                 Show this help.
 
 skills / agents-md options:
-  --claude[=true|false]  Also set up Claude Code. Without it the skills go to
-                         .agents/skills and the guidelines to AGENTS.md, read
-                         by Codex, OpenCode, Junie, Cursor, GitHub Copilot,
-                         Gemini CLI and others; with it the skills are also
-                         linked into .claude/skills and the guidelines added
-                         to CLAUDE.md, for Claude Code.
+  --claude[=true|false]  Set up Claude Code (on by default). Use --claude=false
+                         to skip .claude/skills links and CLAUDE.md. The skills
+                         in .agents/skills and guidelines in AGENTS.md are
+                         always installed.
   --scope global|local   skills: "global" (default) links the skills into the
                          user home, "local" into the current project: there
                          the skills are kept in .agents/skills (and linked
-                         into .claude/skills with --claude). The .skills store
+                         into .claude/skills unless --claude=false). The .skills store
                          of earlier versions is migrated and removed.
 
 mcp / mcp-jetbrains / mcp-context7 / playwright options:

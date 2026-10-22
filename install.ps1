@@ -12,13 +12,13 @@
       3. Registering MCP servers (JetBrains, Context7, Playwright) with the agents.
 
     Subcommands are available for non-interactive use:
-      install.ps1 skills     [-Scope global|local] [-Claude]
+      install.ps1 skills     [-Scope global|local] [-Claude:$false]
                              Installs skills into a canonical store once, then links
-                             them into .agents/skills (and .claude/skills with
-                             -Claude). Local skills are kept in the project's
+                             them into .agents/skills and, by default, .claude/skills.
+                             Local skills are kept in the project's
                              .agents/skills; an old .skills store is migrated and
                              removed.
-      install.ps1 agents-md  [-Claude]
+      install.ps1 agents-md  [-Claude:$false]
       install.ps1 mcp        -Servers CSV -Agents CSV [-Scope local|global] [-Context7Key KEY]
       install.ps1 mcp-jetbrains | mcp-context7 | playwright -Agents CSV [-Scope local|global]
                              (mcp-context7 also takes -Context7Key)
@@ -49,11 +49,9 @@
     (v3). Studio passes its resolved toolkit branch here.
 
 .PARAMETER Claude
-    skills / agents-md: set up Claude Code too. Without it the skills go to
-    .agents/skills and the guidelines to AGENTS.md, which Codex, OpenCode,
-    Junie, Cursor, GitHub Copilot, Gemini CLI and others read; with it the
-    skills are also linked into .claude/skills and the guidelines merged into
-    CLAUDE.md, for Claude Code. -Claude:$true / -Claude:$false work too.
+    skills / agents-md: set up Claude Code (on by default). Use -Claude:$false
+    to skip .claude/skills links and CLAUDE.md. The skills in .agents/skills
+    and guidelines in AGENTS.md are always installed.
 
 .PARAMETER Agents
     MCP subcommands: comma-separated agents (e.g. "claude,codex"): claude,
@@ -65,8 +63,8 @@
 
 .PARAMETER Scope
     skills: "global" (default) links the skills into the user home, "local"
-    into the current project: they are kept in its .agents/skills (with
-    -Claude also linked into .claude/skills). An old .skills store of the
+    into the current project: they are kept in its .agents/skills and linked
+    into .claude/skills unless -Claude:$false is given. An old .skills store of the
     project is migrated and removed.
     MCP subcommands: "local" (default) writes the project files in the current
     directory (.mcp.json, .codex\config.toml, opencode.json,
@@ -132,7 +130,7 @@ $script:RepoName  = 'jmix-agent-toolkit'
 $script:AllAgents = @('claude', 'codex', 'opencode', 'junie')
 # Where skills and guidelines go: 'agents' -- .agents/skills and AGENTS.md
 # (Codex, OpenCode, Junie and other agents of those open conventions), always
-# -- and 'claude' -- .claude/skills and CLAUDE.md (Claude Code), with -Claude.
+# -- and 'claude' -- .claude/skills and CLAUDE.md (Claude Code), on by default.
 $script:AllConventions = @('agents', 'claude')
 $script:AllMcpServers = @('jetbrains', 'context7', 'playwright')
 
@@ -641,10 +639,11 @@ function New-SkillSymlinks {
 }
 
 # The conventions of skills / agents-md $Subcommand: always 'agents', plus
-# 'claude' with -Claude.
+# 'claude' unless -Claude:$false is given.
 function Get-ConventionList {
     param([string]$Subcommand)
-    $withClaude = [bool]$Claude
+    $withClaude = $true
+    if ($script:GivenParams -contains 'Claude') { $withClaude = [bool]$Claude }
     # Hidden aliases for older Studio metadata and released jmix-cli.
     # No warning: Studio <= 3.0.4 fails a step on any stderr output.
     if ($script:GivenParams -contains 'Conventions' -or $script:GivenParams -contains 'Agents') {
@@ -657,8 +656,8 @@ function Get-ConventionList {
 }
 
 # The skills store of scope $Scope under $Root (the project or the user home).
-# Local skills are kept in the project's .agents/skills (with -Claude linked
-# into .claude/skills); global ones in ~/.agents/.jmix/skills/<branch>, so
+# Local skills are kept in the project's .agents/skills (linked into
+# .claude/skills by default); global ones in ~/.agents/.jmix/skills/<branch>, so
 # multiple Jmix majors coexist.
 function Get-SkillsStoreDir {
     param([string]$Scope, [string]$Root)

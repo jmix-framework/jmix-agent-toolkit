@@ -46,8 +46,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -Command "Invoke-RestMethod 'https://raw
 Each runs one step without the wizard. **CSV** is a comma-separated list (e.g. `claude,codex`) or a single value.
 
 ```bash
-install.sh skills     [--scope global|local] [--claude]
-install.sh agents-md  [--claude]
+install.sh skills     [--scope global|local] [--claude=false]
+install.sh agents-md  [--claude=false]
 install.sh mcp        --servers CSV --agents CSV [--scope local|global] [--context7-key KEY]
 install.sh mcp-jetbrains | mcp-context7 | playwright --agents CSV [--scope local|global]
                                      # mcp-context7 also takes [--context7-key KEY]
@@ -59,7 +59,7 @@ Piped from `curl`, pass the subcommand after `bash -s --`:
 curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/v3/install.sh | bash -s -- mcp --servers jetbrains,playwright --agents claude,codex
 ```
 
-PowerShell takes the same subcommands and flags (e.g. `install.ps1 skills -Scope local -Claude`). To run one straight from the URL:
+PowerShell takes the same subcommands and flags (e.g. `install.ps1 skills -Scope local -Claude:$false` to skip Claude Code). To run one straight from the URL:
 
 ```powershell
 & ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/v3/install.ps1).Content)) mcp -Servers 'jetbrains,playwright' -Agents 'claude,codex'
@@ -67,7 +67,7 @@ PowerShell takes the same subcommands and flags (e.g. `install.ps1 skills -Scope
 
 Quote lists: unquoted, `claude,codex` is an array in PowerShell.
 
-`skills` always installs the skills into `.agents/skills`, and `agents-md` always merges the guidelines into `AGENTS.md`: Codex, OpenCode, Junie, Cursor, GitHub Copilot, Gemini CLI and others read them there. `--claude` (`-Claude`) also sets them up for Claude Code: each skill is linked into `.claude/skills`, and the guidelines go into `CLAUDE.md` too.
+`skills` always installs the skills into `.agents/skills`, and `agents-md` always merges the guidelines into `AGENTS.md`: Codex, OpenCode, Junie, Cursor, GitHub Copilot, Gemini CLI and others read them there. Claude Code is included by default: each skill is linked into `.claude/skills`, and the guidelines go into `CLAUDE.md` too. Use `--claude=false` (`-Claude:$false`) to skip Claude Code.
 
 The MCP subcommands take **agents**, each with its own config: `claude`, `codex`, `opencode`, `junie`. `claude` also sets up [Claude Desktop](#claude-desktop) when it is installed.
 
@@ -77,7 +77,7 @@ The MCP subcommands take **agents**, each with its own config: `claude`, `codex`
 |:--------------------------|:-----------------------|:--------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--content-ref REF`       | `-ContentRef REF`      | `v3`    | Branch/ref whose `content/` is downloaded; it also names the global skills store. Studio passes its resolved toolkit branch.                                                                                                                                                                                         |
 | `--source DIR`            | `-Source DIR`          | -       | Install from a local checkout of this repository instead of downloading (CI, offline use).                                                                                                                                                                                                                           |
-| `--claude[=true\|false]`  | `-Claude`              | off     | `skills`, `agents-md`: also set up Claude Code: link each skill into `.claude/skills` and merge the guidelines into `CLAUDE.md`, besides `.agents/skills` and `AGENTS.md`. Studio passes `--claude=true\|false` / `-Claude:$true\|$false`.                                                                           |
+| `--claude[=true\|false]`  | `-Claude`              | on      | `skills`, `agents-md`: set up Claude Code by default. Use `--claude=false` / `-Claude:$false` to skip `.claude/skills` links and `CLAUDE.md`. `.agents/skills` and `AGENTS.md` are always installed. |
 | `--agents CSV`            | `-Agents CSV`          | -       | MCP subcommands: `claude`, `codex`, `opencode`, `junie`. Required.                                                                                                                                                                                                                                                   |
 | `--servers CSV`           | `-Servers CSV`         | -       | `mcp`: `jetbrains`, `context7`, `playwright`. Required.                                                                                                                                                                                                                                                              |
 | `--scope global\|local`   | `-Scope global\|local` | global  | `skills`: install into the user home or the current project, see **Skills store** below.                                                                                                                                                                                                                             |
@@ -88,9 +88,9 @@ The MCP subcommands take **agents**, each with its own config: `claude`, `codex`
 
 **Environment:** `JMIX_IDE_MCP_PORT` sets the port of the IntelliJ IDEA MCP server (default `64342`), e.g. `curl ... | JMIX_IDE_MCP_PORT=64343 bash -s -- mcp-jetbrains --agents claude`.
 
-**Skills store:** the skills are copied into a store, and each skill folder is linked into `.agents/skills` (unless that dir is the store) and, with `--claude`, into `.claude/skills`, next to any other skills there.
-- **Global:** store at `~/.agents/.jmix/skills/<ref>/` (the `--content-ref`, e.g. `v3`), linked into `~/.agents/skills` and, with `--claude`, into `~/.claude/skills`.
-- **Local:** the store is `<project>/.agents/skills/` itself, so the skills are real folders there. With `--claude`, each skill is linked into `<project>/.claude/skills`. With `--backup-existing-files`, replaced skill folders go to `<project>/.agents/.jmix/backups/`, where no agent reads them as skills.
+**Skills store:** the skills are copied into a store, and each skill folder is linked into `.agents/skills` (unless that dir is the store) and, unless `--claude=false`, into `.claude/skills`, next to any other skills there.
+- **Global:** store at `~/.agents/.jmix/skills/<ref>/` (the `--content-ref`, e.g. `v3`), linked into `~/.agents/skills` and, unless `--claude=false`, into `~/.claude/skills`.
+- **Local:** the store is `<project>/.agents/skills/` itself, so the skills are real folders there. Each skill is linked into `<project>/.claude/skills` unless `--claude=false`. With `--backup-existing-files`, replaced skill folders go to `<project>/.agents/.jmix/backups/`, where no agent reads them as skills.
 
 **Upgrading from an older local install:** older versions kept the local store in `<project>/.skills/`. A re-run moves the skills into `.agents/skills`, re-points the links into `.skills` in `.claude/skills` (and in any other `<project>/.*/skills` you linked the same way), deletes the toolkit's skills from `.skills`, moves any other `jmix*` entry there (a retired skill or your own) to `.agents/.jmix/backups/`, and deletes `.skills` when nothing else is left. A `.skills` that is a link is left alone. One that a skills dir links to (e.g. `.claude/skills -> ../.skills`) is kept: behind `.agents/skills` it stays the store, behind any other dir its Jmix skills become links to `.agents/skills`. If the old layout is committed, git shows `.skills` deleted, the `.agents/skills` entries changed from symlinks to folders and the `.claude/skills` links re-pointed.
 
