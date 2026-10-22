@@ -566,32 +566,139 @@ Reset-Guidelines
 # ---------------------------------------------------------------------------
 # 2. skills, local scope -- must succeed without symlink privilege
 #    (junction on Windows / symlink on Unix), so the assertions run unconditionally.
+#    The skills are kept in the project's .agents/skills (the store) and linked
+#    into .claude/skills; an old .skills store is migrated away.
 # ---------------------------------------------------------------------------
+$linkType = if (Test-SymlinkCapable) { 'SymbolicLink' } elseif ($onWindows) { 'Junction' } else { $null }
+$skillNames = @(Get-ChildItem -LiteralPath (Join-Path $Source 'content/skills') -Directory | ForEach-Object { $_.Name })
+
+# True when $Path is a real folder, not a link (or junction) to one.
+function Test-RealDir {
+    param([string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    return ($null -ne $item -and $item.PSIsContainer -and -not $item.LinkType)
+}
+
+# True when $Link is a link into a project's .agents/skills that resolves.
+function Test-LinkIntoStore {
+    param([string]$Link)
+    $item = Get-Item -LiteralPath $Link -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item -or -not $item.LinkType) { return $false }
+    $target = [string](@($item.Target) | Select-Object -First 1)
+    return ($target -match '[\\/]\.agents[\\/]skills[\\/][^\\/]+$' -and (Test-Path -LiteralPath (Join-Path $Link 'SKILL.md')))
+}
+
+# What the old layout could leave in the agent skills dirs of project $Dir:
+# links into .skills and *.bak* entries. Returns their paths.
+function Get-LegacyLeftovers {
+    param([string]$Dir)
+    foreach ($rel in '.agents/skills', '.claude/skills') {
+        $agentDir = Join-Path $Dir $rel
+        if (-not (Test-Path -LiteralPath $agentDir -PathType Container)) { continue }
+        foreach ($item in Get-ChildItem -LiteralPath $agentDir -Force) {
+            $target = [string](@($item.Target) | Select-Object -First 1)
+            if ($item.Name -like '*.bak*' -or ($item.LinkType -and $target -match '[\\/]\.skills([\\/]|$)')) { $item.FullName }
+        }
+    }
+}
+
+# The entries of project $Dir's agent skills dirs: path, link type and target.
+function Get-SkillsLayout {
+    param([string]$Dir)
+    foreach ($rel in '.agents/skills', '.claude/skills') {
+        Get-ChildItem -LiteralPath (Join-Path $Dir $rel) -Force -ErrorAction SilentlyContinue |
+            ForEach-Object { "$rel/$($_.Name)|$($_.LinkType)|$(@($_.Target) -join ',')" }
+    }
+}
+
+function New-TestProject {
+    param([string]$Name)
+    $dir = Join-Path $work $Name
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    return $dir
+}
+
+# Runs a local skills install in project $Dir with the extra arguments $More.
+function Invoke-LocalSkills {
+    param([string]$Dir, [string[]]$More)
+    Push-Location $Dir
+    try { return Invoke-InstallerResult (@('skills', '-Scope', 'local', '-Source', $Source) + $More) }
+    finally { Pop-Location }
+}
+
+# Lays project $Dir out as earlier versions installed it: the skills in .skills,
+# with a retired skill and a store backup beside them, each linked into the
+# agent skills dirs $AgentDirs with an absolute target, as the old installer did.
+function New-LegacyLayout {
+    param([string]$Dir, [string[]]$AgentDirs = @('.agents/skills', '.claude/skills'))
+    $legacy = Join-Path $Dir '.skills'
+    New-Item -ItemType Directory -Force -Path $legacy | Out-Null
+    Copy-Item -Path (Join-Path $Source 'content/skills/*') -Destination $legacy -Recurse
+    foreach ($n in 'jmix-obsolete-skill', "$skill.bak") {
+        New-Item -ItemType Directory -Force -Path (Join-Path $legacy $n) | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $legacy "$n/SKILL.md"), "# $n`n")
+    }
+    foreach ($rel in $AgentDirs) {
+        $agentDir = Join-Path $Dir $rel
+        New-Item -ItemType Directory -Force -Path $agentDir | Out-Null
+        foreach ($s in Get-ChildItem -LiteralPath $legacy -Directory) {
+            New-Item -ItemType $linkType -Path (Join-Path $agentDir $s.Name) -Target $s.FullName | Out-Null
+        }
+    }
+}
+
 Check ((Invoke-Installer @('skills', '-Agents', 'claude,codex,opencode,junie', '-Scope', 'local', '-Source', $Source)) -eq 0) `
     'skills(local) exits 0'
-Check (Test-Path (Join-Path $proj '.skills'))                        'skills(local): .skills store'
-Check (Test-Path (Join-Path $proj ".claude/skills/$skill/SKILL.md")) 'skills(local): claude link resolves'
-Check (Test-Path (Join-Path $proj ".agents/skills/$skill/SKILL.md")) 'skills(local): agents link resolves'
+Check ((Test-RealDir (Join-Path $proj ".agents/skills/$skill")) -and (Test-Path (Join-Path $proj ".agents/skills/$skill/SKILL.md"))) `
+    'skills(local): the skill is a real folder in .agents/skills (the store)'
+Check (Test-LinkIntoStore (Join-Path $proj ".claude/skills/$skill")) 'skills(local): .claude/skills links the skill into .agents/skills'
+Check (-not (Test-Path (Join-Path $proj '.skills')))                 'skills(local): no .skills store'
 Check (-not (Test-Path (Join-Path $proj '.junie/skills')))         'skills(local): no .junie/skills; Junie reads .agents/skills'
 
-$convProj = Join-Path $work 'conventions-project'
-New-Item -ItemType Directory -Force -Path $convProj | Out-Null
-Push-Location $convProj
-$codeClaude = Invoke-Installer @('skills', '-Conventions', 'claude', '-Scope', 'local', '-Source', $Source)
-Check ($codeClaude -eq 0 -and (Test-Path (Join-Path $convProj ".claude/skills/$skill/SKILL.md")) -and
-       -not (Test-Path (Join-Path $convProj '.agents'))) 'skills: -Conventions claude links .claude/skills alone'
-$codeAgents = Invoke-Installer @('skills', '-Conventions', 'agents', '-Scope', 'local', '-Source', $Source)
-Check ($codeAgents -eq 0 -and (Test-Path (Join-Path $convProj ".agents/skills/$skill/SKILL.md"))) 'skills: -Conventions agents links .agents/skills'
-Pop-Location
-Remove-Item -LiteralPath $convProj -Recurse -Force
+# Studio reads the local store from the manifest: it must be the dir used here.
+$manifest = Get-Content -Raw -LiteralPath (Join-Path $Source '.studio/skills-manifest.json') | ConvertFrom-Json
+Check ($manifest.store.local -eq '.agents/skills' -and (Test-RealDir (Join-Path $proj "$($manifest.store.local)/$skill"))) `
+    'skills(local): the Studio manifest names the store the installer uses'
+
+# Claude alone still keeps the skills in .agents/skills; agents alone makes no .claude.
+$convProj = New-TestProject 'conventions-claude-project'
+$r = Invoke-LocalSkills -Dir $convProj -More @('-Conventions', 'claude')
+Check ($r.Code -eq 0 -and (Test-RealDir (Join-Path $convProj ".agents/skills/$skill")) -and
+       (Test-LinkIntoStore (Join-Path $convProj ".claude/skills/$skill"))) `
+    'skills: -Conventions claude keeps the skills in .agents/skills and links them into .claude/skills'
+$convProj = New-TestProject 'conventions-agents-project'
+$r = Invoke-LocalSkills -Dir $convProj -More @('-Conventions', 'agents')
+Check ($r.Code -eq 0 -and (Test-Path (Join-Path $convProj ".agents/skills/$skill/SKILL.md")) -and
+       -not (Test-Path (Join-Path $convProj '.claude'))) 'skills: -Conventions agents installs .agents/skills alone'
+
+# The user's own skills in both dirs survive an install and a re-install, and
+# a re-run leaves the same layout.
+$ownProj = New-TestProject 'own-skills-project'
+foreach ($rel in '.agents/skills/my-skill', '.claude/skills/my-skill') {
+    New-Item -ItemType Directory -Force -Path (Join-Path $ownProj $rel) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $ownProj "$rel/SKILL.md"), "# mine`n")
+}
+$layouts = @{}
+foreach ($run in 1, 2) {
+    $r = Invoke-LocalSkills -Dir $ownProj -More @('-Conventions', 'agents,claude')
+    Check ($r.Code -eq 0) "skills(local): run $run exits 0"
+    Check ((Test-Path (Join-Path $ownProj '.agents/skills/my-skill/SKILL.md')) -and
+           (Test-Path (Join-Path $ownProj '.claude/skills/my-skill/SKILL.md'))) "skills(local): the user's own skills kept (run $run)"
+    Check ((Test-RealDir (Join-Path $ownProj ".agents/skills/$skill")) -and (Test-LinkIntoStore (Join-Path $ownProj ".claude/skills/$skill")) -and
+           @(Get-LegacyLeftovers $ownProj).Count -eq 0 -and -not (Test-Path (Join-Path $ownProj '.skills'))) `
+        "skills(local): the new layout after run $run"
+    $layouts[$run] = @(Get-SkillsLayout $ownProj) -join "`n"
+}
+Check ($layouts[1] -ne '' -and $layouts[2] -eq $layouts[1]) 'skills(local): a re-run leaves the same layout'
 
 # Links an earlier version put into .junie/skills are removed (Junie's CLI reads
 # that dir first, so they would shadow newer skills); other skills stay.
 $oldJunieSkills = Join-Path $proj '.junie/skills'
 New-Item -ItemType Directory -Force -Path (Join-Path $oldJunieSkills 'my-skill') | Out-Null
-$linkType = if (Test-SymlinkCapable) { 'SymbolicLink' } elseif ($onWindows) { 'Junction' } else { $null }
 if ($linkType) {
     foreach ($n in 'jmix', $skill) {
+        # The old store they point into; the run migrates it away.
+        New-Item -ItemType Directory -Force -Path (Join-Path $proj ".skills/$n") | Out-Null
         New-Item -ItemType $linkType -Path (Join-Path $oldJunieSkills $n) -Target (Join-Path $proj ".skills/$n") | Out-Null
     }
     $out = Invoke-InstallerCapture @('skills', '-Agents', 'codex', '-Scope', 'local', '-Source', $Source)
@@ -599,7 +706,7 @@ if ($linkType) {
            -not (Get-Item -LiteralPath (Join-Path $oldJunieSkills $skill) -Force -ErrorAction SilentlyContinue)) `
         'skills(local): old toolkit links in .junie/skills removed'
     Check (Test-Path (Join-Path $oldJunieSkills 'my-skill')) 'skills(local): foreign skill in .junie/skills kept'
-    Check (Test-Path (Join-Path $proj ".skills/$skill/SKILL.md")) 'skills(local): removing old links kept the store'
+    Check (Test-Path (Join-Path $proj ".agents/skills/$skill/SKILL.md")) 'skills(local): removing old links kept the store'
     Check ($out -match 'Removed old Junie skill link') 'skills(local): removal of old Junie links reported'
 } else {
     Write-Host 'skip: no link support, skipping the old .junie/skills links case'
@@ -607,16 +714,15 @@ if ($linkType) {
 Remove-Item -LiteralPath (Join-Path $proj '.junie') -Recurse -Force
 
 if ($linkType) {
-    # Without an agent that reads .agents/skills nothing replaces those links, so
-    # they stay: removing them would leave Junie with no Jmix skills.
-    New-Item -ItemType Directory -Force -Path $oldJunieSkills | Out-Null
+    # At local scope .agents/skills is the store, so Junie keeps its skills after
+    # a Claude-only run too: the links go, or they would dangle once .skills does.
+    New-Item -ItemType Directory -Force -Path $oldJunieSkills, (Join-Path $proj ".skills/$skill") | Out-Null
     $oldLink = Join-Path $oldJunieSkills $skill
     New-Item -ItemType $linkType -Path $oldLink -Target (Join-Path $proj ".skills/$skill") | Out-Null
     $null = Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'local', '-Source', $Source)
-    $oldItem = Get-Item -LiteralPath $oldLink -Force -ErrorAction SilentlyContinue
-    Check ($null -ne $oldItem -and [bool]$oldItem.LinkType) `
-        'skills(local): old Junie links kept when no agent reads .agents/skills'
-    Remove-Item -LiteralPath $junieDir -Recurse -Force
+    Check (-not (Get-Item -LiteralPath $oldLink -Force -ErrorAction SilentlyContinue)) `
+        'skills(local): old Junie links removed by a Claude-only run'
+    if (Test-Path -LiteralPath $junieDir) { Remove-Item -LiteralPath $junieDir -Recurse -Force }
 
     # A .junie/skills that is the same dir as an agent skills dir holds the links
     # this run just created: the cleanup leaves it alone.
@@ -631,41 +737,188 @@ if ($linkType) {
     }
     Remove-Item -LiteralPath $junieDir -Recurse -Force
 
-    # An agent skills dir that is the store itself already has the skills; linking
-    # them into it would replace every skill with a link to itself.
-    # A store an earlier version already turned into such links is repaired.
-    $selfProj = Join-Path $work 'self-link-project'
-    New-Item -ItemType Directory -Force -Path (Join-Path $selfProj '.claude'), (Join-Path $selfProj '.skills') | Out-Null
+    # .claude/skills linked to the old store, which also holds a skill of the
+    # user's: that dir is the user's own, so it stays, and the skills are linked
+    # into it. A store an earlier version turned into self-links is repaired.
+    $selfProj = New-TestProject 'self-link-project'
+    New-Item -ItemType Directory -Force -Path (Join-Path $selfProj '.claude'), (Join-Path $selfProj '.skills/my-skill') | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $selfProj '.skills/my-skill/SKILL.md'), "# mine`n")
     New-Item -ItemType $linkType -Path (Join-Path $selfProj '.claude/skills') -Target (Join-Path $selfProj '.skills') | Out-Null
     if ($linkType -eq 'SymbolicLink') {
         New-Item -ItemType SymbolicLink -Path (Join-Path $selfProj ".skills/$skill") -Target "./$skill" | Out-Null
     }
-    Push-Location $selfProj
-    $runs = @(1, 2 | ForEach-Object { Invoke-InstallerResult @('skills', '-Agents', 'claude', '-Scope', 'local', '-Source', $Source) })
-    Pop-Location
-    Check (@($runs | Where-Object { $_.Code -ne 0 }).Count -eq 0) 'skills(local): runs succeed with .claude/skills linked to the store'
+    $runs = @(1, 2 | ForEach-Object { Invoke-LocalSkills -Dir $selfProj -More @('-Conventions', 'claude') })
+    Check (@($runs | Where-Object { $_.Code -ne 0 }).Count -eq 0) 'skills(local): runs succeed with .claude/skills linked to .skills'
+    Check (Test-Path (Join-Path $selfProj '.skills/my-skill/SKILL.md')) "skills(local): the user's skill in a linked .skills kept"
+    Check (Test-Path (Join-Path $selfProj ".claude/skills/$skill/SKILL.md")) 'skills(local): the skill resolves through .claude/skills -> .skills'
+    Check (Test-RealDir (Join-Path $selfProj ".agents/skills/$skill")) 'skills(local): the store is .agents/skills next to a linked .skills'
+
+    # An agent skills dir that is the store itself already has the skills; linking
+    # them into it would replace every skill with a link to itself.
+    $storeLinkProj = New-TestProject 'store-link-project'
+    New-Item -ItemType Directory -Force -Path (Join-Path $storeLinkProj '.agents'), (Join-Path $storeLinkProj '.claude/skills') | Out-Null
+    New-Item -ItemType $linkType -Path (Join-Path $storeLinkProj '.agents/skills') -Target (Join-Path $storeLinkProj '.claude/skills') | Out-Null
+    $runs = @(1, 2 | ForEach-Object { Invoke-LocalSkills -Dir $storeLinkProj -More @('-Conventions', 'claude') })
+    Check (@($runs | Where-Object { $_.Code -ne 0 }).Count -eq 0) 'skills(local): runs succeed with .agents/skills linked to .claude/skills'
     Check ($runs[1].Output -match 'is the skills store itself' -and $runs[1].Output -notmatch 'Linked skills into') `
         'skills(local): reports that .claude/skills is the store instead of linking'
-    $selfSkill = Get-Item -LiteralPath (Join-Path $selfProj ".skills/$skill") -Force -ErrorAction SilentlyContinue
-    Check ($null -ne $selfSkill -and -not $selfSkill.LinkType -and (Test-Path (Join-Path $selfProj ".skills/$skill/SKILL.md"))) `
+    Check ((Test-RealDir (Join-Path $storeLinkProj ".claude/skills/$skill")) -and (Test-Path (Join-Path $storeLinkProj ".claude/skills/$skill/SKILL.md"))) `
         'skills(local): store kept when .claude/skills is the store'
-    [System.IO.Directory]::Delete((Join-Path $selfProj '.claude/skills'), $false)
-    Remove-Item -LiteralPath $selfProj -Recurse -Force
-}
 
-# Store backups (-BackupExistingFiles) are not skills: they are not linked,
-# and a link to one that an earlier version made is removed.
-if ($linkType) {
-    New-Item -ItemType Directory -Force -Path (Join-Path $proj ".skills/$skill.bak") | Out-Null
-    New-Item -ItemType $linkType -Path (Join-Path $proj ".claude/skills/$skill.bak") -Target (Join-Path $proj ".skills/$skill.bak") | Out-Null
+    # The old layout: skills in .skills, linked into both agent dirs.
+    $legacyProj = New-TestProject 'legacy-project'
+    New-LegacyLayout -Dir $legacyProj
+    $r = Invoke-LocalSkills -Dir $legacyProj -More @('-Conventions', 'agents,claude')
+    Check ($r.Code -eq 0) 'skills(local): migrating the old .skills layout exits 0'
+    Check (@($skillNames | Where-Object { -not (Test-RealDir (Join-Path $legacyProj ".agents/skills/$_")) }).Count -eq 0) `
+        'skills(local): migrated skills are real folders in .agents/skills'
+    Check (@($skillNames | Where-Object { -not (Test-LinkIntoStore (Join-Path $legacyProj ".claude/skills/$_")) }).Count -eq 0) `
+        'skills(local): migrated .claude/skills links into .agents/skills'
+    Check (@(Get-LegacyLeftovers $legacyProj).Count -eq 0) 'skills(local): no links into .skills and no backups left in the agent dirs'
+    Check (-not (Test-Path (Join-Path $legacyProj '.skills'))) 'skills(local): the old .skills store removed'
+    Check ($r.Output -match 'Removed the old skills store') 'skills(local): removal of the old store reported'
+    # A jmix* entry that is no toolkit skill may be the user's own: it is kept
+    # out of the agent dirs, in the backups; the toolkit's are only deleted.
+    $backups = Join-Path $legacyProj '.agents/.jmix/backups'
+    Check ((@(Get-ChildItem -LiteralPath $backups -Force -ErrorAction SilentlyContinue).Name -join ',') -eq 'jmix-obsolete-skill.bak' -and
+           (Test-Path (Join-Path $backups 'jmix-obsolete-skill.bak/SKILL.md'))) `
+        'skills(local): without -BackupExistingFiles only an unknown jmix skill is backed up'
+
+    # Files of the user's in .skills keep it, and only them; the jmix name test
+    # is case-sensitive, as in install.sh.
+    $keepProj = New-TestProject 'legacy-keep-project'
+    New-LegacyLayout -Dir $keepProj
+    [System.IO.File]::WriteAllText((Join-Path $keepProj '.skills/notes.txt'), "mine`n")
+    [System.IO.File]::WriteAllText((Join-Path $keepProj '.skills/JMIX-README.md'), "mine`n")
+    $r = Invoke-LocalSkills -Dir $keepProj -More @('-Conventions', 'agents,claude')
+    Check ($r.Code -eq 0 -and (@(Get-ChildItem -LiteralPath (Join-Path $keepProj '.skills') -Force -ErrorAction SilentlyContinue |
+            Sort-Object Name).Name -join ',') -eq 'JMIX-README.md,notes.txt') `
+        'skills(local): a .skills holding other files keeps only them'
+
+    # A .skills that is a link is the user's own arrangement: left alone.
+    $sharedProj = New-TestProject 'legacy-linked-project'
+    $shared = Join-Path $work 'shared-skills'
+    New-Item -ItemType Directory -Force -Path (Join-Path $shared 'jmix-foo') | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $shared 'jmix-foo/SKILL.md'), "# foo`n")
+    New-Item -ItemType $linkType -Path (Join-Path $sharedProj '.skills') -Target $shared | Out-Null
+    $r = Invoke-LocalSkills -Dir $sharedProj -More @('-Conventions', 'agents,claude')
+    Check ($r.Code -eq 0 -and (Test-Path (Join-Path $shared 'jmix-foo/SKILL.md')) -and
+           [bool](Get-Item -LiteralPath (Join-Path $sharedProj '.skills') -Force).LinkType) `
+        'skills(local): a .skills that is a link is left alone'
+
+    # Other agents' skills dirs linked into .skills keep working: per-skill links
+    # are re-linked into the store, and a whole-dir link keeps .skills as it is.
+    $otherProj = New-TestProject 'legacy-cursor-project'
+    New-LegacyLayout -Dir $otherProj -AgentDirs @('.claude/skills', '.cursor/skills')
+    $r = Invoke-LocalSkills -Dir $otherProj -More @('-Conventions', 'agents,claude')
+    Check ($r.Code -eq 0 -and @($skillNames | Where-Object { -not (Test-LinkIntoStore (Join-Path $otherProj ".cursor/skills/$_")) }).Count -eq 0 -and
+           -not (Get-Item -LiteralPath (Join-Path $otherProj '.cursor/skills/jmix-obsolete-skill') -Force -ErrorAction SilentlyContinue) -and
+           -not (Test-Path (Join-Path $otherProj '.skills'))) `
+        "skills(local): another agent's links into .skills are re-linked into the store"
+    # That .skills gets the skills linked in like .claude/skills, so it does not
+    # go stale, also when that agent's convention is not chosen.
+    $otherProj = New-TestProject 'legacy-github-project'
+    New-LegacyLayout -Dir $otherProj -AgentDirs @('.agents/skills')
+    New-Item -ItemType Directory -Force -Path (Join-Path $otherProj '.github') | Out-Null
+    New-Item -ItemType $linkType -Path (Join-Path $otherProj '.github/skills') -Target (Join-Path $otherProj '.skills') | Out-Null
+    $r = Invoke-LocalSkills -Dir $otherProj -More @('-Conventions', 'agents')
+    Check ($r.Code -eq 0 -and (Test-Path (Join-Path $otherProj ".github/skills/$skill/SKILL.md")) -and
+           (Test-LinkIntoStore (Join-Path $otherProj ".skills/$skill")) -and
+           (Test-Path (Join-Path $otherProj '.github/skills/jmix-obsolete-skill/SKILL.md'))) `
+        "skills(local): .skills kept when another agent's skills dir links to it, and linked to the store"
+
+    # Finder clutter does not keep .skills, and a real backup an older version
+    # made beside a skill in .claude/skills moves to .agents/.jmix/backups.
+    $clutterProj = New-TestProject 'legacy-clutter-project'
+    New-LegacyLayout -Dir $clutterProj
+    [System.IO.File]::WriteAllText((Join-Path $clutterProj '.skills/.DS_Store'), '')
+    Copy-Item -Path (Join-Path $Source "content/skills/$skill") -Destination (Join-Path $clutterProj ".claude/skills/$skill.bak1") -Recurse
+    $r = Invoke-LocalSkills -Dir $clutterProj -More @('-Conventions', 'agents,claude')
+    Check ($r.Code -eq 0 -and -not (Test-Path (Join-Path $clutterProj '.skills')) -and @(Get-LegacyLeftovers $clutterProj).Count -eq 0 -and
+           (Test-Path (Join-Path $clutterProj ".agents/.jmix/backups/$skill.bak1.bak/SKILL.md"))) `
+        'skills(local): Finder clutter and real old backups do not stay behind'
+
+    # Agents alone: .claude/skills is still re-linked away from .skills.
+    $legacyProj = New-TestProject 'legacy-agents-project'
+    New-LegacyLayout -Dir $legacyProj
+    $r = Invoke-LocalSkills -Dir $legacyProj -More @('-Conventions', 'agents')
+    Check ($r.Code -eq 0 -and (Test-LinkIntoStore (Join-Path $legacyProj ".claude/skills/$skill")) -and
+           @(Get-LegacyLeftovers $legacyProj).Count -eq 0 -and -not (Test-Path (Join-Path $legacyProj '.skills'))) `
+        'skills(local): -Conventions agents re-links the old .claude/skills into .agents/skills'
+
+    # An old Claude-only layout: .skills linked into .claude/skills alone.
+    $legacyProj = New-TestProject 'legacy-claude-project'
+    New-LegacyLayout -Dir $legacyProj -AgentDirs @('.claude/skills')
+    $r = Invoke-LocalSkills -Dir $legacyProj -More @('-Conventions', 'claude')
+    Check ($r.Code -eq 0 -and (Test-RealDir (Join-Path $legacyProj ".agents/skills/$skill")) -and
+           (Test-LinkIntoStore (Join-Path $legacyProj ".claude/skills/$skill")) -and
+           @(Get-LegacyLeftovers $legacyProj).Count -eq 0 -and -not (Test-Path (Join-Path $legacyProj '.skills'))) `
+        'skills(local): an old Claude-only layout is migrated'
+
+    # .agents/skills linked to .skills by the user: .skills is the store then,
+    # and nothing in it is removed.
+    $userLinkProj = New-TestProject 'agents-link-project'
+    New-Item -ItemType Directory -Force -Path (Join-Path $userLinkProj '.skills'), (Join-Path $userLinkProj '.agents') | Out-Null
+    Copy-Item -Path (Join-Path $Source 'content/skills/*') -Destination (Join-Path $userLinkProj '.skills') -Recurse
+    New-Item -ItemType $linkType -Path (Join-Path $userLinkProj '.agents/skills') -Target (Join-Path $userLinkProj '.skills') | Out-Null
+    $r = Invoke-LocalSkills -Dir $userLinkProj -More @('-Conventions', 'agents,claude')
+    Check ($r.Code -eq 0 -and (Test-RealDir (Join-Path $userLinkProj ".skills/$skill")) -and
+           (Test-Path (Join-Path $userLinkProj ".skills/$skill/SKILL.md")) -and
+           (Test-Path (Join-Path $userLinkProj ".claude/skills/$skill/SKILL.md"))) `
+        'skills(local): a .agents/skills -> .skills link of the user is kept as the store'
+
+    # A dangling .agents/skills is replaced by the store.
+    $danglingProj = New-TestProject 'dangling-store-project'
+    New-Item -ItemType Directory -Force -Path (Join-Path $danglingProj 'missing'), (Join-Path $danglingProj '.agents') | Out-Null
+    New-Item -ItemType $linkType -Path (Join-Path $danglingProj '.agents/skills') -Target (Join-Path $danglingProj 'missing') | Out-Null
+    Remove-Item -LiteralPath (Join-Path $danglingProj 'missing') -Recurse -Force
+    $r = Invoke-LocalSkills -Dir $danglingProj -More @('-Conventions', 'agents,claude')
+    Check ($r.Code -eq 0 -and (Test-RealDir (Join-Path $danglingProj ".agents/skills/$skill"))) `
+        'skills(local): a dangling .agents/skills link is replaced by the store'
+
+    # A dangling per-skill link into a .skills that is gone is re-linked.
+    foreach ($conv in 'agents,claude', 'agents') {
+        $danglingProj = New-TestProject "dangling-link-$($conv -replace ',', '-')-project"
+        New-Item -ItemType Directory -Force -Path (Join-Path $danglingProj ".skills/$skill"), (Join-Path $danglingProj '.claude/skills') | Out-Null
+        New-Item -ItemType $linkType -Path (Join-Path $danglingProj ".claude/skills/$skill") -Target (Join-Path $danglingProj ".skills/$skill") | Out-Null
+        Remove-Item -LiteralPath (Join-Path $danglingProj '.skills') -Recurse -Force
+        $r = Invoke-LocalSkills -Dir $danglingProj -More @('-Conventions', $conv)
+        Check ($r.Code -eq 0 -and (Test-LinkIntoStore (Join-Path $danglingProj ".claude/skills/$skill"))) `
+            "skills(local): a dangling .claude/skills link is re-linked into the store ($conv)"
+    }
+
+    # -BackupExistingFiles: replaced skill folders go to .agents/.jmix/backups,
+    # never into the dirs the agents scan, and a link is never backed up.
+    $backupProj = New-TestProject 'backup-project'
+    $backups = Join-Path $backupProj '.agents/.jmix/backups'
+    $r = Invoke-LocalSkills -Dir $backupProj -More @('-Conventions', 'agents,claude', '-BackupExistingFiles')
+    Check ($r.Code -eq 0 -and -not (Test-Path $backups)) 'skills(local): a fresh install makes no backups dir'
+    $r = Invoke-LocalSkills -Dir $backupProj -More @('-Conventions', 'agents,claude', '-BackupExistingFiles')
+    Check ($r.Code -eq 0 -and @(Get-LegacyLeftovers $backupProj).Count -eq 0) 'skills(local): no backups in the agent dirs'
+    Check ((Test-RealDir (Join-Path $backups "$skill.bak")) -and (Test-Path (Join-Path $backups "$skill.bak/SKILL.md"))) `
+        'skills(local): the replaced skill backed up into .agents/.jmix/backups'
+    $backupProj = New-TestProject 'backup-legacy-project'
+    $backups = Join-Path $backupProj '.agents/.jmix/backups'
+    New-LegacyLayout -Dir $backupProj
+    $r = Invoke-LocalSkills -Dir $backupProj -More @('-Conventions', 'agents,claude', '-BackupExistingFiles')
+    Check ($r.Code -eq 0 -and @(Get-LegacyLeftovers $backupProj).Count -eq 0 -and -not (Test-Path (Join-Path $backupProj '.skills'))) `
+        'skills(local): the old layout migrated with -BackupExistingFiles'
+    Check ((Test-Path (Join-Path $backups "$skill.bak/SKILL.md")) -and (Test-Path (Join-Path $backups 'jmix-obsolete-skill.bak/SKILL.md'))) `
+        'skills(local): the old store backed up into .agents/.jmix/backups'
+    Check (-not (Test-Path (Join-Path $backups "$skill.bak1")) -and
+           @(Get-ChildItem -LiteralPath $backups -Force -ErrorAction SilentlyContinue | Where-Object { $_.LinkType }).Count -eq 0) `
+        'skills(local): no links backed up'
+
+    # A real copy of a skill in .claude/skills is backed up out of it and linked.
+    $copyProj = New-TestProject 'claude-copy-project'
+    New-Item -ItemType Directory -Force -Path (Join-Path $copyProj ".claude/skills/$skill") | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $copyProj ".claude/skills/$skill/SKILL.md"), "# my copy`n")
+    $r = Invoke-LocalSkills -Dir $copyProj -More @('-Conventions', 'claude', '-BackupExistingFiles')
+    Check ($r.Code -eq 0 -and (Test-LinkIntoStore (Join-Path $copyProj ".claude/skills/$skill")) -and
+           @(Get-LegacyLeftovers $copyProj).Count -eq 0) 'skills(local): a real skill copy in .claude/skills is replaced by a link'
+    Check ((Get-Content -Raw -LiteralPath (Join-Path $copyProj ".agents/.jmix/backups/$skill.bak/SKILL.md")) -match 'my copy') `
+        'skills(local): the real skill copy backed up into .agents/.jmix/backups'
 }
-$null = Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'local', '-BackupExistingFiles', '-Source', $Source)
-Check (@(Get-ChildItem -LiteralPath (Join-Path $proj '.skills') -Directory -Filter "$skill.bak*" |
-        Where-Object { Test-Path (Join-Path $_.FullName 'SKILL.md') }).Count -gt 0) `
-    'skills(local): -BackupExistingFiles made a store backup'
-Check (@(Get-ChildItem -LiteralPath (Join-Path $proj '.claude/skills') -Force -Filter '*.bak*').Count -eq 0) `
-    'skills(local): store backups not linked as skills'
-Get-ChildItem -LiteralPath (Join-Path $proj '.skills') -Force -Filter '*.bak*' | Remove-Item -Recurse -Force
 
 # Regression guard: on a Windows session without symlink privilege the link must
 # still be created -- as a junction, which needs no Developer Mode / admin.
@@ -679,12 +932,59 @@ if ($onWindows -and -not (Test-SymlinkCapable)) {
 # before re-linking. Links must still resolve afterwards.
 Check ((Invoke-Installer @('skills', '-Agents', 'claude,codex,opencode,junie', '-Scope', 'local', '-Source', $Source)) -eq 0) `
     'skills(local): re-run exits 0 (links already exist)'
-Check (Test-Path (Join-Path $proj ".claude/skills/$skill/SKILL.md")) 'skills(local): claude link still resolves after re-run'
+Check (Test-LinkIntoStore (Join-Path $proj ".claude/skills/$skill")) 'skills(local): claude link still resolves after re-run'
 
 # skills global -- store keyed by the branch (CONTENT_REF)
 Check ((Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'global', '-Source', $Source)) -eq 0) `
     'skills(global) exits 0'
 Check (Test-Path (Join-Path $homeDir '.agents/.jmix/skills/v3')) 'skills(global): v3 store created'
+
+# Without an agent that reads ~/.agents/skills nothing replaces old Junie links,
+# so they stay: removing them would leave Junie with no Jmix skills.
+if ($linkType) {
+    $junieLink = Join-Path $homeDir ".junie/skills/$skill"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $junieLink) | Out-Null
+    New-Item -ItemType $linkType -Path $junieLink -Target (Join-Path $homeDir ".agents/.jmix/skills/v3/$skill") | Out-Null
+    $null = Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'global', '-Source', $Source)
+    $junieItem = Get-Item -LiteralPath $junieLink -Force -ErrorAction SilentlyContinue
+    Check ($null -ne $junieItem -and [bool]$junieItem.LinkType) 'skills(global): old Junie links kept when no agent reads ~/.agents/skills'
+    if ($junieItem) { [System.IO.Directory]::Delete($junieLink, $false) }
+    Remove-Item -LiteralPath (Join-Path $homeDir '.junie') -Recurse -Force
+}
+
+# Store backups (-BackupExistingFiles) are not skills: they are not linked,
+# and a link to one that an earlier version made is removed.
+if ($linkType) {
+    $globalBak = Join-Path $homeDir ".agents/.jmix/skills/v3/$skill.bak"
+    New-Item -ItemType Directory -Force -Path $globalBak | Out-Null
+    New-Item -ItemType $linkType -Path (Join-Path $homeDir ".claude/skills/$skill.bak") -Target $globalBak | Out-Null
+}
+$null = Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'global', '-BackupExistingFiles', '-Source', $Source)
+Check (@(Get-ChildItem -LiteralPath (Join-Path $homeDir '.agents/.jmix/skills/v3') -Directory -Filter "$skill.bak*" |
+        Where-Object { Test-Path (Join-Path $_.FullName 'SKILL.md') }).Count -gt 0) `
+    'skills(global): -BackupExistingFiles made a store backup beside the skill'
+Check (@(Get-ChildItem -LiteralPath (Join-Path $homeDir '.claude/skills') -Force -Filter '*.bak*').Count -eq 0) `
+    'skills(global): store backups not linked as skills'
+Get-ChildItem -LiteralPath (Join-Path $homeDir '.agents/.jmix/skills/v3') -Force -Filter '*.bak*' | Remove-Item -Recurse -Force
+
+# At global scope a store skill that is a link (here to the user's own fork) is
+# backed up beside itself, as before, and the fork stays as it is.
+if ($linkType) {
+    $gstore = Join-Path $homeDir '.agents/.jmix/skills/v3'
+    $fork = Join-Path $work 'fork'
+    New-Item -ItemType Directory -Force -Path $fork | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $fork 'SKILL.md'), "fork`n")
+    Remove-Item -LiteralPath (Join-Path $gstore $skill) -Recurse -Force
+    New-Item -ItemType $linkType -Path (Join-Path $gstore $skill) -Target $fork | Out-Null
+    $null = Invoke-Installer @('skills', '-Agents', 'claude', '-Scope', 'global', '-BackupExistingFiles', '-Source', $Source)
+    $forkBak = Get-Item -LiteralPath (Join-Path $gstore "$skill.bak") -Force -ErrorAction SilentlyContinue
+    Check ($null -ne $forkBak -and [bool]$forkBak.LinkType -and (Test-RealDir (Join-Path $gstore $skill)) -and
+           (Get-Content -Raw -LiteralPath (Join-Path $fork 'SKILL.md')) -eq "fork`n") `
+        "skills(global): a store skill linked to the user's fork is kept as $skill.bak"
+    if ($forkBak) { [System.IO.Directory]::Delete($forkBak.FullName, $false) }
+    Get-ChildItem -LiteralPath $gstore -Force -Filter '*.bak*' | Remove-Item -Recurse -Force
+    Remove-Item -LiteralPath $fork -Recurse -Force
+}
 
 # Windows: global skills go to USERPROFILE, next to the agents' user configs,
 # also when HOMEDRIVE+HOMEPATH (the $HOME of Windows PowerShell) is elsewhere.
@@ -1298,8 +1598,8 @@ $out = "1`nl`ns`n2,3`n2`n`n`n" | & $pwshPath -NoProfile -File $install -Source $
 Check ($LASTEXITCODE -eq 0) 'wizard exits 0'
 Check ($out -match '\[Context7 MCP\] Skipped') 'wizard: an empty key skips Context7'
 Check ($out -match 'MCP:\s+context7, playwright for codex \(local\)') 'wizard: the summary names the choices'
-Check ((Test-Path '.agents/skills') -and -not (Test-Path '.claude/skills') -and -not (Test-Path 'AGENTS.md')) `
-    'wizard: skills and guidelines as chosen'
+Check ((Test-RealDir ".agents/skills/$skill") -and -not (Test-Path '.skills') -and -not (Test-Path '.claude/skills') -and
+       -not (Test-Path 'AGENTS.md')) 'wizard: skills and guidelines as chosen'
 $toml = Get-Content -Raw '.codex/config.toml'
 Check ($toml -match '(?m)^\[mcp_servers\.playwright\]' -and $toml -notmatch 'context7') 'wizard: local Codex config as chosen'
 # Global skills make global the default MCP scope.

@@ -74,6 +74,8 @@ Quote lists: unquoted, `claude,codex` is an array in PowerShell.
 | `agents`   | `.agents/skills` | `AGENTS.md` | Codex, OpenCode, Junie and others |
 | `claude`   | `.claude/skills` | `CLAUDE.md` | Claude Code                       |
 
+At `local` scope, the skill folders always go into `.agents/skills`, even for `claude` alone; see **Skills store** below.
+
 The MCP subcommands take **agents** instead: `claude`, `codex`, `opencode`, `junie`. `claude` also sets up [Claude Desktop](#claude-desktop) when it is installed.
 
 ### Flags
@@ -93,9 +95,11 @@ The MCP subcommands take **agents** instead: `claude`, `codex`, `opencode`, `jun
 
 **Environment:** `JMIX_IDE_MCP_PORT` sets the port of the IntelliJ IDEA MCP server (default `64342`), e.g. `curl ... | JMIX_IDE_MCP_PORT=64343 bash -s -- mcp-jetbrains --agents claude`.
 
-**Skills store:** the skills are copied into a store, and each skill folder is linked into the skills dir of every chosen convention, next to any other skills there.
+**Skills store:** the skills are copied into a store, and each skill folder is linked into the skills dir of every chosen convention (unless that dir is the store), next to any other skills there.
 - **Global:** store at `~/.agents/.jmix/skills/<ref>/` (the `--content-ref`, e.g. `v3`), linked into `~/.agents/skills` / `~/.claude/skills`.
-- **Local:** store at `<project>/.skills/`, linked into `<project>/.agents/skills` / `<project>/.claude/skills`.
+- **Local:** the store is `<project>/.agents/skills/` itself: the skills are real folders there, also when only `claude` is chosen, so Codex, OpenCode, Junie, Cursor, Copilot and Gemini CLI see them too. With `claude`, each skill is linked into `<project>/.claude/skills`. With `--backup-existing-files`, replaced skill folders go to `<project>/.agents/.jmix/backups/`, where no agent reads them as skills.
+
+**Upgrading from an older local install:** older versions kept the local store in `<project>/.skills/`. A re-run moves the skills into `.agents/skills`, re-points the links into `.skills` in `.claude/skills` (and in any other `<project>/.*/skills` you linked the same way), deletes the toolkit's skills from `.skills`, moves any other `jmix*` entry there (a retired skill or your own) to `.agents/.jmix/backups/`, and deletes `.skills` when nothing else is left. A `.skills` that is a link is left alone. One that a skills dir links to (e.g. `.claude/skills -> ../.skills`) is kept: behind `.agents/skills` it stays the store, behind any other dir its Jmix skills become links to `.agents/skills`. If the old layout is committed, git shows `.skills` deleted, the `.agents/skills` entries changed from symlinks to folders and the `.claude/skills` links re-pointed.
 
 > The installer writes MCP servers straight into each agent's config file (see [MCP Servers](#3-mcp-servers)), keeping its other servers and settings; only Claude CLI at `global` scope goes through `claude mcp add`. A file that is already up to date is not rewritten. On macOS/Linux, merging into an existing JSON config file needs `jq` or `node`; a new file is written without them. Servers started through `npx` need Node.js 20+ when the agent starts them, not at install time.
 

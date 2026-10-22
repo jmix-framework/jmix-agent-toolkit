@@ -430,38 +430,122 @@ pass "agents-md handles an AGENTS.md that grep calls binary"
 rm -f "${PROJECT}/CLAUDE.md" "${PROJECT}"/CLAUDE.md.bak* "${PROJECT}/AGENTS.md" "${PROJECT}"/AGENTS.md.bak*
 
 # ---------------------------------------------------------------------------
-# 2. skills, local scope (per-skill symlinks into agent dirs)
+# 2. skills, local scope: the store is the project's .agents/skills (real skill
+#    folders, also when only claude is chosen) and .claude/skills gets
+#    per-skill relative links into it. Earlier versions kept the store in
+#    .skills; a run migrates it away.
 # ---------------------------------------------------------------------------
-bash "$INSTALL" skills --agents claude,codex,opencode,junie --scope local --source "$SOURCE" >/dev/null
-[ -d "${PROJECT}/.skills" ] || fail "skills(local): .skills store missing"
-find "${PROJECT}/.skills" -maxdepth 1 -mindepth 1 -name 'jmix-*' -type d | grep -q . \
-    || fail "skills(local): store has no jmix-* folders"
-for rel in ".claude/skills" ".agents/skills"; do
-    [ -e "${PROJECT}/${rel}/${SKILL}/SKILL.md" ] \
-        || fail "skills(local): ${rel}/${SKILL} does not resolve"
-done
-[ ! -e "${PROJECT}/.junie/skills" ] || fail "skills(local): Junie got a .junie/skills dir; it reads .agents/skills"
-pass "skills(local) builds store and resolving symlinks for all agents"
 
-CONV_PROJ="${WORK}/conventions-project"
-mkdir -p "$CONV_PROJ"
-(cd "$CONV_PROJ" && bash "$INSTALL" skills --conventions claude --scope local --source "$SOURCE" >/dev/null) \
-    || fail "skills: --conventions claude failed"
-[ -e "${CONV_PROJ}/.claude/skills/${SKILL}/SKILL.md" ] && [ ! -e "${CONV_PROJ}/.agents" ] \
-    || fail "skills: --conventions claude did not link .claude/skills alone"
-(cd "$CONV_PROJ" && bash "$INSTALL" skills --conventions agents --scope local --source "$SOURCE" >/dev/null) \
-    || fail "skills: --conventions agents failed"
-[ -e "${CONV_PROJ}/.agents/skills/${SKILL}/SKILL.md" ] || fail "skills: --conventions agents did not link .agents/skills"
+# Runs `install.sh skills --scope local` in project dir $1 with the args after it.
+local_skills() {
+    local proj="$1"
+    shift
+    (cd "$proj" && bash "$INSTALL" skills --scope local --source "$SOURCE" "$@")
+}
+
+# Prints the path of a fresh, empty project dir named $1.
+new_project() {
+    rm -rf "${WORK:?}/$1"
+    mkdir -p "${WORK}/$1"
+    printf '%s' "${WORK}/$1"
+}
+
+# Fails unless skill $2 of project $1 is a real folder in .agents/skills and
+# .claude/skills/$2 a relative link to it. $3 names the case.
+assert_local_skill() {
+    local agents="$1/.agents/skills/$2" claude="$1/.claude/skills/$2"
+    [ -f "${agents}/SKILL.md" ] && [ ! -L "$agents" ] \
+        || fail "$3: .agents/skills/$2 is not a real skill folder"
+    [ -L "$claude" ] && [ "$(readlink "$claude")" = "../../.agents/skills/$2" ] \
+        || fail "$3: .claude/skills/$2 is not a link to ../../.agents/skills/$2"
+    [ -f "${claude}/SKILL.md" ] || fail "$3: .claude/skills/$2 does not resolve"
+}
+
+# Fails when an agent skills dir of project $1 holds a backup (*.bak*) or a
+# link into the old .skills store. $2 names the case.
+assert_no_leftovers() {
+    local entry
+    for entry in "$1/.agents/skills"/* "$1/.claude/skills"/*; do
+        [ -L "$entry" ] || [ -e "$entry" ] || continue
+        case "${entry##*/}" in *.bak*) fail "$2: backup ${entry} left in an agent skills dir" ;; esac
+        if [ -L "$entry" ]; then
+            case "$(readlink "$entry")" in */.skills/*) fail "$2: ${entry} still links into .skills" ;; esac
+        fi
+    done
+}
+
+# Builds the layout earlier versions made in project $1: every skill, a retired
+# one and a store backup in .skills, each linked from the agent dirs in $2 by
+# a link to <$3>/.skills/<skill> ($3 defaults to ../.., relative).
+make_legacy_layout() {
+    local rel skill
+    mkdir -p "$1/.skills/jmix-obsolete-skill"
+    cp -R "${SOURCE}/content/skills/." "$1/.skills/"
+    printf -- '---\nname: jmix-obsolete-skill\n---\n' > "$1/.skills/jmix-obsolete-skill/SKILL.md"
+    cp -R "$1/.skills/${SKILL}" "$1/.skills/${SKILL}.bak"
+    for rel in $2; do
+        mkdir -p "$1/${rel}"
+        for skill in "$1/.skills"/*; do
+            ln -s "${3:-../..}/.skills/${skill##*/}" "$1/${rel}/${skill##*/}"
+        done
+    done
+}
+
+# Lists the agent skills dirs of project $1, with link targets.
+layout_of() {
+    local entry
+    for entry in "$1/.agents/skills"/* "$1/.claude/skills"/*; do
+        if [ -L "$entry" ]; then
+            printf '%s -> %s\n' "${entry#"$1"/}" "$(readlink "$entry")"
+        else
+            printf '%s\n' "${entry#"$1"/}"
+        fi
+    done
+}
+
+# 2a. Every agent: real skill folders in .agents/skills, relative links in
+#     .claude/skills, no .skills. The project's own skills in both dirs stay.
+mkdir -p "${PROJECT}/.agents/skills/my-skill" "${PROJECT}/.claude/skills/my-skill"
+printf 'mine\n' > "${PROJECT}/.agents/skills/my-skill/SKILL.md"
+printf 'mine\n' > "${PROJECT}/.claude/skills/my-skill/SKILL.md"
+out="$(local_skills "$PROJECT" --agents claude,codex,opencode,junie)" || fail "skills(local): install failed"
+for skill in "${SOURCE}/content/skills"/*/; do
+    assert_local_skill "$PROJECT" "$(basename "$skill")" "skills(local)"
+done
+[ ! -e "${PROJECT}/.skills" ] || fail "skills(local): created the old .skills store"
+[ ! -e "${PROJECT}/.junie/skills" ] || fail "skills(local): Junie got a .junie/skills dir; it reads .agents/skills"
+pass "skills(local) keeps real skill folders in .agents/skills and links them into .claude/skills"
+
+# 2b. Studio reads the local store from .studio/skills-manifest.json: it must
+#     be the dir this installer fills.
+manifest_local="$(sed -n 's/.*"local": *"\([^"]*\)".*/\1/p' "${SOURCE}/.studio/skills-manifest.json")"
+printf '%s\n' "$out" | grep -qFx "Installing skills into store $(cd "$PROJECT" && pwd -P)/${manifest_local}" \
+    || fail "skills(local): the store is not store.local of skills-manifest.json (${manifest_local})"
+pass "skills(local) fills the store skills-manifest.json names"
+
+# 2c. A re-run succeeds and changes nothing; the project's own skills survive
+#     and nothing is backed up without --backup-existing-files.
+before="$(layout_of "$PROJECT")"
+local_skills "$PROJECT" --agents claude,codex,opencode,junie >/dev/null || fail "skills(local): re-run failed"
+[ "$(layout_of "$PROJECT")" = "$before" ] || fail "skills(local): a re-run changed the layout"
+[ "$(cat "${PROJECT}/.agents/skills/my-skill/SKILL.md")" = mine ] \
+    && [ "$(cat "${PROJECT}/.claude/skills/my-skill/SKILL.md")" = mine ] \
+    || fail "skills(local): the project's own skills were lost"
+[ ! -e "${PROJECT}/.agents/.jmix" ] || fail "skills(local): backed up without --backup-existing-files"
+pass "skills(local) re-run keeps the layout and the project's own skills"
+
+# 2d. claude alone still keeps the skills in .agents/skills; agents alone
+#     creates no .claude dir.
+CONV_PROJ="$(new_project conventions-project)"
+local_skills "$CONV_PROJ" --conventions claude >/dev/null || fail "skills: --conventions claude failed"
+assert_local_skill "$CONV_PROJ" "$SKILL" "skills(local, claude)"
+CONV_PROJ="$(new_project conventions-project)"
+local_skills "$CONV_PROJ" --conventions agents >/dev/null || fail "skills: --conventions agents failed"
+[ -f "${CONV_PROJ}/.agents/skills/${SKILL}/SKILL.md" ] && [ ! -L "${CONV_PROJ}/.agents/skills/${SKILL}" ] \
+    || fail "skills: --conventions agents did not fill .agents/skills"
+[ ! -e "${CONV_PROJ}/.claude" ] || fail "skills: --conventions agents created .claude"
 rm -rf "$CONV_PROJ"
 pass "skills takes --conventions agents,claude"
-
-for rel in ".claude/skills" ".agents/skills"; do
-    tgt="$(readlink "${PROJECT}/${rel}/${SKILL}")"
-    case "$tgt" in
-        /*) fail "skills(local): ${rel}/${SKILL} target is absolute (${tgt}); must be relative" ;;
-    esac
-done
-pass "skills(local) symlink targets are relative (portable across clones)"
 
 # Links an earlier version put into .junie/skills are removed (Junie's CLI
 # reads that dir first, so they would shadow newer skills); other skills stay.
@@ -476,15 +560,16 @@ case "$out" in *"Removed old Junie skill link"*) ;; *) fail "skills(local): remo
 rm -rf "${PROJECT}/.junie"
 pass "skills removes the old .junie/skills links and keeps foreign skills"
 
-# Without an agent that reads .agents/skills nothing replaces those links, so
-# they stay: removing them would leave Junie with no Jmix skills.
+# In a project .agents/skills is the store whatever is chosen, so Junie keeps
+# its skills: the old links go with claude alone too (they would dangle once
+# .skills goes).
 mkdir -p "${PROJECT}/.junie/skills"
 ln -s ../../.skills/jmix-create-entity "${PROJECT}/.junie/skills/jmix-create-entity"
 bash "$INSTALL" skills --agents claude --scope local --source "$SOURCE" >/dev/null
-[ -L "${PROJECT}/.junie/skills/jmix-create-entity" ] \
-    || fail "skills(local): old Junie links removed although no agent re-linked .agents/skills"
+[ ! -L "${PROJECT}/.junie/skills/jmix-create-entity" ] \
+    || fail "skills(local): old Junie links kept with claude alone, though .agents/skills holds the skills"
 rm -rf "${PROJECT}/.junie"
-pass "skills keeps the old .junie/skills links when no agent reads .agents/skills"
+pass "skills(local) removes the old .junie/skills links with claude alone"
 
 # A .junie/skills that is the same dir as an agent skills dir holds the links
 # this run just created: the cleanup leaves it alone.
@@ -497,37 +582,237 @@ case "$out" in *"Removed old Junie skill link"*) fail "skills(local): removed li
 rm -rf "${PROJECT}/.junie"
 pass "skills keeps the links of a .junie/skills shared with .agents/skills"
 
-# Store backups (--backup-existing-files) are not skills: they are not linked,
-# and a link to one that an earlier version made is removed.
-ln -s "../../.skills/${SKILL}.bak" "${PROJECT}/.claude/skills/${SKILL}.bak"
-bash "$INSTALL" skills --agents claude --scope local --backup-existing-files --source "$SOURCE" >/dev/null
-[ -d "${PROJECT}/.skills/${SKILL}.bak" ] || fail "skills(local): --backup-existing-files made no store backup"
-for link in "${PROJECT}/.claude/skills"/*.bak*; do
-    [ ! -e "$link" ] && [ ! -L "$link" ] || fail "skills(local): store backup $(basename "$link") linked as a skill"
+# 2e. The layout of earlier versions: the skills, a retired one and a store
+#     backup in .skills, linked from both agent dirs. The skills move into
+#     .agents/skills, no link into .skills and no backup is left in the agent
+#     dirs (a real one an older version made beside a skill moves to
+#     .agents/.jmix/backups, as does the retired skill), links another agent's
+#     dir got like the toolkit's follow the skills, and .skills goes, also
+#     when Finder left a .DS_Store in it.
+LEGACY_PROJ="$(new_project legacy-project)"
+LEGACY_BACKUPS="${LEGACY_PROJ}/.agents/.jmix/backups"
+make_legacy_layout "$LEGACY_PROJ" ".agents/skills .claude/skills"
+: > "${LEGACY_PROJ}/.skills/.DS_Store"
+cp -R "${SOURCE}/content/skills/${SKILL}" "${LEGACY_PROJ}/.claude/skills/${SKILL}.bak1"
+mkdir -p "${LEGACY_PROJ}/.cursor/skills"
+ln -s "../../.skills/${SKILL}" "${LEGACY_PROJ}/.cursor/skills/${SKILL}"
+ln -s ../../.skills/jmix-obsolete-skill "${LEGACY_PROJ}/.cursor/skills/jmix-obsolete-skill"
+out="$(local_skills "$LEGACY_PROJ" --conventions agents,claude)" || fail "skills(local): migrating .skills failed"
+for skill in "${SOURCE}/content/skills"/*/; do
+    assert_local_skill "$LEGACY_PROJ" "$(basename "$skill")" "skills(local, migrated)"
 done
-rm -rf "${PROJECT}/.skills"/*.bak*
-pass "skills does not link store backups as skills"
+assert_no_leftovers "$LEGACY_PROJ" "skills(local, migrated)"
+for rel in .agents/skills .claude/skills .cursor/skills; do
+    [ ! -e "${LEGACY_PROJ}/${rel}/jmix-obsolete-skill" ] && [ ! -L "${LEGACY_PROJ}/${rel}/jmix-obsolete-skill" ] \
+        || fail "skills(local, migrated): the retired skill is still in ${rel}"
+done
+[ -f "${LEGACY_BACKUPS}/jmix-obsolete-skill.bak/SKILL.md" ] \
+    || fail "skills(local, migrated): the retired skill not kept in .agents/.jmix/backups"
+[ -f "${LEGACY_BACKUPS}/${SKILL}.bak1.bak/SKILL.md" ] \
+    || fail "skills(local, migrated): the real backup in .claude/skills not moved to .agents/.jmix/backups"
+[ "$(readlink "${LEGACY_PROJ}/.cursor/skills/${SKILL}")" = "../../.agents/skills/${SKILL}" ] \
+    || fail "skills(local, migrated): another agent's link into .skills not moved to .agents/skills"
+[ ! -e "${LEGACY_PROJ}/.skills" ] || fail "skills(local, migrated): .skills not removed"
+case "$out" in *"Removed the old skills store"*) ;; *) fail "skills(local, migrated): removal of .skills not reported" ;; esac
+pass "skills(local) migrates the old .skills store into .agents/skills"
 
-# An agent skills dir that is the store itself already has the skills; linking
-# them into it would replace every skill with a link to itself.
-# A store an earlier version already turned into such links is repaired.
-SELF_PROJ="${WORK}/self-link-project"
-mkdir -p "${SELF_PROJ}/.claude" "${SELF_PROJ}/.skills"
-ln -s ../.skills "${SELF_PROJ}/.claude/skills"
-ln -s "./${SKILL}" "${SELF_PROJ}/.skills/${SKILL}"
+# A file of the user's in .skills keeps the dir, holding only that file. The
+# user's own jmix* things there are no skills of the toolkit's: they are kept
+# in .agents/.jmix/backups, not deleted.
+LEGACY_PROJ="$(new_project legacy-project)"
+LEGACY_BACKUPS="${LEGACY_PROJ}/.agents/.jmix/backups"
+make_legacy_layout "$LEGACY_PROJ" ".agents/skills .claude/skills"
+printf 'notes\n' > "${LEGACY_PROJ}/.skills/notes.txt"
+mkdir -p "${LEGACY_PROJ}/.skills/jmix-acme-conventions"
+printf 'mine\n' > "${LEGACY_PROJ}/.skills/jmix-acme-conventions/SKILL.md"
+printf 'mine\n' > "${LEGACY_PROJ}/.skills/jmix-notes.md"
+ln -s ../../.skills/jmix-acme-conventions "${LEGACY_PROJ}/.claude/skills/jmix-acme-conventions"
+local_skills "$LEGACY_PROJ" --conventions agents,claude >/dev/null || fail "skills(local): migrating a .skills with user files failed"
+[ "$(ls -A "${LEGACY_PROJ}/.skills")" = notes.txt ] \
+    || fail "skills(local, migrated): .skills should keep only the user's file"
+[ "$(cat "${LEGACY_BACKUPS}/jmix-acme-conventions.bak/SKILL.md")" = mine ] \
+    && [ "$(cat "${LEGACY_BACKUPS}/jmix-notes.md.bak")" = mine ] \
+    || fail "skills(local, migrated): the user's own jmix* things in .skills were not kept"
+assert_no_leftovers "$LEGACY_PROJ" "skills(local, migrated, user file)"
+pass "skills(local) keeps a .skills that holds other files, and the user's jmix* things"
+
+# Absolute links into .skills under another spelling of the project path (here
+# through a symlink to the project) are migrated too.
+LEGACY_PROJ="$(new_project legacy-project)"
+rm -f "${WORK}/legacy-alias"
+ln -s legacy-project "${WORK}/legacy-alias"
+make_legacy_layout "$LEGACY_PROJ" ".agents/skills .claude/skills" "${WORK}/legacy-alias"
+local_skills "${WORK}/legacy-alias" --conventions agents >/dev/null \
+    || fail "skills(local): migrating absolute links through a symlinked path failed"
+assert_local_skill "$LEGACY_PROJ" "$SKILL" "skills(local, migrated, absolute links)"
+assert_no_leftovers "$LEGACY_PROJ" "skills(local, migrated, absolute links)"
+[ ! -e "${LEGACY_PROJ}/.skills" ] || fail "skills(local, migrated, absolute links): .skills not removed"
+rm -f "${WORK}/legacy-alias"
+pass "skills(local) migrates absolute links into .skills under another spelling of the path"
+
+# A .skills that is itself a link is the user's own setup: nothing is taken
+# out of the folder it points to.
+LINKED_PROJ="$(new_project linked-legacy-project)"
+rm -rf "${WORK}/shared-skills"
+mkdir -p "${WORK}/shared-skills/jmix-foo"
+printf 'x\n' > "${WORK}/shared-skills/jmix-foo/SKILL.md"
+ln -s ../shared-skills "${LINKED_PROJ}/.skills"
+local_skills "$LINKED_PROJ" --conventions agents,claude >/dev/null \
+    || fail "skills(local): failed with a .skills symlink"
+[ -L "${LINKED_PROJ}/.skills" ] && [ -f "${WORK}/shared-skills/jmix-foo/SKILL.md" ] \
+    || fail "skills(local): migration reached through a .skills symlink"
+rm -rf "$LINKED_PROJ" "${WORK}/shared-skills"
+pass "skills(local) leaves a .skills symlink and its target alone"
+
+# Another agent's skills dir the user linked to .skills (here .github/skills)
+# keeps .skills, which gets the skills linked in like .claude/skills, so it
+# does not go stale (also when that agent's convention is not chosen).
+LEGACY_PROJ="$(new_project legacy-project)"
+make_legacy_layout "$LEGACY_PROJ" ".agents/skills"
+mkdir -p "${LEGACY_PROJ}/.github"
+ln -s ../.skills "${LEGACY_PROJ}/.github/skills"
+local_skills "$LEGACY_PROJ" --conventions agents >/dev/null \
+    || fail "skills(local): failed with .github/skills -> ../.skills"
+[ "$(readlink "${LEGACY_PROJ}/.skills/${SKILL}")" = "../.agents/skills/${SKILL}" ] \
+    && [ -f "${LEGACY_PROJ}/.github/skills/${SKILL}/SKILL.md" ] \
+    || fail "skills(local): .skills, linked from .github/skills, not linked to the store"
+pass "skills(local) keeps a .skills another agent dir links to, and links the skills into it"
+
+# 2f. Old layout, agents alone: the .claude/skills links into .skills would
+#     dangle once it goes, so they are re-linked into .agents/skills.
+LEGACY_PROJ="$(new_project legacy-project)"
+make_legacy_layout "$LEGACY_PROJ" ".agents/skills .claude/skills"
+local_skills "$LEGACY_PROJ" --conventions agents >/dev/null || fail "skills(local): migrating with agents alone failed"
+assert_local_skill "$LEGACY_PROJ" "$SKILL" "skills(local, migrated, agents alone)"
+assert_no_leftovers "$LEGACY_PROJ" "skills(local, migrated, agents alone)"
+[ ! -e "${LEGACY_PROJ}/.skills" ] || fail "skills(local, migrated, agents alone): .skills not removed"
+pass "skills(local) re-links .claude/skills when migrating with agents alone"
+
+# 2g. Old claude-only layout (.skills linked from .claude/skills alone).
+LEGACY_PROJ="$(new_project legacy-project)"
+make_legacy_layout "$LEGACY_PROJ" ".claude/skills"
+local_skills "$LEGACY_PROJ" --conventions claude >/dev/null || fail "skills(local): migrating a claude-only layout failed"
+assert_local_skill "$LEGACY_PROJ" "$SKILL" "skills(local, migrated, claude)"
+assert_no_leftovers "$LEGACY_PROJ" "skills(local, migrated, claude)"
+[ ! -e "${LEGACY_PROJ}/.skills" ] || fail "skills(local, migrated, claude): .skills not removed"
+rm -rf "$LEGACY_PROJ"
+pass "skills(local) migrates an old claude-only layout"
+
+# 2h. .agents/skills the user linked to ../.skills: .skills is the store now,
+#     updated in place and kept.
+USER_PROJ="$(new_project user-link-project)"
+mkdir -p "${USER_PROJ}/.skills" "${USER_PROJ}/.agents"
+cp -R "${SOURCE}/content/skills/." "${USER_PROJ}/.skills/"
+ln -s ../.skills "${USER_PROJ}/.agents/skills"
+local_skills "$USER_PROJ" --conventions agents,claude >/dev/null || fail "skills(local): failed with .agents/skills -> ../.skills"
+[ -f "${USER_PROJ}/.skills/${SKILL}/SKILL.md" ] && [ ! -L "${USER_PROJ}/.skills/${SKILL}" ] \
+    || fail "skills(local): .skills deleted although .agents/skills links to it"
+[ -f "${USER_PROJ}/.claude/skills/${SKILL}/SKILL.md" ] \
+    || fail "skills(local): .claude/skills/${SKILL} does not resolve with .agents/skills -> ../.skills"
+pass "skills(local) keeps a .skills that .agents/skills links to"
+
+# 2i. .claude/skills the user linked to ../.skills is a live agent dir, not an
+#     old store: the skills are linked into it, the user's skill there stays.
+USER_PROJ="$(new_project user-link-project)"
+mkdir -p "${USER_PROJ}/.claude" "${USER_PROJ}/.skills/my-skill"
+printf 'mine\n' > "${USER_PROJ}/.skills/my-skill/SKILL.md"
+ln -s ../.skills "${USER_PROJ}/.claude/skills"
 for run in 1 2; do
-    out="$(cd "$SELF_PROJ" && bash "$INSTALL" skills --agents claude --scope local --source "$SOURCE")" \
+    local_skills "$USER_PROJ" --conventions agents,claude >/dev/null \
         || fail "skills(local): run ${run} failed with .claude/skills -> ../.skills"
+done
+[ -f "${USER_PROJ}/.skills/my-skill/SKILL.md" ] || fail "skills(local): the user's skill in .skills was removed"
+[ -f "${USER_PROJ}/.claude/skills/${SKILL}/SKILL.md" ] \
+    || fail "skills(local): .claude/skills/${SKILL} does not resolve with .claude/skills -> ../.skills"
+[ -f "${USER_PROJ}/.agents/skills/${SKILL}/SKILL.md" ] && [ ! -L "${USER_PROJ}/.agents/skills/${SKILL}" ] \
+    || fail "skills(local): .agents/skills/${SKILL} is not a real skill folder with .claude/skills -> ../.skills"
+rm -rf "$USER_PROJ"
+pass "skills(local) links into a .claude/skills -> ../.skills and keeps the user's skills"
+
+# An agent skills dir that is the store itself (here .agents/skills ->
+# ../.claude/skills) already has the skills; linking them into it would
+# replace every skill with a link to itself. A store an earlier version already
+# turned into such links is repaired.
+SELF_PROJ="$(new_project self-link-project)"
+mkdir -p "${SELF_PROJ}/.claude/skills" "${SELF_PROJ}/.agents"
+ln -s ../.claude/skills "${SELF_PROJ}/.agents/skills"
+ln -s "./${SKILL}" "${SELF_PROJ}/.claude/skills/${SKILL}"
+for run in 1 2; do
+    out="$(local_skills "$SELF_PROJ" --conventions claude)" \
+        || fail "skills(local): run ${run} failed with .agents/skills -> ../.claude/skills"
 done
 case "$out" in
     *"Linked skills into"*) fail "skills(local): reported linking into the store itself" ;;
     *"is the skills store itself"*) ;;
     *) fail "skills(local): no note that .claude/skills is the store" ;;
 esac
-[ -f "${SELF_PROJ}/.skills/${SKILL}/SKILL.md" ] && [ ! -L "${SELF_PROJ}/.skills/${SKILL}" ] \
+[ -f "${SELF_PROJ}/.claude/skills/${SKILL}/SKILL.md" ] && [ ! -L "${SELF_PROJ}/.claude/skills/${SKILL}" ] \
     || fail "skills(local): store destroyed when .claude/skills is the store"
 rm -rf "$SELF_PROJ"
 pass "skills leaves the store alone when an agent skills dir is the store"
+
+# 2j. Dangling links: a .agents/skills pointing nowhere, and a
+#     .claude/skills/<skill> left pointing into a .skills that is gone.
+DANGLING_PROJ="$(new_project dangling-project)"
+mkdir -p "${DANGLING_PROJ}/.agents"
+ln -s ../missing "${DANGLING_PROJ}/.agents/skills"
+local_skills "$DANGLING_PROJ" --conventions agents,claude >/dev/null \
+    || fail "skills(local): failed with a dangling .agents/skills"
+assert_local_skill "$DANGLING_PROJ" "$SKILL" "skills(local, dangling .agents/skills)"
+for conv in agents,claude agents; do
+    DANGLING_PROJ="$(new_project dangling-project)"
+    mkdir -p "${DANGLING_PROJ}/.claude/skills"
+    ln -s "../../.skills/${SKILL}" "${DANGLING_PROJ}/.claude/skills/${SKILL}"
+    local_skills "$DANGLING_PROJ" --conventions "$conv" >/dev/null \
+        || fail "skills(local, ${conv}): failed with a dangling .claude/skills/${SKILL}"
+    assert_local_skill "$DANGLING_PROJ" "$SKILL" "skills(local, ${conv}, dangling skill link)"
+done
+rm -rf "$DANGLING_PROJ"
+pass "skills(local) replaces dangling store and skill links"
+
+# 2k. --backup-existing-files keeps backups out of the agent skills dirs: they
+#     go to .agents/.jmix/backups, made only when something is replaced.
+BAK_PROJ="$(new_project backup-project)"
+BACKUPS="${BAK_PROJ}/.agents/.jmix/backups"
+local_skills "$BAK_PROJ" --conventions agents,claude --backup-existing-files >/dev/null \
+    || fail "skills(local, backup): first run failed"
+[ ! -e "${BAK_PROJ}/.agents/.jmix" ] || fail "skills(local, backup): made a backups dir with nothing to back up"
+local_skills "$BAK_PROJ" --conventions agents,claude --backup-existing-files >/dev/null \
+    || fail "skills(local, backup): second run failed"
+[ -f "${BACKUPS}/${SKILL}.bak/SKILL.md" ] || fail "skills(local, backup): no backup in .agents/.jmix/backups"
+assert_local_skill "$BAK_PROJ" "$SKILL" "skills(local, backup)"
+assert_no_leftovers "$BAK_PROJ" "skills(local, backup)"
+pass "skills(local) puts backups into .agents/.jmix/backups"
+
+# A real folder where a .claude/skills link goes (a user copy) is backed up
+# there too, and the link takes its place.
+rm "${BAK_PROJ}/.claude/skills/${SKILL}"
+cp -R "${SOURCE}/content/skills/${SKILL}" "${BAK_PROJ}/.claude/skills/${SKILL}"
+printf 'mine\n' > "${BAK_PROJ}/.claude/skills/${SKILL}/MINE"
+local_skills "$BAK_PROJ" --conventions agents,claude --backup-existing-files >/dev/null \
+    || fail "skills(local, backup): run over a real .claude/skills/${SKILL} failed"
+assert_local_skill "$BAK_PROJ" "$SKILL" "skills(local, backup, user copy)"
+ls "${BACKUPS}/${SKILL}".bak*/MINE >/dev/null 2>&1 \
+    || fail "skills(local, backup): the user's copy in .claude/skills not moved to .agents/.jmix/backups"
+assert_no_leftovers "$BAK_PROJ" "skills(local, backup, user copy)"
+rm -rf "$BAK_PROJ"
+pass "skills(local) backs up a real folder in .claude/skills into .agents/.jmix/backups"
+
+# The old layout: its links are replaced without backups; the old store's
+# skills are backed up into .agents/.jmix/backups.
+BAK_PROJ="$(new_project backup-project)"
+BACKUPS="${BAK_PROJ}/.agents/.jmix/backups"
+make_legacy_layout "$BAK_PROJ" ".agents/skills .claude/skills"
+local_skills "$BAK_PROJ" --conventions agents,claude --backup-existing-files >/dev/null \
+    || fail "skills(local, backup): migrating .skills failed"
+assert_local_skill "$BAK_PROJ" "$SKILL" "skills(local, backup, migrated)"
+assert_no_leftovers "$BAK_PROJ" "skills(local, backup, migrated)"
+[ ! -e "${BAK_PROJ}/.skills" ] || fail "skills(local, backup, migrated): .skills not removed"
+[ -f "${BACKUPS}/${SKILL}.bak/SKILL.md" ] && [ ! -L "${BACKUPS}/${SKILL}.bak" ] \
+    || fail "skills(local, backup, migrated): the old store's ${SKILL} not backed up"
+[ -z "$(find "$BACKUPS" -type l)" ] || fail "skills(local, backup, migrated): backed up a link"
+rm -rf "$BAK_PROJ"
+pass "skills(local) backs up the old store's skills, never its links"
 
 # ---------------------------------------------------------------------------
 # 3. skills, global scope (under $HOME) -- store keyed by the branch (CONTENT_REF)
@@ -559,6 +844,41 @@ bash "$INSTALL" skills --agents codex --scope global --source "$SOURCE" >/dev/nu
 rm -f "${HOME}/.agents/skills"
 rm -rf "${HOME}/.junie"
 pass "skills(global) keeps the links when ~/.agents/skills is a symlink to ~/.junie/skills"
+
+# Globally, without an agent that reads ~/.agents/skills nothing replaces the
+# old ~/.junie/skills links, so they stay: removing them would leave Junie
+# with no Jmix skills.
+mkdir -p "${HOME}/.junie/skills"
+ln -s "../../.agents/.jmix/skills/v3/${SKILL}" "${HOME}/.junie/skills/${SKILL}"
+bash "$INSTALL" skills --agents claude --scope global --source "$SOURCE" >/dev/null
+[ -L "${HOME}/.junie/skills/${SKILL}" ] \
+    || fail "skills(global): old Junie links removed although no agent re-linked ~/.agents/skills"
+rm -rf "${HOME}/.junie"
+pass "skills(global) keeps the old ~/.junie/skills links when no agent reads ~/.agents/skills"
+
+# --backup-existing-files keeps global backups beside the skills, as before:
+# a store skill moves to <skill>.bak (here a link to the user's own fork,
+# which stays as it is); a link to such a backup that an earlier version made
+# in an agent dir goes, and none is made.
+GSTORE="${HOME}/.agents/.jmix/skills/v3"
+rm -rf "${WORK}/fork" "${GSTORE:?}/${SKILL}"
+mkdir -p "${WORK}/fork"
+printf 'fork\n' > "${WORK}/fork/SKILL.md"
+ln -s "${WORK}/fork" "${GSTORE}/${SKILL}"
+ln -s "../../.agents/.jmix/skills/v3/${SKILL}.bak" "${HOME}/.claude/skills/${SKILL}.bak"
+bash "$INSTALL" skills --agents claude --scope global --backup-existing-files --source "$SOURCE" >/dev/null \
+    || fail "skills(global): --backup-existing-files run failed"
+[ -f "${GSTORE}/jmix.bak/SKILL.md" ] && [ ! -L "${GSTORE}/jmix.bak" ] \
+    || fail "skills(global): --backup-existing-files made no store backup beside the skill"
+[ "$(readlink "${GSTORE}/${SKILL}.bak")" = "${WORK}/fork" ] && [ "$(cat "${WORK}/fork/SKILL.md")" = fork ] \
+    || fail "skills(global): a store skill that links to the user's fork not kept as ${SKILL}.bak"
+[ -f "${GSTORE}/${SKILL}/SKILL.md" ] && [ ! -L "${GSTORE}/${SKILL}" ] \
+    || fail "skills(global): the store skill not replaced by a copy"
+[ ! -e "${HOME}/.claude/skills/${SKILL}.bak" ] && [ ! -L "${HOME}/.claude/skills/${SKILL}.bak" ] \
+    || fail "skills(global): store backups linked as skills"
+[ ! -e "${HOME}/.agents/.jmix/backups" ] || fail "skills(global): backups moved out of the store"
+rm -rf "${GSTORE:?}"/*.bak* "${WORK}/fork"
+pass "skills(global) keeps backups beside the skills and links none of them"
 
 if bash "$INSTALL" skills --agents claude-desktop --scope global --source "$SOURCE" >/dev/null 2>&1; then
     fail "skills: claude-desktop takes no skills and should be rejected"
@@ -1087,12 +1407,17 @@ PY
     if command -v python3 >/dev/null 2>&1; then
         WIZ_PROJ="${WORK}/wizard-project"
         WIZ_HOME="${WORK}/wizard-home"
-        mkdir -p "$WIZ_PROJ/.git" "$WIZ_HOME"
+        mkdir -p "$WIZ_PROJ/.git" "$WIZ_HOME" "$WIZ_PROJ/.skills/jmix-old" "$WIZ_PROJ/.agents/skills"
         cd "$WIZ_PROJ"
+        # The old .skills store is migrated as by the skills subcommand.
+        printf 'x\n' > .skills/jmix-old/SKILL.md
+        ln -s ../../.skills/jmix-old .agents/skills/jmix-old
         out="$(HOME="$WIZ_HOME" PATH="$BIN_PATH" run_wizard $'1\nl\ns\n2,3\n2\n\n\n')" || fail "wizard: non-zero exit"
         case "$out" in *"[Context7 MCP] Skipped"*) ;; *) fail "wizard: an empty key did not skip Context7" ;; esac
         case "$out" in *"MCP:         context7 playwright for codex (local)"*) ;; *) fail "wizard: wrong summary" ;; esac
-        [ -e .agents/skills ] && [ ! -e .claude/skills ] && [ ! -e AGENTS.md ] || fail "wizard: skills or guidelines not as chosen"
+        [ -f ".agents/skills/${SKILL}/SKILL.md" ] && [ ! -L ".agents/skills/${SKILL}" ] \
+            && [ ! -e .claude/skills ] && [ ! -e AGENTS.md ] || fail "wizard: skills or guidelines not as chosen"
+        [ ! -e .skills ] && [ ! -L .agents/skills/jmix-old ] || fail "wizard: the old .skills store not migrated"
         grep -q '^\[mcp_servers.playwright\]' .codex/config.toml && ! grep -q context7 .codex/config.toml \
             || fail "wizard: local Codex config not as chosen"
         # Global skills make global the default MCP scope.

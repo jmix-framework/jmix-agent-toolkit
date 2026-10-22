@@ -3,7 +3,9 @@
 #
 # Default (no subcommand) launches an interactive wizard that guides through:
 #   1. Installing Jmix skills (globally or into the project) for the chosen
-#      conventions (.agents/skills, .claude/skills).
+#      conventions (.agents/skills, .claude/skills). In the project the skills
+#      are kept in .agents/skills (also when only claude is chosen) and linked
+#      into .claude/skills; an old .skills store is migrated and removed.
 #   2. Adding project-level guidelines (AGENTS.md / CLAUDE.md).
 #   3. Registering MCP servers (JetBrains, Context7, Playwright) with the agents.
 #
@@ -27,6 +29,9 @@ TARBALL_READY=0
 CONTENT_REF="v3"
 SOURCE_DIR=""
 BACKUP_EXISTING=0
+# Where --backup-existing-files moves replaced skill folders; empty means beside
+# them. Set by select_skills_scope.
+SKILL_BACKUP_DIR=""
 VERBOSE=0
 
 ALL_AGENTS="claude codex opencode junie"
@@ -115,9 +120,25 @@ dedup_backup_path() {
     printf '%s' "$candidate"
 }
 
-# Replaces or installs $dest with a copy of $src. An existing $dest is backed up
-# (moved aside to a deduped <dest>.bak[N]) when BACKUP_EXISTING=1; otherwise it
-# is deleted. Prints a per-item log line.
+# Prints where --backup-existing-files moves skill folder $1: a deduped
+# <path>.bak[N] beside it, or, when SKILL_BACKUP_DIR is set (local scope, where
+# agents would read a .bak beside the skills as one more skill), a deduped
+# <name>.bak[N] in that dir, created on first use.
+skill_backup_path() {
+    if [ -z "$SKILL_BACKUP_DIR" ]; then
+        dedup_backup_path "$1"
+        return
+    fi
+    mkdir -p "$SKILL_BACKUP_DIR" || die "cannot create ${SKILL_BACKUP_DIR}"
+    dedup_backup_path "${SKILL_BACKUP_DIR}/$(basename "$1")"
+}
+
+# Replaces or installs skill folder $dest with a copy of $src. An existing
+# $dest is backed up (see skill_backup_path) when BACKUP_EXISTING=1; otherwise
+# it is deleted. A link at $dest is never followed. When backups go to
+# SKILL_BACKUP_DIR (local scope, where an older layout linked the store's
+# skills), a link is only removed: moved there, a relative one would dangle.
+# Prints a per-item log line.
 # $1 - src path (file or dir)
 # $2 - dest path
 # $3 - short label shown in the log line
@@ -129,10 +150,12 @@ write_dest() {
     # A dangling dest symlink counts too: cp would write through it.
     { [ -e "$dest" ] || [ -L "$dest" ]; } && existed=1
     local backup_info=""
-    if [ "$existed" -eq 1 ]; then
+    if [ -L "$dest" ] && [ -n "$SKILL_BACKUP_DIR" ]; then
+        rm -f "$dest" || die "cannot remove ${dest}"
+    elif [ "$existed" -eq 1 ]; then
         if [ "$BACKUP_EXISTING" -eq 1 ]; then
             local backup
-            backup="$(dedup_backup_path "$dest")"
+            backup="$(skill_backup_path "$dest")"
             mv "$dest" "$backup" || die "cannot rename ${dest}"
             backup_info=" (backup: $(basename "$backup"))"
         else
@@ -254,7 +277,10 @@ Common options:
                              for CI and offline use.
   --backup-existing-files    Rename overwritten files/dirs to <name>.bak
                              (deduped: .bak, .bak1, .bak2, ...) instead of
-                             deleting them. Off by default. Project guidelines
+                             deleting them. Off by default. Skill folders
+                             replaced in a project go to the project's
+                             .agents/.jmix/backups/ instead, where agents do
+                             not read them as skills. Project guidelines
                              (CLAUDE.md / AGENTS.md) are merged
                              rather than overwritten and are not covered by this
                              flag: a backup is made only when the toolkit
@@ -274,7 +300,11 @@ skills / agents-md options:
                          (.claude/skills, CLAUDE.md -- Claude Code). Agent names
                          work too: codex, opencode and junie mean agents.
   --scope global|local   skills: "global" (default) links the skills into the
-                         user home, "local" into the current project.
+                         user home, "local" into the current project: there
+                         the skills are kept in .agents/skills (also when only
+                         "claude" is chosen) and linked into .claude/skills.
+                         The .skills store of earlier versions is migrated
+                         and removed.
 
 mcp / mcp-jetbrains / mcp-context7 / playwright options:
   --agents CSV           claude, codex, opencode, junie. claude also sets up
@@ -379,14 +409,16 @@ convention_skills_dir() {
 # Earlier versions also linked the skills into .junie/skills. Junie reads
 # .agents/skills now, and its CLI reads ~/.junie/skills first, so links left
 # there would shadow newer skills: the toolkit's own links are removed. Only
-# when this run linked .agents/skills (otherwise Junie would be left with no
-# skills), and never from a .junie/skills that is the same dir as an agent
-# skills dir: its links are the ones this run just created.
+# when .agents/skills holds the skills, because this run linked it or it is the
+# store (local scope; otherwise Junie would be left with no skills), and never
+# from a .junie/skills that is the same dir as an agent skills dir: its links
+# are the ones this run just created.
 # $1 - scope root (the user home or the project dir)   $2 - conventions of this run
+# $3 - store dir
 remove_old_junie_skill_links() {
     local dir="$1/.junie/skills" link
     [ -d "$dir" ] || return 0
-    case " $2 " in *" agents "*) ;; *) return 0 ;; esac
+    case " $2 " in *" agents "*) ;; *) [ "$1/.agents/skills" -ef "$3" ] || return 0 ;; esac
     if [ "$dir" -ef "$1/.agents/skills" ] || [ "$dir" -ef "$1/.claude/skills" ]; then
         return 0
     fi
@@ -415,8 +447,8 @@ clear_dangling_symlink() {
 }
 
 # Creates (or refreshes) a whole-dir symlink $1 -> $2. Replaces an existing
-# symlink; an existing real dir is backed up (when --backup-existing-files) or
-# removed. Requires symlink support; fails otherwise.
+# symlink; an existing real dir is backed up (when --backup-existing-files, see
+# skill_backup_path) or removed. Requires symlink support; fails otherwise.
 create_symlink() {
     local link="$1"
     local target="$2"
@@ -424,7 +456,7 @@ create_symlink() {
         rm -f "$link" || die "cannot replace symlink ${link}"
     elif [ -e "$link" ]; then
         if [ "$BACKUP_EXISTING" -eq 1 ]; then
-            mv "$link" "$(dedup_backup_path "$link")" || die "cannot back up ${link}"
+            mv "$link" "$(skill_backup_path "$link")" || die "cannot back up ${link}"
         else
             rm -rf "$link" || die "cannot remove ${link}"
         fi
@@ -440,6 +472,8 @@ install_skills_to_store() {
     local store_dir="$1"
     log ""
     log "Installing skills into store ${store_dir}"
+    clear_dangling_symlink "$(dirname "$store_dir")"
+    clear_dangling_symlink "$store_dir"
     mkdir -p "$store_dir" || die "cannot create store ${store_dir}"
     local skill name dest
     for skill in "$SOURCE_SKILLS_DIR"/*/; do
@@ -483,8 +517,8 @@ prepare_agent_dir() {
 # Per-skill symlinks: link each store skill folder into the agent skills dir,
 # so Jmix skills coexist with other skills already present there. The link target
 # is relative to the agent dir (see relpath) so links stay valid after a clone.
-# Only the skills being installed are linked: the store also keeps the backups
-# that --backup-existing-files makes there.
+# Only the skills being installed are linked: the global store also keeps the
+# backups that --backup-existing-files makes there.
 # $1 - physical agent skills dir (kept as a real dir), see prepare_agent_dir
 # $2 - store dir holding the skill folders
 link_skills_into_dir() {
@@ -520,8 +554,9 @@ link_store_into_agents() {
             *" ${phys} "*) continue ;;
         esac
         seen="${seen}${phys} "
-        # An agent dir that is the store (e.g. .claude/skills -> ../.skills)
-        # already holds the skills; links there would point at themselves.
+        # An agent dir that is the store (the local .agents/skills, or e.g.
+        # .claude/skills -> ../.agents/skills) already holds the skills; links
+        # there would point at themselves.
         if [ "$phys" -ef "$store_dir" ]; then
             log "  ${agent_dir} is the skills store itself; nothing to link"
             continue
@@ -530,7 +565,115 @@ link_store_into_agents() {
         emit_change "$([ "$existed" -eq 1 ] && printf updated || printf created)" dir "$agent_dir"
         log "  Linked skills into ${agent_dir}"
     done
-    remove_old_junie_skill_links "$root" "$conventions"
+    remove_old_junie_skill_links "$root" "$conventions" "$store_dir"
+}
+
+# Sets SKILLS_ROOT, SKILLS_STORE and SKILL_BACKUP_DIR for scope $1. Local skills
+# are real folders in the project's .agents/skills (also when only claude is
+# chosen: .claude/skills links into it), and replaced ones are backed up to
+# .agents/.jmix/backups, out of the dirs agents read. Global skills live in
+# ~/.agents/.jmix/skills/<branch>, backed up beside themselves.
+select_skills_scope() {
+    if [ "$1" = local ]; then
+        SKILLS_ROOT="$(pwd -P)"
+        SKILLS_STORE="${SKILLS_ROOT}/.agents/skills"
+        SKILL_BACKUP_DIR="${SKILLS_ROOT}/.agents/.jmix/backups"
+    else
+        SKILLS_ROOT="$HOME"
+        SKILLS_STORE="${HOME}/.agents/.jmix/skills/${RESOLVED_VERSION_DIR}"
+        SKILL_BACKUP_DIR=""
+    fi
+}
+
+# Earlier versions kept local skills in <project>/.skills, linked from
+# .agents/skills and .claude/skills. Run once the new store is filled and
+# linked: every <project>/.*/skills dir (other agents' too) is swept of the old
+# store (see relink_legacy_store_links), then .skills is emptied of its Jmix
+# entries (see remove_legacy_store_entries). A .skills that is a link is the
+# user's own setup: left alone. One that is an agent skills dir (e.g.
+# .claude/skills -> ../.skills) is live: kept, and linked like .claude/skills
+# so it does not go stale.
+# $1 - project dir (physical)   $2 - store dir
+migrate_legacy_local_store() {
+    local root="$1" store_dir="$2" legacy="$1/.skills" dir
+    [ -L "$legacy" ] && return 0
+    # .[!.]* skips . and .. (bash 3.2 globs them). ponytail: only
+    # <project>/.<agent>/skills dirs; add others if an agent reads one.
+    for dir in "$root"/.[!.]*/skills; do
+        [ "$legacy" -ef "$dir" ] || continue
+        [ "$dir" -ef "$store_dir" ] || link_skills_into_dir "$(cd "$dir" && pwd -P)" "$store_dir"
+        log "  Kept the old skills store ${legacy}: ${dir} links to it"
+        return 0
+    done
+    for dir in "$root"/.[!.]*/skills; do
+        [ -d "$dir" ] || continue
+        relink_legacy_store_links "$dir" "$root" "$store_dir"
+    done
+    [ -d "$legacy" ] || return 0
+    remove_legacy_store_entries "$legacy"
+}
+
+# In agent skills dir $1, links named jmix* into the old <project>/.skills are
+# re-linked to the store (a skill being installed) or removed (retired skills,
+# old backups), and real jmix*.bak* folders older versions left beside the
+# skills move to the backups dir, where agents do not read them.
+# $1 - agent skills dir   $2 - project dir (physical)   $3 - store dir
+relink_legacy_store_links() {
+    local dir="$1" root="$2" phys rel_store entry name target parent moved=0
+    phys="$(cd "$dir" && pwd -P)" || return 0
+    rel_store="$(relpath "$phys" "$(cd "$3" && pwd -P)")"
+    for entry in "$phys"/jmix "$phys"/jmix-* "$phys"/jmix.*; do
+        name="${entry##*/}"
+        if [ ! -L "$entry" ]; then
+            case "$name" in *.bak*) [ -d "$entry" ] || continue ;; *) continue ;; esac
+            mv "$entry" "$(skill_backup_path "$entry")" || die "cannot back up ${entry}"
+            moved=$((moved + 1))
+            continue
+        fi
+        target="$(readlink "$entry")"
+        target="${target%/}"
+        case "$target" in /*) ;; *) target="${phys}/${target}" ;; esac
+        parent="${target%/*}"
+        # -ef also matches .skills under another spelling of the project
+        # path (e.g. macOS /var -> /private/var), and a .skills now gone.
+        { [ "${parent##*/}" = .skills ] && [ "${parent%/*}" -ef "$root" ]; } || continue
+        if [ -d "${SOURCE_SKILLS_DIR}/${name}" ]; then
+            create_symlink "$entry" "${rel_store}/${name}"
+        else
+            rm -f "$entry" || die "cannot remove ${entry}"
+        fi
+        moved=$((moved + 1))
+    done
+    [ "$moved" -eq 0 ] || log "  Re-linked, removed or backed up ${moved} entries of the old skills store in ${dir}"
+}
+
+# Removes the Jmix entries of the old store $1: the toolkit's skills and their
+# old backups are deleted (backed up with --backup-existing-files), any other
+# jmix* entry, retired or the user's own, is always backed up. $1 goes when
+# nothing else is left in it.
+remove_legacy_store_entries() {
+    local legacy="$1" entry name backup
+    for entry in "$legacy"/jmix "$legacy"/jmix-* "$legacy"/jmix.*; do
+        name="${entry##*/}"
+        if [ -L "$entry" ]; then
+            rm -f "$entry" || die "cannot remove ${entry}"
+        elif [ ! -e "$entry" ]; then
+            continue
+        elif [ "$BACKUP_EXISTING" -ne 1 ] && [ -d "${SOURCE_SKILLS_DIR}/${name%%.bak*}" ]; then
+            rm -rf "$entry" || die "cannot remove ${entry}"
+        else
+            backup="$(skill_backup_path "$entry")"
+            mv "$entry" "$backup" || die "cannot back up ${entry}"
+            log "  Backed up ${entry} to ${backup}"
+        fi
+    done
+    # Clutter Finder and Explorer leave is not the user's.
+    rm -f "$legacy/.DS_Store" "$legacy/Thumbs.db" "$legacy/desktop.ini"
+    if rmdir "$legacy" 2>/dev/null; then
+        log "  Removed the old skills store ${legacy}"
+    else
+        log "  Kept the old skills store ${legacy}: it holds other files"
+    fi
 }
 
 agent_label() {
@@ -588,14 +731,8 @@ cmd_skills() {
 
     ensure_tarball
 
-    local root store_dir
-    if [ "$scope" = "local" ]; then
-        root="$(pwd -P)"
-        store_dir="${root}/.skills"
-    else
-        root="${HOME}"
-        store_dir="${HOME}/.agents/.jmix/skills/${RESOLVED_VERSION_DIR}"
-    fi
+    select_skills_scope "$scope"
+    local root="$SKILLS_ROOT" store_dir="$SKILLS_STORE"
 
     local store_existed=0
     [ -d "$store_dir" ] && store_existed=1
@@ -607,6 +744,9 @@ cmd_skills() {
     log ""
     log "Linking store skills into agent dirs"
     link_store_into_agents "$root" "$store_dir" "$conventions"
+    if [ "$scope" = "local" ]; then
+        migrate_legacy_local_store "$root" "$store_dir"
+    fi
 
     log ""
     log "Done. Installed ${scope} skills store at ${store_dir} and linked: $(printf '%s' "$conventions" | tr ' ' ',' | sed 's/,/, /g')"
@@ -1662,14 +1802,12 @@ cmd_wizard() {
             g|G|global|GLOBAL) scope="global" ;;
         esac
         ensure_tarball
-        local root store_dir
-        if [ "$scope" = "local" ]; then
-            root="$(pwd -P)"; store_dir="${root}/.skills"
-        else
-            root="${HOME}"; store_dir="${HOME}/.agents/.jmix/skills/${RESOLVED_VERSION_DIR}"
+        select_skills_scope "$scope"
+        install_skills_to_store "$SKILLS_STORE" || true
+        # The old store goes only once the new layout is linked.
+        if link_store_into_agents "$SKILLS_ROOT" "$SKILLS_STORE" "$sel" && [ "$scope" = "local" ]; then
+            migrate_legacy_local_store "$SKILLS_ROOT" "$SKILLS_STORE" || true
         fi
-        install_skills_to_store "$store_dir" || true
-        link_store_into_agents "$root" "$store_dir" "$sel" || true
         summary_skills="$sel (${scope})"
     fi
 

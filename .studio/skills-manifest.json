@@ -27,6 +27,6 @@
   ],
   "store": {
     "global": ".agents/.jmix/skills",
-    "local": ".skills"
+    "local": ".agents/skills"
   }
 }

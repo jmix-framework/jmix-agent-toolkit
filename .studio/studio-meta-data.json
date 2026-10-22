@@ -5,7 +5,7 @@
       {
         "id": "skills",
         "title": "Skills",
-        "message": "🛠️ Install Jmix <code>skills</code> into the selected skills folders, in the project or the user home. <br>⏭️ Click <i>Skip</i> to opt out.",
+        "message": "🛠️ Install Jmix <code>skills</code> into the selected skills folders, in the project or the user home. <br>📁 In the project, the skills are kept in <code>.agents/skills</code> and linked into <code>.claude/skills</code> when it is selected. <br>⏭️ Click <i>Skip</i> to opt out.",
         "inputs": [
           {
             "id": "skillsScope",
