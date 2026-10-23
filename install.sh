@@ -35,7 +35,7 @@ BACKUP_EXISTING=0
 SKILL_BACKUP_DIR=""
 VERBOSE=0
 
-ALL_AGENTS="claude codex opencode junie"
+ALL_AGENTS="claude codex opencode junie cline"
 MCP_SERVERS_ALL="jetbrains context7 playwright"
 
 # IntelliJ IDEA's MCP server listens on 127.0.0.1 only. Its default port is
@@ -306,13 +306,13 @@ skills / agents-md options:
                          of earlier versions is migrated and removed.
 
 mcp / mcp-jetbrains / mcp-context7 / playwright options:
-  --agents CSV           claude, codex, opencode, junie. claude also sets up
-                         Claude Desktop when it is installed here.
+  --agents CSV           claude, codex, opencode, junie, cline. claude also
+                         sets up Claude Desktop when it is installed here.
   --scope local|global   "local" (default) writes the project files in the
                          current directory (.mcp.json, .codex/config.toml,
                          opencode.json, .junie/mcp/mcp.json); "global" writes
-                         each agent's user config. Claude Desktop has only a
-                         user config.
+                         each agent's user config. Claude Desktop and Cline
+                         have only a user config.
   --servers CSV          mcp: jetbrains, context7, playwright.
   --context7-key K       mcp, mcp-context7: Context7 API key; prompted when
                          missing, and "skip" leaves Context7 out. At local
@@ -321,6 +321,9 @@ mcp / mcp-jetbrains / mcp-context7 / playwright options:
 
 Environment:
   JMIX_IDE_MCP_PORT  Port of the IntelliJ IDEA MCP server (default 64342).
+  CLINE_MCP_SETTINGS_PATH, CLINE_DATA_DIR, CLINE_DIR
+                     Where Cline keeps its MCP config, read as Cline reads them
+                     (default ~/.cline/data/settings/cline_mcp_settings.json).
 EOF
 }
 
@@ -678,6 +681,7 @@ agent_label() {
         codex)          printf 'Codex' ;;
         opencode)       printf 'OpenCode' ;;
         junie)          printf 'Junie' ;;
+        cline)          printf 'Cline' ;;
         *) printf '%s' "$1" ;;
     esac
 }
@@ -1079,9 +1083,12 @@ cmd_agents_md() {
 #   codex           .codex/config.toml     ${CODEX_HOME:-~/.codex}/config.toml
 #   opencode        opencode.json          ${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json
 #   junie           .junie/mcp/mcp.json    ${JUNIE_HOME:-~/.junie}/mcp/mcp.json
+#   cline           (the global file)      ${CLINE_DIR:-~/.cline}/data/settings/cline_mcp_settings.json
 #
 # With claude, Claude Desktop is set up too when it is installed (see
-# mcp_desktop): claude_desktop_config.json, user level only.
+# mcp_desktop): claude_desktop_config.json, user level only. Cline (VS Code,
+# JetBrains, CLI) has no project MCP config either, so its user file is
+# written whatever the scope.
 #
 # ~/.claude.json is Claude Code's own state file, so it is changed only through
 # the claude CLI. Every other file is merged in place, with no agent CLI needed
@@ -1112,6 +1119,8 @@ mcp_config_file() {
         opencode:global) printf '%s/opencode/opencode.json' "${XDG_CONFIG_HOME:-${HOME}/.config}" ;;
         junie:local)     printf '%s/.junie/mcp/mcp.json' "$(pwd -P)" ;;
         junie:global)    printf '%s/mcp/mcp.json' "${JUNIE_HOME:-${HOME}/.junie}" ;;
+        # Resolved as Cline's resolveMcpSettingsPath does.
+        cline:global)    printf '%s' "${CLINE_MCP_SETTINGS_PATH:-${CLINE_DATA_DIR:-${CLINE_DIR:-${HOME}/.cline}/data}/settings/cline_mcp_settings.json}" ;;
         *) return 1 ;;
     esac
 }
@@ -1389,6 +1398,8 @@ mcp_claude_user() {
 mcp_write() {
     local agent="$1" scope="$2" name="$3" entry="$4" file mode=644
     shift 4
+    # Cline has only its user config (see mcp_followups).
+    [ "$agent" = cline ] && scope=global
     if [ "$agent" = claude ] && [ "$scope" = global ]; then
         mcp_claude_user "$name" "$@"
         return
@@ -1453,6 +1464,9 @@ mcp_followups() {
     esac
     case " $MCP_AGENTS_SEL " in *" codex "*)
         log "Codex reads .codex/config.toml only in trusted projects: accept its 'trust this folder' prompt. The Codex desktop app ignores project MCP servers; use --scope global for it." ;;
+    esac
+    case " $MCP_AGENTS_SEL " in *" cline "*)
+        log "Cline has no project MCP config: it reads the user config $(mcp_config_file cline global)." ;;
     esac
     if [ -n "$MCP_KEY_FILES" ]; then
         log "The Context7 API key is now in${MCP_KEY_FILES}: keep these files out of version control."
@@ -1547,6 +1561,7 @@ install_jetbrains_for() {
                           --scope user --transport http jetbrains "${base}/stream" ;;
             codex)    mcp_write codex "$scope" jetbrains "url = \"${base}/stream\"" ;;
             opencode) mcp_write opencode "$scope" jetbrains "{\"type\":\"remote\",\"url\":\"${base}/stream\",\"enabled\":true}" ;;
+            cline)    mcp_write cline "$scope" jetbrains "{\"type\":\"streamableHttp\",\"url\":\"${base}/stream\"}" ;;
         esac || rc=1
     else
         case "$agent" in
@@ -1557,6 +1572,7 @@ install_jetbrains_for() {
 args = [\"-y\", \"mcp-remote\", \"${base}/sse\", \"--transport\", \"sse-only\"]
 startup_timeout_sec = 60" ;;
             opencode) mcp_write opencode "$scope" jetbrains "{\"type\":\"remote\",\"url\":\"${base}/sse\",\"enabled\":true}" ;;
+            cline)    mcp_write cline "$scope" jetbrains "{\"type\":\"sse\",\"url\":\"${base}/sse\"}" ;;
         esac || rc=1
     fi
     # Claude Desktop has no HTTP transport for local servers: always the bridge.
@@ -1616,6 +1632,7 @@ install_context7_for() {
         codex)    mcp_write codex "$scope" context7 "url = \"${CONTEXT7_URL}\"
 http_headers = { Authorization = \"Bearer ${key}\" }" ;;
         opencode) mcp_write opencode "$scope" context7 "{\"type\":\"remote\",\"url\":\"${CONTEXT7_URL}\",\"headers\":{\"Authorization\":\"Bearer ${key}\"},\"enabled\":true}" ;;
+        cline)    mcp_write cline "$scope" context7 "{\"type\":\"streamableHttp\",\"url\":\"${CONTEXT7_URL}\",\"headers\":{\"Authorization\":\"Bearer ${key}\"}}" ;;
         # Junie (and Claude Desktop above): stdio, the key in the environment, not in argv.
         *)        mcp_write "$agent" "$scope" context7 "$stdio_json" ;;
     esac
@@ -1827,7 +1844,8 @@ cmd_wizard() {
     local servers agents="skip" key="" scope_mcp="local"
     servers="$(wizard_pick skip '[3/3] Connect agents to MCP servers:' server_label "$MCP_SERVERS_ALL")"
     if [ "$servers" != "skip" ]; then
-        agents="$(wizard_pick all 'For the agents:' agent_label "$ALL_AGENTS")"
+        # All but Cline by default: its config is a user file whatever the scope.
+        agents="$(wizard_pick 1,2,3,4 'For the agents:' agent_label "$ALL_AGENTS")"
     fi
     if [ "$agents" != "skip" ]; then
         case "$(prompt 'Register in: (l)ocal project config or (g)lobal user config' "$(printf '%.1s' "$scope")")" in
