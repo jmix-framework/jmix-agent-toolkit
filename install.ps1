@@ -55,8 +55,8 @@
 
 .PARAMETER Agents
     MCP subcommands: comma-separated agents (e.g. "claude,codex"): claude,
-    codex, opencode, junie. claude also sets up Claude Desktop when it is
-    installed here.
+    codex, opencode, junie, cline. claude also sets up Claude Desktop when it
+    is installed here.
 
 .PARAMETER Servers
     mcp: comma-separated MCP servers: jetbrains, context7, playwright.
@@ -69,7 +69,7 @@
     MCP subcommands: "local" (default) writes the project files in the current
     directory (.mcp.json, .codex\config.toml, opencode.json,
     .junie\mcp\mcp.json); "global" writes each agent's user config. Claude
-    Desktop has only a user config.
+    Desktop and Cline have only a user config.
 
 .PARAMETER Context7Key
     Context7 API key (mcp, mcp-context7). Prompted interactively when missing;
@@ -92,7 +92,9 @@
 
 .NOTES
     Environment: JMIX_IDE_MCP_PORT sets the port of the IntelliJ IDEA MCP
-    server (default 64342).
+    server (default 64342). CLINE_MCP_SETTINGS_PATH, CLINE_DATA_DIR and
+    CLINE_DIR set where Cline keeps its MCP config, read as Cline reads them
+    (default ~\.cline\data\settings\cline_mcp_settings.json).
 
 .EXAMPLE
     Invoke-RestMethod https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/HEAD/install.ps1 | Invoke-Expression
@@ -126,7 +128,7 @@ $script:GivenParams = @($PSBoundParameters.Keys)
 $script:RepoOwner = 'jmix-framework'
 $script:RepoName  = 'jmix-agent-toolkit'
 
-$script:AllAgents = @('claude', 'codex', 'opencode', 'junie')
+$script:AllAgents = @('claude', 'codex', 'opencode', 'junie', 'cline')
 # Where skills and guidelines go: 'agents' -- .agents/skills and AGENTS.md
 # (Codex, OpenCode, Junie and other agents of those open conventions), always
 # -- and 'claude' -- .claude/skills and CLAUDE.md (Claude Code), on by default.
@@ -251,6 +253,7 @@ function Get-AgentLabel {
         'codex'    { 'Codex' }
         'opencode' { 'OpenCode' }
         'junie'    { 'Junie' }
+        'cline'    { 'Cline' }
         default    { $Agent }
     }
 }
@@ -1120,9 +1123,12 @@ function Invoke-CmdAgentsMd {
 #   codex           .codex\config.toml     $env:CODEX_HOME (default ~\.codex)\config.toml
 #   opencode        opencode.json          $env:XDG_CONFIG_HOME (default ~\.config)\opencode\opencode.json
 #   junie           .junie\mcp\mcp.json    $env:JUNIE_HOME (default ~\.junie)\mcp\mcp.json
+#   cline           (the global file)      $env:CLINE_DIR (default ~\.cline)\data\settings\cline_mcp_settings.json
 #
 # With claude, Claude Desktop is set up too when it is installed (see
 # Write-ClaudeDesktopServer): claude_desktop_config.json, user level only.
+# Cline (VS Code, JetBrains, CLI) has no project MCP config either, so its
+# user file is written whatever the scope.
 #
 # ~\.claude.json is Claude Code's own state file, so it is changed only through
 # the claude CLI. Every other file is merged in place, with no agent CLI needed
@@ -1186,6 +1192,17 @@ function Get-McpConfigFile {
             'junie' {
                 $junieHome = if ($env:JUNIE_HOME) { $env:JUNIE_HOME } else { Join-Path $script:UserHome '.junie' }
                 return [System.IO.Path]::Combine($junieHome, 'mcp', 'mcp.json')
+            }
+            'cline' {
+                # Resolved as Cline resolves it; its home is Node's os.homedir(),
+                # USERPROFILE on Windows like $script:UserHome.
+                if ($env:CLINE_MCP_SETTINGS_PATH) { return $env:CLINE_MCP_SETTINGS_PATH }
+                $dataDir = $env:CLINE_DATA_DIR
+                if (-not $dataDir) {
+                    $clineDir = if ($env:CLINE_DIR) { $env:CLINE_DIR } else { Join-Path $script:UserHome '.cline' }
+                    $dataDir = Join-Path $clineDir 'data'
+                }
+                return [System.IO.Path]::Combine($dataDir, 'settings', 'cline_mcp_settings.json')
             }
         }
     }
@@ -1496,6 +1513,8 @@ function Add-ClaudeUserMcp {
 # scope $CliArgs (the arguments of `claude mcp add`) are used instead.
 function Write-McpServer {
     param([string]$Agent, [string]$Scope, [string]$Name, [object]$Entry, [string[]]$CliArgs)
+    # Cline has only its user config (see Write-McpFollowups).
+    if ($Agent -eq 'cline') { $Scope = 'global' }
     if ($Agent -eq 'claude' -and $Scope -eq 'global') {
         Add-ClaudeUserMcp -Name $Name -CliArgs $CliArgs
         return
@@ -1562,6 +1581,9 @@ function Write-McpFollowups {
     }
     if ($AgentList -contains 'codex') {
         Write-Info "Codex reads .codex/config.toml only in trusted projects: accept its 'trust this folder' prompt. The Codex desktop app ignores project MCP servers; use -Scope global for it."
+    }
+    if ($AgentList -contains 'cline') {
+        Write-Info "Cline has no project MCP config: it reads the user config $(Get-McpConfigFile -Agent 'cline' -Scope 'global')."
     }
     if ($script:McpKeyFiles.Count -gt 0) {
         Write-Info "The Context7 API key is now in $($script:McpKeyFiles -join ' '): keep these files out of version control."
@@ -1648,6 +1670,10 @@ function Install-JetbrainsFor {
         'opencode' {
             Write-McpServer -Agent $Agent -Scope $Scope -Name 'jetbrains' -Entry ([PSCustomObject][ordered]@{ type = 'remote'; url = $url; enabled = $true })
         }
+        'cline' {
+            $type = if ($isSse) { 'sse' } else { 'streamableHttp' }
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'jetbrains' -Entry ([PSCustomObject][ordered]@{ type = $type; url = $url })
+        }
     }
 }
 
@@ -1704,6 +1730,10 @@ function Install-Context7For {
         'opencode' {
             Write-McpServer -Agent $Agent -Scope $Scope -Name 'context7' -Entry ([PSCustomObject][ordered]@{
                 type = 'remote'; url = $url; headers = [PSCustomObject]@{ Authorization = "Bearer $Key" }; enabled = $true })
+        }
+        'cline' {
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'context7' -Entry ([PSCustomObject][ordered]@{
+                type = 'streamableHttp'; url = $url; headers = [PSCustomObject]@{ Authorization = "Bearer $Key" } })
         }
         default {
             Write-McpServer -Agent $Agent -Scope $Scope -Name 'context7' -Entry (New-Context7StdioEntry -Key $Key)
@@ -1917,8 +1947,9 @@ function Invoke-Wizard {
         -Label { param($o) Get-ServerLabel -Server $o })
     $agentList = @('skip')
     if ($serverList[0] -ne 'skip') {
+        # All but Cline by default: its config is a user file whatever the scope.
         $agentList = @(Read-Choice -Title 'For the agents:' -Options $script:AllAgents `
-            -Label { param($o) Get-AgentLabel -Agent $o } -Default 'all')
+            -Label { param($o) Get-AgentLabel -Agent $o } -Default '1,2,3,4')
     }
     if ($agentList[0] -ne 'skip') {
         $answer = Read-Prompt -Message 'Register in: (l)ocal project config or (g)lobal user config' -Default $resolvedScope.Substring(0, 1)

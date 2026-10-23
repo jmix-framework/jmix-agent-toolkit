@@ -22,7 +22,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 # Isolate the global scope: install.sh writes global skills under $HOME.
 export HOME="${WORK}/home"
-unset CODEX_HOME XDG_CONFIG_HOME JUNIE_HOME
+unset CODEX_HOME XDG_CONFIG_HOME JUNIE_HOME CLINE_DIR CLINE_DATA_DIR CLINE_MCP_SETTINGS_PATH
 # Nothing listens on port 9: the IDE MCP server probe sees no IDE.
 export JMIX_IDE_MCP_PORT=9
 PROJECT="${WORK}/project"
@@ -982,6 +982,7 @@ if command -v jq >/dev/null 2>&1; then
     USER_CODEX="${HOME}/.codex/config.toml"
     USER_OC="${HOME}/.config/opencode/opencode.json"
     USER_JUNIE="${HOME}/.junie/mcp/mcp.json"
+    USER_CLINE="${HOME}/.cline/data/settings/cline_mcp_settings.json"
     project_untouched() {
         [ -z "$(find "$MCP_PROJ" -mindepth 1 -maxdepth 1 ! -name .git)" ]
     }
@@ -1043,8 +1044,8 @@ if command -v jq >/dev/null 2>&1; then
     cp "${WORK}/c-valid" "$USER_CODEX"
     pass "mcp-jetbrains refuses to touch an inline Codex jetbrains entry"
 
-    # 5e. IntelliJ IDEA before 2026.1 answers 404 on /stream: SSE for Claude and
-    #     OpenCode, a stdio bridge for Codex (no SSE transport there).
+    # 5e. IntelliJ IDEA before 2026.1 answers 404 on /stream: SSE for Claude,
+    #     OpenCode and Cline, a stdio bridge for Codex (no SSE transport there).
     if command -v python3 >/dev/null 2>&1; then
         python3 - "${WORK}/port" <<'PY' &
 import http.server, socketserver, sys
@@ -1068,7 +1069,7 @@ PY
         while [ ! -s "${WORK}/port" ] && [ "$waited" -lt 60 ]; do sleep 0.5; waited=$((waited + 1)); done
         [ -s "${WORK}/port" ] || fail "mcp-jetbrains(sse): the fake IDE server did not start within 30 s"
         port="$(cat "${WORK}/port")"
-        JMIX_IDE_MCP_PORT="$port" PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --scope global --agents claude,codex,opencode >/dev/null \
+        JMIX_IDE_MCP_PORT="$port" PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --scope global --agents claude,codex,opencode,cline >/dev/null \
             || fail "mcp-jetbrains(sse): non-zero exit"
         kill "$server_pid" 2>/dev/null || true
         grep -qF -- "--scope user --transport sse jetbrains http://127.0.0.1:${port}/sse" "${WORK}/claude.log" \
@@ -1077,6 +1078,9 @@ PY
             || fail "mcp-jetbrains(sse): Codex has no mcp-remote bridge"
         jq -e --arg u "http://127.0.0.1:${port}/sse" '.mcp.jetbrains.url == $u' "$USER_OC" >/dev/null \
             || fail "mcp-jetbrains(sse): OpenCode entry is not SSE"
+        jq -e --arg u "http://127.0.0.1:${port}/sse" '.mcpServers.jetbrains == {"type":"sse","url":$u}' "$USER_CLINE" >/dev/null \
+            || fail "mcp-jetbrains(sse): Cline entry is not SSE"
+        rm -rf "${HOME}/.cline"
         PATH="$BIN_PATH" bash "$INSTALL" mcp-jetbrains --scope global --agents codex,opencode >/dev/null \
             || fail "mcp-jetbrains: switching back to /stream failed"
         pass "mcp-jetbrains falls back to SSE (and a Codex bridge) on IntelliJ IDEA before 2026.1"
@@ -1408,9 +1412,69 @@ jetbrains = { command = "java", args = [] }' 'mcp_servers.jetbrains.command = "j
     rm -rf "$LOCAL_PROJ"
     pass "mcp checks --servers, skips Context7 on 'skip' and keeps options to their steps"
 
+    # 5x. Cline has only a user config: written at either scope, private,
+    #     merged in place, at the path its own variables set.
+    mkdir -p "${WORK}/cline-project"
+    cd "${WORK}/cline-project"
+    out="$(bash "$INSTALL" mcp --servers jetbrains,context7,playwright --agents cline --context7-key ctx7sk-TESTKEY 2>&1)" \
+        || fail "cline(local): non-zero exit"
+    jq -e '. == {"mcpServers": {"jetbrains": {"type":"streamableHttp","url":"http://127.0.0.1:9/stream"},
+           "context7": {"type":"streamableHttp","url":"https://mcp.context7.com/mcp","headers":{"Authorization":"Bearer ctx7sk-TESTKEY"}},
+           "playwright": {"command":"npx","args":["-y","@playwright/mcp@latest"]}}}' "$USER_CLINE" >/dev/null \
+        || fail "cline(local): user config entries wrong"
+    [ -z "$(ls -A)" ] || fail "cline(local): wrote into the project"
+    [ "$(file_mode "$USER_CLINE")" = 600 ] || fail "cline(local): the new user config is not 0600"
+    case "$out" in *"it reads the user config ${USER_CLINE}."*) ;; *) fail "cline(local): the follow-up does not name the user config" ;; esac
+    case "$out" in *TESTKEY*) fail "cline(local): the key was printed" ;; esac
+    case "$out" in *"version control"*) fail "cline(local): the user config is listed as a project key file" ;; esac
+    cp "$USER_CLINE" "${WORK}/cl1"
+    out="$(bash "$INSTALL" mcp --servers jetbrains,context7,playwright --agents CLINE --scope global --context7-key ctx7sk-TESTKEY 2>&1)" \
+        || fail "cline(global): non-zero exit"
+    cmp -s "$USER_CLINE" "${WORK}/cl1" || fail "cline(global): rewrote the file of the local scope"
+    case "$out" in *"Unchanged: ${USER_CLINE}"*) ;; *) fail "cline(global): --agents CLINE did not check the same user config" ;; esac
+    case "$out" in *"Updated: "*|*"Created: "*) fail "cline(global): re-run reported a change" ;; esac
+    case "$out" in *"Cline has no project MCP config"*) fail "cline(global): printed the project follow-up" ;; esac
+    printf '{"mcpServers": {"mine": {"command": "mine"}}, "keep": true}\n' > "$USER_CLINE"
+    chmod 644 "$USER_CLINE"
+    bash "$INSTALL" mcp-context7 --scope global --agents cline --context7-key ctx7sk-TESTKEY >/dev/null \
+        || fail "cline(global): merge non-zero exit"
+    jq -e '.keep == true and .mcpServers.mine.command == "mine"
+           and .mcpServers.context7.headers.Authorization == "Bearer ctx7sk-TESTKEY"' "$USER_CLINE" >/dev/null \
+        || fail "cline(global): other servers or keys lost"
+    [ "$(file_mode "$USER_CLINE")" = 600 ] || fail "cline(global): a 0644 file kept its mode after getting the key"
+    printf '{\n  // mine\n  "mcpServers": {}\n}\n' > "$USER_CLINE"
+    cp "$USER_CLINE" "${WORK}/cl2"
+    if bash "$INSTALL" playwright --scope global --agents cline >/dev/null 2>&1; then
+        fail "cline(global): a JSONC file should fail the step"
+    fi
+    cmp -s "$USER_CLINE" "${WORK}/cl2" || fail "cline(global): a JSONC file was modified"
+    # CLINE_MCP_SETTINGS_PATH over CLINE_DATA_DIR over CLINE_DIR: fails unless
+    # the variables $2.. make file $1 the only one written under ${CL} (the
+    # default file, still JSONC, would fail the run) and the one the follow-up
+    # names.
+    CL="${WORK}/cline-env"
+    cline_env_writes() {
+        local want="$1" out
+        shift
+        rm -rf "$CL"
+        out="$(env "$@" bash "$INSTALL" playwright --agents cline)" \
+            && [ -f "$want" ] && [ "$(find "$CL" -type f | wc -l | tr -d ' ')" = 1 ] \
+            && case "$out" in *"it reads the user config ${want}."*) ;; *) false ;; esac \
+            || fail "cline: $* did not write ${want} alone"
+    }
+    cline_env_writes "${CL}/dir/data/settings/cline_mcp_settings.json" CLINE_DIR="${CL}/dir"
+    cline_env_writes "${CL}/data/settings/cline_mcp_settings.json" CLINE_DATA_DIR="${CL}/data"
+    cline_env_writes "${CL}/file.json" CLINE_MCP_SETTINGS_PATH="${CL}/file.json"
+    cline_env_writes "${CL}/data/settings/cline_mcp_settings.json" CLINE_DIR="${CL}/dir" CLINE_DATA_DIR="${CL}/data"
+    cline_env_writes "${CL}/file.json" CLINE_DIR="${CL}/dir" CLINE_DATA_DIR="${CL}/data" CLINE_MCP_SETTINGS_PATH="${CL}/file.json"
+    cd "$MCP_PROJ"
+    rm -rf "$CL" "${HOME}/.cline" "${WORK}/cline-project"
+    pass "Cline gets its user config at either scope, private and merged, where its variables point"
+
     # 5u. Every Studio command runs: the placeholders filled in as Studio
     #     would, each against this checkout. Once with the defaults, once with
-    #     Claude Code off (the true/false inputs set to false).
+    #     Claude Code off (the true/false inputs set to false), once with Cline
+    #     (off by default) among the MCP agents.
     STUDIO_META="${SOURCE}/.studio/studio-meta-data.json"
     # Each input gets its Studio default: the default choices, or the default text.
     studio_sed="$(jq -r '.["install-flow"].steps[].inputs[]
@@ -1439,9 +1503,15 @@ STUDIO
     for f in .agents/skills .claude/skills AGENTS.md CLAUDE.md .mcp.json .codex/config.toml opencode.json .junie/mcp/mcp.json; do
         [ -e "$f" ] || fail "studio: the default commands did not create ${f}"
     done
+    [ ! -e "${HOME}/.cline" ] || fail "studio: the default commands registered Cline"
     run_studio_commands "$studio_false"
     [ -d ".agents/skills/${SKILL}" ] && [ -f AGENTS.md ] && [ ! -e .claude ] && [ ! -e CLAUDE.md ] \
         || fail "studio: with Claude Code off the commands did not keep to .agents/skills and AGENTS.md"
+    # Every agent Studio offers, Cline included, is one the installer takes.
+    run_studio_commands "s/[$]{mcpAgents}/$(jq -r '.["install-flow"].steps[].inputs[] | select(.id == "mcpAgents")
+        | [.choices[].value] | join(",")' "$STUDIO_META")/g"
+    [ -f "$USER_CLINE" ] || fail "studio: mcpAgents with cline did not write the Cline user config"
+    rm -rf "${HOME}/.cline"
     # Studio commands use the current flags.
     if jq -r '.["install-flow"].steps[].command[]' "$STUDIO_META" | grep -qi -- '-conventions'; then
         fail "studio: a command passes the removed --conventions / -Conventions"
@@ -1505,9 +1575,10 @@ PY
         grep -q '^\[mcp_servers.playwright\]' .codex/config.toml && ! grep -q context7 .codex/config.toml \
             || fail "wizard: local Codex config not as chosen"
         # Global skills with Claude Code (the default), no guidelines; global
-        # skills make global the default MCP scope.
+        # skills make global the default MCP scope; the default agents leave
+        # Cline out.
         rm -f AGENTS.md
-        out="$(HOME="$WIZ_HOME" PATH="$BIN_PATH" run_wizard $'y\ng\n\nn\n3\n3\n\n')" || fail "wizard(global): non-zero exit"
+        out="$(HOME="$WIZ_HOME" PATH="$BIN_PATH" run_wizard $'y\ng\n\nn\n3\n\n\n')" || fail "wizard(global): non-zero exit"
         case "$out" in *"Skills:      agents, claude (global)"*) ;; *) fail "wizard(global): wrong skills summary" ;; esac
         case "$out" in *"Guidelines:  skipped"*) ;; *) fail "wizard(global): wrong guidelines summary" ;; esac
         [ -e "$WIZ_HOME/.agents/skills/${SKILL}/SKILL.md" ] && [ -e "$WIZ_HOME/.claude/skills/${SKILL}/SKILL.md" ] \
@@ -1515,6 +1586,8 @@ PY
         [ ! -e AGENTS.md ] || fail "wizard(global): guidelines installed although declined"
         jq -e '.mcp.playwright' "$WIZ_HOME/.config/opencode/opencode.json" >/dev/null && [ ! -e opencode.json ] \
             || fail "wizard: the MCP scope did not default to the global skills scope"
+        case "$out" in *"MCP:         playwright for claude codex opencode junie (global)"*) ;; *) fail "wizard(global): the default agents are not all but Cline" ;; esac
+        [ ! -e "$WIZ_HOME/.cline" ] || fail "wizard: the default agents registered Cline"
         # Skills skipped: the guidelines Claude question defaults to yes.
         out="$(HOME="$WIZ_HOME" PATH="$BIN_PATH" run_wizard $'n\ny\n\n\n')" || fail "wizard(no skills): non-zero exit"
         case "$out" in *"For Claude Code too (CLAUDE.md)? [Y/n]"*) ;; *) fail "wizard(no skills): the Claude question does not default to yes" ;; esac
