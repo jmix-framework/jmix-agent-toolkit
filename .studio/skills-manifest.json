@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sha256": "14bf60b9be848985b3a24c31d804e72ea5dbc64df1b764a0d7960a975911912f",
+  "sha256": "072ac9bb6833e8c02ff3703f960175ed8d660d05e93b5cd39a2b7496fc3c80d2",
   "skills": [
     "jmix",
     "jmix-add-dialog-detail-flow",
@@ -15,6 +15,7 @@
     "jmix-create-fragment",
     "jmix-create-liquibase-changelog",
     "jmix-create-list-view",
+    "jmix-create-project",
     "jmix-create-resource-role",
     "jmix-create-service",
     "jmix-create-test",
