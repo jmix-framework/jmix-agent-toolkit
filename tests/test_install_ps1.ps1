@@ -50,7 +50,9 @@ if ($onWindows) {
 # agents' user configs move with these variables, so none may leak in either.
 $env:APPDATA      = Join-Path $homeDir 'AppData/Roaming'
 $env:LOCALAPPDATA = Join-Path $homeDir 'AppData/Local'
-foreach ($v in 'CODEX_HOME', 'XDG_CONFIG_HOME', 'JUNIE_HOME') { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
+foreach ($v in 'CODEX_HOME', 'XDG_CONFIG_HOME', 'JUNIE_HOME', 'CLINE_DIR', 'CLINE_DATA_DIR', 'CLINE_MCP_SETTINGS_PATH') {
+    Remove-Item "Env:$v" -ErrorAction SilentlyContinue
+}
 # Nothing listens on port 9: the IDE MCP server probe sees no IDE.
 $env:JMIX_IDE_MCP_PORT = '9'
 Set-Location $proj
@@ -1139,6 +1141,9 @@ $desktopDir = if ($onWindows) { Join-Path $env:APPDATA 'Claude' }
 $userCodex = Join-Path $homeDir '.codex/config.toml'
 $userOc    = Join-Path $homeDir '.config/opencode/opencode.json'
 $userJunie = Join-Path $homeDir '.junie/mcp/mcp.json'
+# Built as install.ps1 builds it, so the path it prints matches.
+$clineHome = Join-Path $homeDir '.cline'
+$userCline = [System.IO.Path]::Combine($clineHome, 'data', 'settings', 'cline_mcp_settings.json')
 # Root can read and write anything, so the permission cases need a normal user.
 $isUnixUser = -not $onWindows -and ((& id -u) -ne '0')
 
@@ -1269,7 +1274,7 @@ for ($i = 0; $i -lt 60 -and -not $port; $i++) {
 if ($port) {
     $env:JMIX_IDE_MCP_PORT = $port
     $env:HTTP_PROXY = 'http://127.0.0.1:9'
-    Check ((Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'claude,codex,opencode')) -eq 0) 'mcp-jetbrains(sse) exits 0'
+    Check ((Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'claude,codex,opencode,cline')) -eq 0) 'mcp-jetbrains(sse) exits 0'
     Remove-Item Env:HTTP_PROXY
     $env:JMIX_IDE_MCP_PORT = '9'
     $sse = "http://127.0.0.1:$port/sse"
@@ -1277,6 +1282,9 @@ if ($port) {
     Check ([System.IO.File]::ReadAllText($userCodex) -cmatch ('(?m)^args = \["-y", "mcp-remote", "' + [regex]::Escape($sse) + '", "--transport", "sse-only"\]$')) `
         'mcp-jetbrains(sse): Codex gets the mcp-remote bridge'
     Check ((Read-Json $userOc).mcp.jetbrains.url -eq $sse) 'mcp-jetbrains(sse): OpenCode entry is SSE'
+    Check ((Test-Path $userCline) -and (Test-JsonEqual (Read-Json $userCline).mcpServers "{`"jetbrains`":{`"type`":`"sse`",`"url`":`"$sse`"}}")) `
+        'mcp-jetbrains(sse): Cline entry is SSE'
+    Remove-Item -LiteralPath $clineHome -Recurse -Force -ErrorAction SilentlyContinue
     Check ((Invoke-Installer @('mcp-jetbrains', '-Scope', 'global', '-Agents', 'codex,opencode')) -eq 0) 'mcp-jetbrains: switching back to /stream exits 0'
 } else {
     Check $false 'mcp-jetbrains(sse): local 404 server did not start'
@@ -1609,6 +1617,93 @@ Check ((Invoke-Installer @('playwright', '-Agents', 'codex', '-Context7Key', 'x'
 Set-Location $mcpProj
 Remove-Item -LiteralPath $localProj -Recurse -Force
 
+# 3t. Cline has no project MCP config: its user file is written at either
+#     scope, where Cline reads it (CLINE_MCP_SETTINGS_PATH, else
+#     CLINE_DATA_DIR, else CLINE_DIR or ~/.cline, the home being USERPROFILE
+#     on Windows), and is private like any new user config.
+$clineServers = '{"mcpServers":{' +
+    '"jetbrains":{"type":"streamableHttp","url":"http://127.0.0.1:9/stream"},' +
+    '"context7":{"type":"streamableHttp","url":"https://mcp.context7.com/mcp","headers":{"Authorization":"Bearer ctx7sk-TESTKEY"}},' +
+    '"playwright":{"command":"npx","args":["-y","@playwright/mcp@latest"]}}}'
+$clineArgs = @('mcp', '-Servers', 'jetbrains,context7,playwright', '-Agents', 'cline', '-Context7Key', 'ctx7sk-TESTKEY')
+$r = Invoke-InstallerResult $clineArgs
+Check ($r.Code -eq 0) 'cline(local) exits 0'
+Check ((Test-Path $userCline) -and (Test-JsonEqual (Read-Json $userCline) $clineServers)) 'cline(local): the user file holds the three entries'
+Check (Test-ProjectUntouched) 'cline(local): nothing written into the project'
+Check ($r.Output.Contains("Cline has no project MCP config: it reads the user config $userCline.")) `
+    'cline(local): the follow-up names the user file'
+Check ($r.Output -notmatch 'TESTKEY') 'cline(local): the key is not printed'
+Check ($r.Output -notmatch 'out of version control') 'cline(local): the user file is not listed as a project file holding the key'
+if (-not $onWindows) {
+    Check ((Get-Item -LiteralPath $userCline).UnixMode -eq '-rw-------') 'cline(local): the new user file is 0600'
+}
+$clineHash = Get-Sha $userCline
+$r = Invoke-InstallerResult ($clineArgs + @('-Scope', 'global'))
+Check ($r.Code -eq 0 -and (Get-Sha $userCline) -eq $clineHash -and $r.Output -match 'Unchanged: ' -and
+       $r.Output -notmatch 'Updated: |Created: ') 'cline(global): the same user file, unchanged on a re-run'
+Check ($r.Output -notmatch 'Cline has no project MCP config') 'cline(global): no project follow-up'
+Check (Test-ProjectUntouched) 'cline(global): nothing written into the project'
+Set-TestFile $userCline '{"theme": "dark", "mcpServers": {"mine": {"type": "sse", "url": "http://mine"}}}'
+$r = Invoke-InstallerResult @('playwright', '-Scope', 'global', '-Agents', 'cline')
+$json = Read-Json $userCline
+Check ($r.Code -eq 0 -and $json.theme -eq 'dark' -and $json.mcpServers.mine.url -eq 'http://mine' -and
+       (Test-JsonEqual $json.mcpServers.playwright '{"command":"npx","args":["-y","@playwright/mcp@latest"]}')) `
+    'cline: foreign servers and keys kept'
+if ($isUnixUser) {
+    & chmod 644 $userCline
+    $code = Invoke-Installer @('mcp-context7', '-Scope', 'global', '-Agents', 'cline', '-Context7Key', 'ctx7sk-TESTKEY')
+    Check ($code -eq 0 -and (Get-Item -LiteralPath $userCline).UnixMode -eq '-rw-------') 'cline: a 0644 file is made private with the key'
+}
+$r = Invoke-InstallerResult @('playwright', '-Agents', 'CLINE')
+Check ($r.Code -eq 0 -and $r.Output -match '\[Playwright MCP\] Cline') 'cline: -Agents is case-insensitive'
+Set-TestFile $userCline "{`n  // mine`n  `"mcpServers`": {}`n}`n"
+$clineHash = Get-Sha $userCline
+Check ((Invoke-Installer @('playwright', '-Agents', 'cline')) -ne 0) 'cline: a JSONC settings file fails the step'
+Check ((Get-Sha $userCline) -eq $clineHash) 'cline: JSONC settings file untouched'
+Remove-Item -LiteralPath $clineHome -Recurse -Force
+
+# Each variable is set on top of the ones before it, so it must win over them.
+$clineEnv = @(
+    @{ Var = 'CLINE_DIR'; Value = (Join-Path $work 'cline-dir')
+       File = [System.IO.Path]::Combine((Join-Path (Join-Path $work 'cline-dir') 'data'), 'settings', 'cline_mcp_settings.json') },
+    @{ Var = 'CLINE_DATA_DIR'; Value = (Join-Path $work 'cline-data')
+       File = [System.IO.Path]::Combine((Join-Path $work 'cline-data'), 'settings', 'cline_mcp_settings.json') },
+    @{ Var = 'CLINE_MCP_SETTINGS_PATH'; Value = (Join-Path $work 'cline-custom.json'); File = (Join-Path $work 'cline-custom.json') }
+)
+try {
+    foreach ($c in $clineEnv) {
+        Set-Item -Path "Env:$($c.Var)" -Value $c.Value
+        $r = Invoke-InstallerResult @('playwright', '-Agents', 'cline')
+        $others = @($userCline) + @($clineEnv | Where-Object { $_.Var -ne $c.Var } | ForEach-Object { $_.File })
+        Check ($r.Code -eq 0 -and (Test-Path -LiteralPath $c.File) -and -not @($others | Where-Object { Test-Path -LiteralPath $_ })) `
+            "cline: $($c.Var) sets the settings file"
+        Check ($r.Output.Contains("it reads the user config $($c.File).")) "cline: the follow-up names the $($c.Var) file"
+        Remove-Item -LiteralPath $c.File -Force
+    }
+} finally {
+    foreach ($c in $clineEnv) { Remove-Item -Path "Env:$($c.Var)" -ErrorAction SilentlyContinue }
+}
+# The home is what Node's os.homedir() gives Cline: HOME off Windows, the
+# user profile on Windows, whatever HOME says there.
+$altHome = Join-Path $work 'alt-home'
+$altCline = [System.IO.Path]::Combine((Join-Path $altHome '.cline'), 'data', 'settings', 'cline_mcp_settings.json')
+New-Item -ItemType Directory -Force -Path $altHome | Out-Null
+$savedHome = $env:HOME
+try {
+    $env:HOME = $altHome
+    $code = Invoke-Installer @('playwright', '-Agents', 'cline')
+} finally {
+    $env:HOME = $savedHome
+}
+if ($onWindows) {
+    Check ($code -eq 0 -and (Test-Path -LiteralPath $userCline) -and -not (Test-Path -LiteralPath $altCline)) `
+        'cline: the default path is under USERPROFILE, not HOME'
+} else {
+    Check ($code -eq 0 -and (Test-Path -LiteralPath $altCline) -and -not (Test-Path -LiteralPath $clineHome)) `
+        'cline: the default path is under HOME'
+}
+Remove-Item -LiteralPath $altHome, $clineHome -Recurse -Force -ErrorAction SilentlyContinue
+
 # 3u. Every Studio command runs as Studio runs it on Windows: the placeholders
 #     filled in as Studio would, the installer run as a script block made from
 #     its text, against this checkout. Each input gets its Studio default (the
@@ -1621,6 +1716,13 @@ foreach ($inp in $studioMeta.'install-flow'.steps.inputs) {
     $studioDefaults[$inp.id] = if ($inp.type -eq 'options') {
         @($inp.choices | Where-Object { $_.default } | ForEach-Object { $_.value }) -join ','
     } else { $inp.default }
+}
+# The installer arguments of a Studio command, its placeholders filled from $Values.
+function Get-StudioArgText {
+    param([string]$Command, [hashtable]$Values)
+    $argText = $Command.Substring($Command.IndexOf('.Content)) ') + '.Content)) '.Length)
+    foreach ($k in $Values.Keys) { $argText = $argText.Replace('${' + $k + '}', $Values[$k]) }
+    return $argText
 }
 foreach ($step in $studioMeta.'install-flow'.steps) {
     Check (($step.command.windows -notmatch '-Conventions') -and ($step.command.macos -notmatch '--conventions') -and
@@ -1638,8 +1740,7 @@ foreach ($claudeValue in 'true', 'false') {
     }
     foreach ($step in $studioMeta.'install-flow'.steps) {
         $cmd = $step.command.windows
-        $argText = $cmd.Substring($cmd.IndexOf('.Content)) ') + '.Content)) '.Length)
-        foreach ($k in $studioValues.Keys) { $argText = $argText.Replace('${' + $k + '}', $studioValues[$k]) }
+        $argText = Get-StudioArgText -Command $cmd -Values $studioValues
         Check (-not $argText.Contains('${')) "studio: placeholders filled for the $($step.id) step ($claudeValue)"
         if ($cmd.Contains('-Claude:')) {
             Check ($argText.Contains("-Claude:`$$claudeValue")) "studio: the $($step.id) step passes -Claude:`$$claudeValue"
@@ -1653,9 +1754,24 @@ foreach ($claudeValue in 'true', 'false') {
         Check ((Test-Path -LiteralPath (Join-Path $studioProj $f)) -eq ($claudeValue -eq 'true')) `
             "studio: $f $(if ($claudeValue -eq 'true') { 'created' } else { 'not created' }) for Claude Code $claudeValue"
     }
+    Check (-not (Test-Path -LiteralPath $clineHome)) "studio: the default commands leave Cline alone ($claudeValue)"
     Set-Location $mcpProj
     Remove-Item -LiteralPath $studioProj -Recurse -Force
 }
+# Cline, off by default, gets its user file when chosen.
+$studioProj = Join-Path $work 'studio-project-cline'
+New-Item -ItemType Directory -Force -Path (Join-Path $studioProj '.git') | Out-Null
+Set-Location $studioProj
+$studioValues = $studioDefaults.Clone()
+# Every agent Studio offers, Cline included, is one the installer takes.
+$studioValues['mcpAgents'] = @(($studioMeta.'install-flow'.steps.inputs | Where-Object { $_.id -eq 'mcpAgents' }).choices.value) -join ','
+$argText = Get-StudioArgText -Command ($studioMeta.'install-flow'.steps | Where-Object { $_.id -eq 'mcp' }).command.windows -Values $studioValues
+Check ((Invoke-InstallerScriptBlock "$argText -Source '$Source'") -eq 0) 'studio: the mcp command runs with Cline chosen'
+Check ((Test-Path $userCline) -and (Test-JsonEqual (Read-Json $userCline) ('{"mcpServers":{' +
+       '"jetbrains":{"type":"streamableHttp","url":"http://127.0.0.1:9/stream"},' +
+       '"playwright":{"command":"npx","args":["-y","@playwright/mcp@latest"]}}}'))) 'studio: Cline chosen gets its user file'
+Set-Location $mcpProj
+Remove-Item -LiteralPath $studioProj, $clineHome -Recurse -Force -ErrorAction SilentlyContinue
 $keyRegex = ($studioMeta.'install-flow'.steps.inputs | Where-Object { $_.id -eq 'context7Key' }).regex
 Check ((@('skip', 'ctx7sk-abcdefgh') | Where-Object { $_ -cmatch $keyRegex }).Count -eq 2 -and
        -not (@('', 'skipx', 'short', 'bad key', 'a"b-cdefgh') | Where-Object { $_ -cmatch $keyRegex })) `
@@ -1713,6 +1829,10 @@ $out = Invoke-WizardWith "y`ng`nn`nn`n3`n3`n`n"
 Check ($LASTEXITCODE -eq 0 -and (Test-Path $userOc) -and (Get-Content -Raw $userOc | ConvertFrom-Json).mcp.playwright -and
        -not (Test-Path 'opencode.json')) 'wizard: the MCP scope defaults to the global skills scope'
 if ($null -eq $ocBefore) { Remove-Item -LiteralPath $userOc -Force } else { [System.IO.File]::WriteAllBytes($userOc, $ocBefore) }
+# The default agents are all but Cline, whose config is a user file at either scope.
+$out = Invoke-WizardWith "n`nn`n3`n`nl`n"
+Check ($LASTEXITCODE -eq 0 -and $out -match 'MCP:\s+playwright for claude, codex, opencode, junie \(local\)' -and
+       -not (Test-Path -LiteralPath $clineHome)) 'wizard: the default agents leave Cline out'
 Set-Location $mcpProj
 Remove-Item -LiteralPath $wizProj -Recurse -Force
 

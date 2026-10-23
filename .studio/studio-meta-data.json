@@ -5,7 +5,7 @@
       {
         "id": "skills",
         "title": "Skills",
-        "message": "🛠️ Install Jmix <code>skills</code> in the project or the user home. <br>📁 Agents find them in <code>.agents/skills</code>: Codex, OpenCode, Junie, Cursor, GitHub Copilot, Gemini CLI and others. For Claude Code, each skill is also linked into <code>.claude/skills</code>. <br>⏭️ Click <i>Skip</i> to opt out.",
+        "message": "🛠️ Install Jmix <code>skills</code> in the project or the user home. <br>📁 Agents find them in <code>.agents/skills</code>: Codex, OpenCode, Junie, Cline, Cursor, GitHub Copilot, Gemini CLI and others. For Claude Code, each skill is also linked into <code>.claude/skills</code>. <br>⏭️ Click <i>Skip</i> to opt out.",
         "inputs": [
           {
             "id": "skillsScope",
@@ -77,7 +77,7 @@
       {
         "id": "mcp",
         "title": "MCP servers",
-        "message": "🔌 Connect the agents to MCP servers:<br>🧩 <b>JetBrains</b>: enable the MCP server in IntelliJ IDEA (<i>Settings | Tools | MCP Server</i>).<br>📚 <b>Context7</b>: get a key on <a href=\"https://context7.com\" target=\"_blank\">context7.com</a>. With <i>Local</i>, it is saved in the project files: keep them out of Git.<br>🎭 <b>Playwright</b>: needs Node.js 20+.<br>⏭️ Click <i>Skip</i> to opt out.",
+        "message": "🔌 Connect the agents to MCP servers:<br>🧩 <b>JetBrains</b>: enable the MCP server in IntelliJ IDEA (<i>Settings | Tools | MCP Server</i>).<br>📚 <b>Context7</b>: get a key on <a href=\"https://context7.com\" target=\"_blank\">context7.com</a>. With <i>Local</i>, it is saved in the project files: keep them out of Git.<br>🎭 <b>Playwright</b>: needs Node.js 20+.<br>🤖 <b>Cline</b> has no project config: its user config is written with either scope.<br>⏭️ Click <i>Skip</i> to opt out.",
         "inputs": [
           {
             "id": "mcpScope",
@@ -143,6 +143,11 @@
                 "value": "junie",
                 "label": "Junie",
                 "default": true
+              },
+              {
+                "value": "cline",
+                "label": "Cline",
+                "default": false
               }
             ]
           },

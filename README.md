@@ -67,9 +67,9 @@ PowerShell takes the same subcommands and flags (e.g. `install.ps1 skills -Scope
 
 Quote lists: unquoted, `claude,codex` is an array in PowerShell.
 
-`skills` always installs the skills into `.agents/skills`, and `agents-md` always merges the guidelines into `AGENTS.md`: Codex, OpenCode, Junie, Cursor, GitHub Copilot, Gemini CLI and others read them there. Claude Code is included by default: each skill is linked into `.claude/skills`, and a new `CLAUDE.md` contains only `@AGENTS.md`, so the shared instructions have one copy. Existing `CLAUDE.md` files keep the current merge and backup rules; a file that already imports `AGENTS.md` is left untouched. Use `--claude=false` (`-Claude:$false`) to skip Claude Code.
+`skills` always installs the skills into `.agents/skills`, and `agents-md` always merges the guidelines into `AGENTS.md`: Codex, OpenCode, Junie, Cline, Cursor, GitHub Copilot, Gemini CLI and others read them there. Claude Code is included by default: each skill is linked into `.claude/skills`, and a new `CLAUDE.md` contains only `@AGENTS.md`, so the shared instructions have one copy. Existing `CLAUDE.md` files keep the current merge and backup rules; a file that already imports `AGENTS.md` is left untouched. Use `--claude=false` (`-Claude:$false`) to skip Claude Code.
 
-The MCP subcommands take **agents**, each with its own config: `claude`, `codex`, `opencode`, `junie`. `claude` also sets up [Claude Desktop](#claude-desktop) when it is installed.
+The MCP subcommands take **agents**, each with its own config: `claude`, `codex`, `opencode`, `junie`, `cline`. `claude` also sets up [Claude Desktop](#claude-desktop) when it is installed. [Cline](#cline) has only a user config, which it gets whatever the `--scope`.
 
 ### Flags
 
@@ -78,15 +78,15 @@ The MCP subcommands take **agents**, each with its own config: `claude`, `codex`
 | `--content-ref REF`       | `-ContentRef REF`      | `v2`    | Branch/ref whose `content/` is downloaded; it also names the global skills store. Studio passes its resolved toolkit branch.                                                                                                                                                                                         |
 | `--source DIR`            | `-Source DIR`          | -       | Install from a local checkout of this repository instead of downloading (CI, offline use).                                                                                                                                                                                                                           |
 | `--claude[=true\|false]`  | `-Claude`              | on      | `skills`, `agents-md`: set up Claude Code by default. Use `--claude=false` / `-Claude:$false` to skip `.claude/skills` links and `CLAUDE.md`. `.agents/skills` and `AGENTS.md` are always installed. |
-| `--agents CSV`            | `-Agents CSV`          | -       | MCP subcommands: `claude`, `codex`, `opencode`, `junie`. Required.                                                                                                                                                                                                                                                   |
+| `--agents CSV`            | `-Agents CSV`          | -       | MCP subcommands: `claude`, `codex`, `opencode`, `junie`, `cline`. Required.                                                                                                                                                                                                                                          |
 | `--servers CSV`           | `-Servers CSV`         | -       | `mcp`: `jetbrains`, `context7`, `playwright`. Required.                                                                                                                                                                                                                                                              |
 | `--scope global\|local`   | `-Scope global\|local` | global  | `skills`: install into the user home or the current project, see **Skills store** below.                                                                                                                                                                                                                             |
-| `--scope local\|global`   | `-Scope local\|global` | local   | MCP subcommands: write the project files in the current directory or each agent's user config. Claude Desktop has only a user config.                                                                                                                                                                                |
+| `--scope local\|global`   | `-Scope local\|global` | local   | MCP subcommands: write the project files in the current directory or each agent's user config. Claude Desktop and Cline have only a user config.                                                                                                                                                                     |
 | `--context7-key K`        | `-Context7Key K`       | prompt  | `mcp`, `mcp-context7`: Context7 API key (letters, digits, `.`, `_`, `-`); `skip` leaves Context7 out. Never printed. At `local` scope it goes into the project files: keep them out of version control.                                                                                                              |
 | `--backup-existing-files` | `-BackupExistingFiles` | off     | Rename overwritten files/dirs to `<name>.bak` (`.bak1`, `.bak2`, ... when taken) instead of deleting them. Not for guidelines files: they are merged, and backed up (with or without this flag) only when the toolkit rewrites content it does not own: an older toolkit's file, or your own file getting the block. |
 | `--verbose`, `--debug`    | `-Verbose`             | off     | Print diagnostics (OS, PATH, resolved paths, tool versions).                                                                                                                                                                                                                                                         |
 
-**Environment:** `JMIX_IDE_MCP_PORT` sets the port of the IntelliJ IDEA MCP server (default `64342`), e.g. `curl ... | JMIX_IDE_MCP_PORT=64343 bash -s -- mcp-jetbrains --agents claude`.
+**Environment:** `JMIX_IDE_MCP_PORT` sets the port of the IntelliJ IDEA MCP server (default `64342`), e.g. `curl ... | JMIX_IDE_MCP_PORT=64343 bash -s -- mcp-jetbrains --agents claude`. `CLINE_MCP_SETTINGS_PATH`, `CLINE_DATA_DIR` and `CLINE_DIR` move Cline's MCP config, as they do for Cline itself.
 
 **Skills store:** the skills are copied into a store, and each skill folder is linked into `.agents/skills` (unless that dir is the store) and, unless `--claude=false`, into `.claude/skills`, next to any other skills there.
 - **Global:** store at `~/.agents/.jmix/skills/<ref>/` (the `--content-ref`, e.g. `v2`), linked into `~/.agents/skills` and, unless `--claude=false`, into `~/.claude/skills`.
@@ -108,6 +108,7 @@ The guidelines live in the `jmix` skill; the project's agent guidelines file get
 - [Codex](https://developers.openai.com/codex/cli): `AGENTS.md` in the project root. If an `AGENTS.override.md` sits next to it, Codex reads that file instead; copy the block into it.
 - [OpenCode](https://opencode.ai/docs): `AGENTS.md` in the project root.
 - [Junie](https://www.jetbrains.com/junie): `AGENTS.md` in the project root. If your project has `.junie/AGENTS.md`, Junie reads only that file; add the block there (the installer does not).
+- [Cline](https://docs.cline.bot): `AGENTS.md` in the project root (it does not read `CLAUDE.md`).
 
 A full `AGENTS.md` or `CLAUDE.md` from an earlier toolkit version is replaced, not extended: delete its toolkit content and paste in the block. The installer does this itself and keeps the old file as `<name>.bak`.
 
@@ -115,10 +116,10 @@ A full `AGENTS.md` or `CLAUDE.md` from an earlier toolkit version is replaced, n
 
 `skills/` holds the skills for Jmix features (entities, UI views, data access, etc.). Copy or symlink **each** skill folder so it sits directly inside the agent's skills folder in the project or your home directory (e.g. `~/.claude/skills/jmix-create-entity/`): agents do not scan nested subfolders, so do not link the whole `skills/` directory as one entry. Leave other (non-Jmix) skills in that folder alone.
 
-| Agent                  | Project Skills Folder Path | Global Skills Folder Path |
-|:-----------------------|:---------------------------|:--------------------------|
-| Claude CLI             | `.claude/skills/`          | `~/.claude/skills/`       |
-| Codex, OpenCode, Junie | `.agents/skills/`          | `~/.agents/skills/`       |
+| Agent                         | Project Skills Folder Path | Global Skills Folder Path |
+|:------------------------------|:---------------------------|:--------------------------|
+| Claude CLI                    | `.claude/skills/`          | `~/.claude/skills/`       |
+| Codex, OpenCode, Junie, Cline | `.agents/skills/`          | `~/.agents/skills/`       |
 
 #### Example
 
@@ -141,6 +142,7 @@ To copy instead (the skills then survive deleting the clone), replace the `ln -s
 | Codex      | `AGENTS.md`            | `~/.codex/`           |
 | OpenCode   | `AGENTS.md`            | `~/.config/opencode/` |
 | Junie      | `AGENTS.md`            | `~/.junie/`           |
+| Cline      | `AGENTS.md`            | `~/.cline/`           |
 
 ### 3. MCP Servers
 
@@ -154,13 +156,14 @@ The installer registers them and the [Playwright](#4-playwright-tests) server in
 
 Codex merges the user config with the `.codex/config.toml` of the current directory and its parents up to the git root (only the current directory outside a repository). The installer writes one of these files and only reads the others; the step fails and names the file when another one defines the same server with the other transport (`url` vs `command`, which Codex cannot merge) or through inline tables or dotted keys. Other projects are not checked: if one defines the server with the other transport in its `.codex/config.toml`, remove that table. In the file it writes, the installer edits only explicit `[mcp_servers.<name>]` tables; a file with triple-quoted strings, or with the server defined through inline tables or dotted keys, is left untouched and needs manual configuration.
 
-| Agent                                          | Project file          | User file                                                           | Servers key            |
-|:-----------------------------------------------|:----------------------|:--------------------------------------------------------------------|:-----------------------|
-| Claude CLI                                     | `.mcp.json`           | `~/.claude.json`, through `claude mcp add --scope user`             | `mcpServers`           |
-| Codex                                          | `.codex/config.toml`  | `~/.codex/config.toml` (`$CODEX_HOME`)                              | `[mcp_servers.<name>]` |
-| OpenCode                                       | `opencode.json`       | `~/.config/opencode/opencode.json` (`$XDG_CONFIG_HOME`)             | `mcp`                  |
-| Junie                                          | `.junie/mcp/mcp.json` | `~/.junie/mcp/mcp.json` (`$JUNIE_HOME` for the Junie CLI)           | `mcpServers`           |
-| Claude Desktop (with `claude`, when installed) | -                     | `claude_desktop_config.json`, see [Claude Desktop](#claude-desktop) | `mcpServers`           |
+| Agent                                          | Project file          | User file                                                             | Servers key            |
+|:-----------------------------------------------|:----------------------|:----------------------------------------------------------------------|:-----------------------|
+| Claude CLI                                     | `.mcp.json`           | `~/.claude.json`, through `claude mcp add --scope user`               | `mcpServers`           |
+| Codex                                          | `.codex/config.toml`  | `~/.codex/config.toml` (`$CODEX_HOME`)                                | `[mcp_servers.<name>]` |
+| OpenCode                                       | `opencode.json`       | `~/.config/opencode/opencode.json` (`$XDG_CONFIG_HOME`)               | `mcp`                  |
+| Junie                                          | `.junie/mcp/mcp.json` | `~/.junie/mcp/mcp.json` (`$JUNIE_HOME` for the Junie CLI)             | `mcpServers`           |
+| Cline                                          | -                     | `~/.cline/data/settings/cline_mcp_settings.json`, see [Cline](#cline) | `mcpServers`           |
+| Claude Desktop (with `claude`, when installed) | -                     | `claude_desktop_config.json`, see [Claude Desktop](#claude-desktop)   | `mcpServers`           |
 
 To run the JetBrains MCP server in IntelliJ IDEA, go to **Settings → Tools → MCP Server** and select **Enable MCP Server ✓**, then keep your project open in the IDE. The server listens on `127.0.0.1`, port `64342` by default. The endpoint depends on the IDE version:
 
@@ -256,6 +259,30 @@ For the project, use `--scope project` instead of `--scope user`: it writes `.mc
     }
     ```
 
+#### Cline
+
+The Cline VS Code extension, JetBrains plugin and CLI share one user-level file, `~/.cline/data/settings/cline_mcp_settings.json` (`%USERPROFILE%\.cline\data\settings\` on Windows). `CLINE_MCP_SETTINGS_PATH` (the file), `CLINE_DATA_DIR` (instead of `~/.cline/data`) or `CLINE_DIR` (instead of `~/.cline`) move it. Cline has no project MCP config, so `cline` in an MCP step writes this file whatever the `--scope`. The extension and the plugin pick up a change on their own; the CLI reads the file when a session starts.
+
+Cline checks the whole file: with one entry it does not accept, such as Claude Code's `"type": "http"`, it loads none of the servers. Spell `type` as `streamableHttp`, `sse` or `stdio`; a `url` entry without `type` is taken as SSE.
+
+```json
+{
+  "mcpServers": {
+    "jetbrains": {
+      "type": "streamableHttp",
+      "url": "http://127.0.0.1:64342/stream"
+    },
+    "context7": {
+      "type": "streamableHttp",
+      "url": "https://mcp.context7.com/mcp",
+      "headers": { "Authorization": "Bearer YOUR_API_KEY" }
+    }
+  }
+}
+```
+
+On IntelliJ IDEA 2025.2/2025.3 the JetBrains entry is `{ "type": "sse", "url": "http://127.0.0.1:64342/sse" }`. If the Cline JetBrains plugin already lists the IDE's MCP server on its own, delete the `jetbrains` entry so its tools are not offered twice. VS Code windows that still run Cline's legacy build read `<VS Code user dir>/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` instead; copy the entries there if Cline in VS Code does not show them.
+
 #### Claude Desktop
 
 Claude Desktop reads MCP servers from a user-level `claude_desktop_config.json`:
@@ -309,7 +336,7 @@ Add the server to the files listed in [MCP Servers](#3-mcp-servers):
     }
     ```
 
-- Junie and Claude Desktop:
+- Junie, Cline and Claude Desktop:
     ```json
     {
       "mcpServers": {
