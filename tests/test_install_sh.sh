@@ -868,7 +868,7 @@ pass "skills(local) backs up the old store's skills, never its links"
 # ---------------------------------------------------------------------------
 # --claude=false links into ~/.agents/skills alone; the default includes Claude.
 bash "$INSTALL" skills --claude=false --scope global --source "$SOURCE" >/dev/null
-[ -d "${HOME}/.agents/.jmix/skills/v3" ]                  || fail "skills(global): v3 store missing"
+[ -d "${HOME}/.agents/.jmix/skills/v1" ]                  || fail "skills(global): v1 store missing"
 [ -L "${HOME}/.agents/skills/${SKILL}" ] && [ -e "${HOME}/.agents/skills/${SKILL}/SKILL.md" ] \
     || fail "skills(global): ~/.agents/skills link does not resolve"
 [ ! -e "${HOME}/.claude/skills/${SKILL}" ] || fail "skills(global): linked into ~/.claude/skills with --claude=false"
@@ -905,7 +905,7 @@ pass "skills(global) keeps the links when ~/.agents/skills is a symlink to ~/.ju
 # ~/.agents/skills, which Junie reads, is always linked.
 for claude in --claude --claude=false; do
     mkdir -p "${HOME}/.junie/skills/my-skill"
-    ln -s "../../.agents/.jmix/skills/v3/${SKILL}" "${HOME}/.junie/skills/${SKILL}"
+    ln -s "../../.agents/.jmix/skills/v1/${SKILL}" "${HOME}/.junie/skills/${SKILL}"
     bash "$INSTALL" skills "$claude" --scope global --source "$SOURCE" >/dev/null
     [ ! -L "${HOME}/.junie/skills/${SKILL}" ] || fail "skills(global, ${claude}): old Junie links kept"
     [ -d "${HOME}/.junie/skills/my-skill" ] || fail "skills(global, ${claude}): removed a foreign skill from ~/.junie/skills"
@@ -917,12 +917,12 @@ pass "skills(global) removes the old ~/.junie/skills links"
 # a store skill moves to <skill>.bak (here a link to the user's own fork,
 # which stays as it is); a link to such a backup that an earlier version made
 # in an agent dir goes, and none is made.
-GSTORE="${HOME}/.agents/.jmix/skills/v3"
+GSTORE="${HOME}/.agents/.jmix/skills/v1"
 rm -rf "${WORK}/fork" "${GSTORE:?}/${SKILL}"
 mkdir -p "${WORK}/fork"
 printf 'fork\n' > "${WORK}/fork/SKILL.md"
 ln -s "${WORK}/fork" "${GSTORE}/${SKILL}"
-ln -s "../../.agents/.jmix/skills/v3/${SKILL}.bak" "${HOME}/.claude/skills/${SKILL}.bak"
+ln -s "../../.agents/.jmix/skills/v1/${SKILL}.bak" "${HOME}/.claude/skills/${SKILL}.bak"
 bash "$INSTALL" skills --claude --scope global --backup-existing-files --source "$SOURCE" >/dev/null \
     || fail "skills(global): --backup-existing-files run failed"
 [ -f "${GSTORE}/jmix.bak/SKILL.md" ] && [ ! -L "${GSTORE}/jmix.bak" ] \
@@ -952,7 +952,7 @@ bash "$INSTALL" skills --content-ref no-agents-md-test --claude \
 pass "skills(global) honours --content-ref"
 
 # Every Studio command must pass the same resolved branch to the script it
-# downloads; otherwise a feature-branch script silently fetches v3 content.
+# downloads; otherwise a feature-branch script silently fetches v1 content.
 [ "$(grep -o -- '--content-ref' "${SOURCE}/.studio/studio-meta-data.json" | wc -l | tr -d ' ')" -eq 6 ] \
     || fail "studio metadata: a macOS/Linux command omits --content-ref"
 [ "$(grep -o -- '-ContentRef' "${SOURCE}/.studio/studio-meta-data.json" | wc -l | tr -d ' ')" -eq 3 ] \
@@ -1490,7 +1490,7 @@ jetbrains = { command = "java", args = [] }' 'mcp_servers.jetbrains.command = "j
         mkdir -p "$STUDIO_PROJ/.git"
         cd "$STUDIO_PROJ"
         while IFS= read -r cmd; do
-            args="$(printf '%s' "${cmd#*bash -s -- }" | sed -e 's/\${guidelinesBranch}/v3/g' -e "$extra_sed" -e "$studio_sed")"
+            args="$(printf '%s' "${cmd#*bash -s -- }" | sed -e 's/\${guidelinesBranch}/v1/g' -e "$extra_sed" -e "$studio_sed")"
             case "$args" in *'${'*) fail "studio: unknown placeholder in: ${args}" ;; esac
             eval "set -- $args"
             PATH="$BIN_PATH" bash "$INSTALL" "$@" --source "$SOURCE" >/dev/null || fail "studio: command failed: ${args}"

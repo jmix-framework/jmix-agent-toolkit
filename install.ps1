@@ -46,7 +46,7 @@
 
 .PARAMETER ContentRef
     Repository branch/ref to download and use. Defaults to this release branch
-    (v3). Studio passes its resolved toolkit branch here.
+    (v1). Studio passes its resolved toolkit branch here.
 
 .PARAMETER Claude
     skills / agents-md: set up Claude Code (on by default). Use -Claude:$false
@@ -112,7 +112,7 @@ param(
     [string]$Servers = '',
     [string]$Scope = '',
     [string]$Context7Key = '',
-    [string]$ContentRef = 'v3',
+    [string]$ContentRef = 'v1',
     [switch]$BackupExistingFiles
 )
 

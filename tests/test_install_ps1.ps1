@@ -994,7 +994,7 @@ function Test-GlobalLink {
 }
 Check ((Invoke-Installer @('skills', '-Claude:$false', '-Scope', 'global', '-Source', $Source)) -eq 0) `
     'skills(global) exits 0'
-Check (Test-Path (Join-Path $homeDir '.agents/.jmix/skills/v3')) 'skills(global): v3 store created'
+Check (Test-Path (Join-Path $homeDir '.agents/.jmix/skills/v1')) 'skills(global): v1 store created'
 Check ((Test-GlobalLink '.agents/skills') -and -not (Test-Path (Join-Path $homeDir ".claude/skills/$skill"))) `
     'skills(global): -Claude:$false links into ~/.agents/skills alone'
 Check ((Invoke-Installer @('skills', '-Scope', 'global', '-Source', $Source)) -eq 0 -and
@@ -1006,7 +1006,7 @@ if ($linkType) {
     $junieLink = Join-Path $homeDir ".junie/skills/$skill"
     foreach ($withClaude in $false, $true) {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $junieLink) | Out-Null
-        New-Item -ItemType $linkType -Path $junieLink -Target (Join-Path $homeDir ".agents/.jmix/skills/v3/$skill") | Out-Null
+        New-Item -ItemType $linkType -Path $junieLink -Target (Join-Path $homeDir ".agents/.jmix/skills/v1/$skill") | Out-Null
         $null = Invoke-Installer @('skills', "-Claude:`$$withClaude", '-Scope', 'global', '-Source', $Source)
         $junieItem = Get-Item -LiteralPath $junieLink -Force -ErrorAction SilentlyContinue
         Check ($null -eq $junieItem) "skills(global): old Junie links removed (-Claude: $withClaude)"
@@ -1018,22 +1018,22 @@ if ($linkType) {
 # Store backups (-BackupExistingFiles) are not skills: they are not linked,
 # and a link to one that an earlier version made is removed.
 if ($linkType) {
-    $globalBak = Join-Path $homeDir ".agents/.jmix/skills/v3/$skill.bak"
+    $globalBak = Join-Path $homeDir ".agents/.jmix/skills/v1/$skill.bak"
     New-Item -ItemType Directory -Force -Path $globalBak | Out-Null
     New-Item -ItemType $linkType -Path (Join-Path $homeDir ".claude/skills/$skill.bak") -Target $globalBak | Out-Null
 }
 $null = Invoke-Installer @('skills', '-Claude', '-Scope', 'global', '-BackupExistingFiles', '-Source', $Source)
-Check (@(Get-ChildItem -LiteralPath (Join-Path $homeDir '.agents/.jmix/skills/v3') -Directory -Filter "$skill.bak*" |
+Check (@(Get-ChildItem -LiteralPath (Join-Path $homeDir '.agents/.jmix/skills/v1') -Directory -Filter "$skill.bak*" |
         Where-Object { Test-Path (Join-Path $_.FullName 'SKILL.md') }).Count -gt 0) `
     'skills(global): -BackupExistingFiles made a store backup beside the skill'
 Check (@(Get-ChildItem -LiteralPath (Join-Path $homeDir '.claude/skills'), (Join-Path $homeDir '.agents/skills') -Force -Filter '*.bak*').Count -eq 0) `
     'skills(global): store backups not linked as skills'
-Get-ChildItem -LiteralPath (Join-Path $homeDir '.agents/.jmix/skills/v3') -Force -Filter '*.bak*' | Remove-Item -Recurse -Force
+Get-ChildItem -LiteralPath (Join-Path $homeDir '.agents/.jmix/skills/v1') -Force -Filter '*.bak*' | Remove-Item -Recurse -Force
 
 # At global scope a store skill that is a link (here to the user's own fork) is
 # backed up beside itself, as before, and the fork stays as it is.
 if ($linkType) {
-    $gstore = Join-Path $homeDir '.agents/.jmix/skills/v3'
+    $gstore = Join-Path $homeDir '.agents/.jmix/skills/v1'
     $fork = Join-Path $work 'fork'
     New-Item -ItemType Directory -Force -Path $fork | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $fork 'SKILL.md'), "fork`n")
@@ -1711,7 +1711,7 @@ Remove-Item -LiteralPath $altHome, $clineHome -Recurse -Force -ErrorAction Silen
 #     more with "false". Only ${id} is replaced, so "-Claude:$${skillsClaude}"
 #     becomes "-Claude:$true".
 $studioMeta = [System.IO.File]::ReadAllText((Join-Path $Source '.studio/studio-meta-data.json')) | ConvertFrom-Json
-$studioDefaults = @{ guidelinesBranch = 'v3' }
+$studioDefaults = @{ guidelinesBranch = 'v1' }
 foreach ($inp in $studioMeta.'install-flow'.steps.inputs) {
     $studioDefaults[$inp.id] = if ($inp.type -eq 'options') {
         @($inp.choices | Where-Object { $_.default } | ForEach-Object { $_.value }) -join ','

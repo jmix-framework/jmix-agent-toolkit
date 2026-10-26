@@ -27,7 +27,7 @@ TARBALL_READY=0
 
 # Branch identity: this script lives on the CONTENT_REF branch and installs that
 # branch's content/. Set per branch when cutting a new version (see MAINTAINING.md).
-CONTENT_REF="v3"
+CONTENT_REF="v1"
 SOURCE_DIR=""
 BACKUP_EXISTING=0
 # Where --backup-existing-files moves replaced skill folders; empty means beside
@@ -271,7 +271,7 @@ Usage:
 
 Common options:
   --content-ref REF          Repository branch/ref to download and use. Defaults
-                             to this release branch (v3). Studio passes its
+                             to this release branch (v1). Studio passes its
                              resolved toolkit branch here.
   --source DIR               Install from a local checkout of this repository
                              instead of downloading. Skips the network. Mainly
