@@ -88,11 +88,9 @@ The MCP subcommands take **agents**, each with its own config: `claude`, `codex`
 
 **Environment:** `JMIX_IDE_MCP_PORT` sets the port of the IntelliJ IDEA MCP server (default `64342`), e.g. `curl ... | JMIX_IDE_MCP_PORT=64343 bash -s -- mcp-jetbrains --agents claude`. `CLINE_MCP_SETTINGS_PATH`, `CLINE_DATA_DIR` and `CLINE_DIR` move Cline's MCP config, as they do for Cline itself.
 
-**Skills store:** the skills are copied into a store, and each skill folder is linked into `.agents/skills` (unless that dir is the store) and, unless `--claude=false`, into `.claude/skills`, next to any other skills there.
+**Skills store:** the skills are copied into a store, and each skill folder is linked into `.agents/skills` and, unless `--claude=false`, into `.claude/skills`, next to any other skills there.
 - **Global:** store at `~/.agents/.jmix/skills/<ref>/` (the `--content-ref`, e.g. `v3`), linked into `~/.agents/skills` and, unless `--claude=false`, into `~/.claude/skills`.
 - **Local:** the store is `<project>/.agents/skills/` itself, so the skills are real folders there. Each skill is linked into `<project>/.claude/skills` unless `--claude=false`. With `--backup-existing-files`, replaced skill folders go to `<project>/.agents/.jmix/backups/`, where no agent reads them as skills.
-
-**Upgrading from an older local install:** older versions kept the local store in `<project>/.skills/`. A re-run moves the skills into `.agents/skills`, re-points the links into `.skills` in `.claude/skills` (and in any other `<project>/.*/skills` you linked the same way), deletes the toolkit's skills from `.skills`, moves any other `jmix*` entry there (a retired skill or your own) to `.agents/.jmix/backups/`, and deletes `.skills` when nothing else is left. A `.skills` that is a link is left alone. One that a skills dir links to (e.g. `.claude/skills -> ../.skills`) is kept: behind `.agents/skills` it stays the store, behind any other dir its Jmix skills become links to `.agents/skills`. If the old layout is committed, git shows `.skills` deleted, the `.agents/skills` entries changed from symlinks to folders and the `.claude/skills` links re-pointed.
 
 > The installer writes MCP servers straight into each agent's config file (see [MCP Servers](#3-mcp-servers)), keeping its other servers and settings; only Claude CLI at `global` scope goes through `claude mcp add`. A file that is already up to date is not rewritten. On macOS/Linux, merging into an existing JSON config file needs `jq` or `node`; a new file is written without them. Servers started through `npx` need Node.js 20+ when the agent starts them, not at install time.
 
@@ -153,8 +151,6 @@ Two MCP servers help AI agents build Jmix apps:
 - Context7 (optional): gives the agent docs and code examples from official sources.
 
 The installer registers them and the [Playwright](#4-playwright-tests) server in the project files (`--scope local`, the default) or in each agent's user config (`--scope global`, serves every project). Project servers need a confirmation: Claude Code asks to approve the servers in `.mcp.json`, and Codex reads `.codex/config.toml` only in trusted projects (its desktop app ignores project servers). At user level, Claude CLI is registered through `claude mcp add --scope user`, so the installer needs `claude` on PATH, in `~/.local/bin` or in `~/.claude/local`, and skips Claude CLI without it.
-
-Codex merges the user config with the `.codex/config.toml` of the current directory and its parents up to the git root (only the current directory outside a repository). The installer writes one of these files and only reads the others; the step fails and names the file when another one defines the same server with the other transport (`url` vs `command`, which Codex cannot merge) or through inline tables or dotted keys. Other projects are not checked: if one defines the server with the other transport in its `.codex/config.toml`, remove that table. In the file it writes, the installer edits only explicit `[mcp_servers.<name>]` tables; a file with triple-quoted strings, or with the server defined through inline tables or dotted keys, is left untouched and needs manual configuration.
 
 | Agent                                          | Project file          | User file                                                             | Servers key            |
 |:-----------------------------------------------|:----------------------|:----------------------------------------------------------------------|:-----------------------|
@@ -280,8 +276,6 @@ Cline checks the whole file: with one entry it does not accept, such as Claude C
   }
 }
 ```
-
-On IntelliJ IDEA 2025.2/2025.3 the JetBrains entry is `{ "type": "sse", "url": "http://127.0.0.1:64342/sse" }`. If the Cline JetBrains plugin already lists the IDE's MCP server on its own, delete the `jetbrains` entry so its tools are not offered twice. VS Code windows that still run Cline's legacy build read `<VS Code user dir>/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` instead; copy the entries there if Cline in VS Code does not show them.
 
 #### Claude Desktop
 
