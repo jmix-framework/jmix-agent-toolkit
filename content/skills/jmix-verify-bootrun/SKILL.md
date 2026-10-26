@@ -120,8 +120,9 @@ Common causes when a test goes red after your change:
   Gradle build (`clean test`), not a bare IDE compile, on JDK 11/17.
 - **Liquibase error at context start** → a changelog does not match the entity or
   breaks on HSQLDB (see `jmix-create-liquibase-changelog`).
-- **`ConstraintViolationException` on save** → a `@NotNull` persistent field has
-  no value on the `DataManager` path (see `jmix-create-entity`).
+- **`SQLIntegrityConstraintViolationException` / NOT NULL error on save** → a required
+  persistent field has no value on the `DataManager` path. Bean Validation does not run
+  on save in 1.x, so the database is what fails (see `jmix-create-entity`).
 - **`GuiDevelopmentException` / `DevelopmentException` in a `@UiTest`** → a descriptor
   or controller wiring defect of the screen it opened (see `jmix-ide-static-analysis`).
 

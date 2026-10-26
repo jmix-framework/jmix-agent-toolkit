@@ -296,10 +296,35 @@ throws `IllegalStateException: Cannot get unfetched attribute` — see
 
 | Wrong placement                                    | Why it fails                                   |
 |----------------------------------------------------|------------------------------------------------|
-| Default set only in the editor screen's `InitEntityEvent` | Non-UI saves bypass the screen; `DataManager.save()` hits the `@NotNull` violation. |
+| Default set only in the editor screen's `InitEntityEvent` | Non-UI saves bypass the screen; `DataManager.save()` fails on the database NOT NULL constraint (Bean Validation does not run on save in 1.x, see below). |
 | Default set only in a service mutator that runs on UPDATE | The initial INSERT has no default; `@NotNull` fails. And a test calling `DataManager` directly never enters the service. |
 | Default set in an `EntityChangedEvent` listener    | The listener fires AFTER persist — too late for `@NotNull`. It reacts to saves; it does not default them. |
 | Default set only in the calling UI controller      | Programmatic paths (services, REST, tests) bypass it. |
+
+## Bean Validation does not run on save in 1.x
+
+In Jmix 1.4.4 `DataManager.save()` does not run Bean Validation: the EclipseLink adapter sets
+`javax.persistence.validation.mode=NONE` (`JmixEclipseLinkJpaVendorAdapter`) and `SaveContext`
+has no validation option. Only the UI validates fields before commit. Verified: a negative
+`@PositiveOrZero` price and an invalid `@Email` are saved through `DataManager`; a missing
+`@NotNull` value fails only on the database NOT NULL constraint.
+
+So annotations protect the screens, not services, REST or tests. When a constraint must
+hold on every save, enforce it in an `EntitySavingEvent` listener with the
+`javax.validation.Validator` bean (`jmix-add-entity-event-listener`):
+
+```java
+@EventListener
+public void onProductSaving(EntitySavingEvent<Product> event) {
+    Set<ConstraintViolation<Product>> violations = validator.validate(event.getEntity());
+    if (!violations.isEmpty()) {
+        throw new ConstraintViolationException(violations);
+    }
+}
+```
+
+The Jmix validator skips attributes not loaded in the saved instance, so an update of a
+partially loaded entity still passes.
 
 ## Accessors
 

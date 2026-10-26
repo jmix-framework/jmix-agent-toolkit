@@ -87,7 +87,7 @@ The field holds the id; the getter/setter pair is typed by the enum, and that is
 metamodel exposes as the attribute's type. Verified on 1.4.4: `setGrade(GOLD)` stores `G`
 in the column and the reload returns `CustomerGrade.GOLD`.
 
-Message keys (main `messages.properties` and every `messages_<locale>.properties`):
+Message keys, in every locale bundle (`messages_<locale>.properties`; the 1.4 template has one bundle per locale and no plain `messages.properties`, see `jmix-add-i18n-keys`):
 
 ```properties
 com.company.demo14.entity/CustomerGrade=Customer grade

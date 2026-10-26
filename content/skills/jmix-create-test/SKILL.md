@@ -183,7 +183,9 @@ screen as origin:
 
 ```java
 Screen root = screens.getOpenedScreens().getRootScreen();
-UserEdit editor = (UserEdit) screenBuilders.editor(User.class, root)   // @Autowired ScreenBuilders
+// @Autowired ApplicationContext applicationContext; ScreenBuilders is UI-scoped, fetch it here
+ScreenBuilders screenBuilders = applicationContext.getBean(ScreenBuilders.class);
+UserEdit editor = (UserEdit) screenBuilders.editor(User.class, root)
         .newEntity()
         .withScreenClass(UserEdit.class)
         .build();
@@ -338,7 +340,7 @@ Before finishing, check:
 - No `@Transactional` on the test class or methods — it rolls back the writes that `@AfterEach` cleanup and the twice-back-to-back run depend on.
 - Run the single class twice back-to-back — a second green run proves no leaked rows or cross-test data dependence that one pass hides.
 - `@AfterEach` deletions run in FK-safe order: child rows (holding a `@ManyToOne`/`@JoinColumn` to another cleaned-up entity) before the parents they reference. Re-check this whenever a new FK is added to an entity already covered by an existing cleanup block — a previously-safe order can silently become unsafe and throw a constraint violation in teardown, which JUnit reports against the test that triggered it rather than the cleanup, so it first reads as a test bug rather than an ordering one.
-- **The tests write to the development database.** The 1.4 template has no test datasource: `@SpringBootTest` uses `main.datasource.url` from `src/main/resources/application.properties`, by default the HSQLDB **file** `jdbc:hsqldb:file:.jmix/hsqldb/<project>` that `bootRun` also uses. Rows a test leaves behind survive every later run and appear in the running app. So `@AfterEach` cleanup is mandatory even for a test that only reads setup data, and a test that calls the same method twice to prove idempotency must not assume a fresh precondition — set up explicitly the precondition the code under test actually checks.
+- **The template's tests write to the development database.** Prefer an in-memory datasource for the tests you add (`@SpringBootTest(properties = "main.datasource.url=jdbc:hsqldb:mem:testdb")`, see `jmix-verify-bootrun`); what follows applies to any test still on the file database. The 1.4 template has no test datasource: `@SpringBootTest` uses `main.datasource.url` from `src/main/resources/application.properties`, by default the HSQLDB **file** `jdbc:hsqldb:file:.jmix/hsqldb/<project>` that `bootRun` also uses. Rows a test leaves behind survive every later run and appear in the running app. So `@AfterEach` cleanup is mandatory even for a test that only reads setup data, and a test that calls the same method twice to prove idempotency must not assume a fresh precondition — set up explicitly the precondition the code under test actually checks.
 
 ## Forbidden
 
