@@ -52,7 +52,7 @@ only when the earlier ones are not available or do not confirm it.
    - **Jmix docs MCP** — use it when no Context7 tool is available (their
      names contain `context7`; if your tools are loaded on demand, search for
      them before you decide), or a Context7 call fails because the API key is
-     missing or rejected. It is usually registered as `jmix-docs-mcp`; find it
+     missing or rejected. It is usually registered as `jmix-docs`; find it
      by its tool `search-jmix-docs`. Pass the symbol or the call shape as
      `queryText`, `jmixVersion: "v2"`, and `maxResults: 5` — without a limit
      the response can be tens of kilobytes. It needs no API key.
