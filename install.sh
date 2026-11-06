@@ -8,7 +8,7 @@
 #      .skills store is migrated and removed.
 #   2. Adding project-level guidelines to AGENTS.md, and for Claude Code to
 #      CLAUDE.md.
-#   3. Registering MCP servers (JetBrains, Context7, Playwright) with the agents.
+#   3. Registering MCP servers (JetBrains, Context7, Jmix Docs, Playwright) with the agents.
 #
 # Subcommands are available for non-interactive use; see `install.sh --help`.
 
@@ -36,7 +36,7 @@ SKILL_BACKUP_DIR=""
 VERBOSE=0
 
 ALL_AGENTS="claude codex opencode junie cline"
-MCP_SERVERS_ALL="jetbrains context7 playwright"
+MCP_SERVERS_ALL="jetbrains context7 jmix-docs playwright"
 
 # IntelliJ IDEA's MCP server listens on 127.0.0.1 only. Its default port is
 # 64342; another JetBrains IDE started first moves it, hence the override.
@@ -46,6 +46,7 @@ JB_TRANSPORT="stream"
 # 1 when the IDE did not answer and JB_TRANSPORT is only assumed.
 JB_GUESSED=0
 CONTEXT7_URL="https://mcp.context7.com/mcp"
+JMIX_DOCS_URL="https://docs-mcp.jmix.io/mcp"
 # 1 while writing entries that carry the Context7 key; see commit_config.
 MCP_PRIVATE=0
 # 1 when the last commit_config created or updated its file.
@@ -265,7 +266,7 @@ Usage:
   install.sh agents-md  [--claude=false]                      # install project guidelines
   install.sh mcp        --servers CSV --agents CSV [--scope local|global] [--context7-key KEY]
                                                               # register MCP servers
-  install.sh mcp-jetbrains | mcp-context7 | playwright --agents CSV [--scope local|global]
+  install.sh mcp-jetbrains | mcp-context7 | mcp-jmix-docs | playwright --agents CSV [--scope local|global]
                                                               # register one MCP server
                                                               # (mcp-context7 also takes --context7-key)
 
@@ -305,7 +306,7 @@ skills / agents-md options:
                          into .claude/skills unless --claude=false). The .skills store
                          of earlier versions is migrated and removed.
 
-mcp / mcp-jetbrains / mcp-context7 / playwright options:
+mcp / mcp-jetbrains / mcp-context7 / mcp-jmix-docs / playwright options:
   --agents CSV           claude, codex, opencode, junie, cline. claude also
                          sets up Claude Desktop when it is installed here.
   --scope local|global   "local" (default) writes the project files in the
@@ -313,7 +314,7 @@ mcp / mcp-jetbrains / mcp-context7 / playwright options:
                          opencode.json, .junie/mcp/mcp.json); "global" writes
                          each agent's user config. Claude Desktop and Cline
                          have only a user config.
-  --servers CSV          mcp: jetbrains, context7, playwright.
+  --servers CSV          mcp: jetbrains, context7, jmix-docs, playwright.
   --context7-key K       mcp, mcp-context7: Context7 API key; prompted when
                          missing, and "skip" leaves Context7 out. At local
                          scope the key is written into the project files: keep
@@ -1072,7 +1073,7 @@ cmd_agents_md() {
 }
 
 # =================================================================
-# MCP registration (shared by mcp, mcp-jetbrains, mcp-context7, playwright)
+# MCP registration (shared by mcp, mcp-jetbrains, mcp-context7, mcp-jmix-docs, playwright)
 # =================================================================
 #
 # Servers are written straight into each agent's config file. Local scope
@@ -1672,6 +1673,47 @@ cmd_mcp_context7() {
 }
 
 # =================================================================
+# MCP install - Jmix Docs
+# =================================================================
+
+# $1 - agent   $2 - scope
+install_jmix_docs_for() {
+    local agent="$1" scope="$2" rc=0
+    local bridge_json="{\"command\":\"npx\",\"args\":[\"-y\",\"mcp-remote\",\"${JMIX_DOCS_URL}\"]}"
+    log "[Jmix Docs MCP] $(agent_label "$agent")"
+    case "$agent" in
+        claude)
+            mcp_write claude "$scope" jmix-docs "{\"type\":\"http\",\"url\":\"${JMIX_DOCS_URL}\"}" \
+                --scope user --transport http jmix-docs "$JMIX_DOCS_URL" || rc=1
+            mcp_desktop jmix-docs "$bridge_json" || rc=1
+            return $rc ;;
+        codex)    mcp_write codex "$scope" jmix-docs "url = \"${JMIX_DOCS_URL}\"" ;;
+        opencode) mcp_write opencode "$scope" jmix-docs "{\"type\":\"remote\",\"url\":\"${JMIX_DOCS_URL}\",\"enabled\":true}" ;;
+        cline)    mcp_write cline "$scope" jmix-docs "{\"type\":\"streamableHttp\",\"url\":\"${JMIX_DOCS_URL}\"}" ;;
+        junie)    mcp_write junie "$scope" jmix-docs "$bridge_json" ;;
+    esac
+}
+
+mcp_jmix_docs_step() {
+    local rc=0
+    log ""
+    mcp_for_agents install_jmix_docs_for "$MCP_AGENTS_SEL" "$MCP_SCOPE" || rc=1
+    case " $MCP_AGENTS_SEL " in
+        *" junie "*) warn_if_no_npx "Jmix Docs for Junie" ;;
+        *) desktop_selected && warn_if_no_npx "Jmix Docs for Claude Desktop" ;;
+    esac
+    return $rc
+}
+
+cmd_mcp_jmix_docs() {
+    parse_mcp_args mcp-jmix-docs "$@"
+    local rc=0
+    mcp_jmix_docs_step || rc=1
+    mcp_followups
+    return $rc
+}
+
+# =================================================================
 # MCP install - Playwright
 # =================================================================
 
@@ -1724,6 +1766,7 @@ cmd_mcp() {
         case "$server" in
             jetbrains)  mcp_jetbrains_step || rc=1 ;;
             context7)   mcp_context7_step || rc=1 ;;
+            jmix-docs)  mcp_jmix_docs_step || rc=1 ;;
             playwright) mcp_playwright_step || rc=1 ;;
         esac
     done
@@ -1739,6 +1782,7 @@ server_label() {
     case "$1" in
         jetbrains)  printf 'JetBrains (code insight from IntelliJ IDEA)' ;;
         context7)   printf 'Context7 (library docs, needs an API key)' ;;
+        jmix-docs)  printf 'Jmix Docs (Jmix documentation, Java API and UI samples)' ;;
         playwright) printf 'Playwright (browser automation)' ;;
     esac
 }
@@ -1904,6 +1948,7 @@ case "$1" in
     mcp)           shift; cmd_mcp "$@" ;;
     mcp-jetbrains) shift; cmd_mcp_jetbrains "$@" ;;
     mcp-context7)  shift; cmd_mcp_context7 "$@" ;;
+    mcp-jmix-docs) shift; cmd_mcp_jmix_docs "$@" ;;
     playwright)    shift; cmd_playwright "$@" ;;
     -h|--help)     usage ;;
     --*)           cmd_wizard "$@" ;;
