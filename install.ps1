@@ -9,7 +9,7 @@
          .agents/skills, and for Claude Code into .claude/skills too.
       2. Adding project-level guidelines (AGENTS.md, and for Claude Code
          CLAUDE.md too).
-      3. Registering MCP servers (JetBrains, Context7, Playwright) with the agents.
+      3. Registering MCP servers (JetBrains, Context7, Jmix Docs, Playwright) with the agents.
 
     Subcommands are available for non-interactive use:
       install.ps1 skills     [-Scope global|local] [-Claude:$false]
@@ -20,7 +20,7 @@
                              removed.
       install.ps1 agents-md  [-Claude:$false]
       install.ps1 mcp        -Servers CSV -Agents CSV [-Scope local|global] [-Context7Key KEY]
-      install.ps1 mcp-jetbrains | mcp-context7 | playwright -Agents CSV [-Scope local|global]
+      install.ps1 mcp-jetbrains | mcp-context7 | mcp-jmix-docs | playwright -Agents CSV [-Scope local|global]
                              (mcp-context7 also takes -Context7Key)
 
     MCP servers are written straight into each agent's config file; no agent
@@ -59,7 +59,7 @@
     is installed here.
 
 .PARAMETER Servers
-    mcp: comma-separated MCP servers: jetbrains, context7, playwright.
+    mcp: comma-separated MCP servers: jetbrains, context7, jmix-docs, playwright.
 
 .PARAMETER Scope
     skills: "global" (default) links the skills into the user home, "local"
@@ -133,7 +133,7 @@ $script:AllAgents = @('claude', 'codex', 'opencode', 'junie', 'cline')
 # (Codex, OpenCode, Junie and other agents of those open conventions), always
 # -- and 'claude' -- .claude/skills and CLAUDE.md (Claude Code), on by default.
 $script:AllConventions = @('agents', 'claude')
-$script:AllMcpServers = @('jetbrains', 'context7', 'playwright')
+$script:AllMcpServers = @('jetbrains', 'context7', 'jmix-docs', 'playwright')
 
 # IntelliJ IDEA's MCP server listens on 127.0.0.1 only. Its default port is
 # 64342; another JetBrains IDE started first moves it, hence the override.
@@ -143,6 +143,7 @@ $script:JbTransport = 'stream'
 # True when the IDE did not answer and JbTransport is only assumed.
 $script:JbGuessed = $false
 $script:Context7Url = 'https://mcp.context7.com/mcp'
+$script:JmixDocsUrl = 'https://docs-mcp.jmix.io/mcp'
 $script:PlaywrightMcpPkg = '@playwright/mcp@latest'
 # Set by any MCP agent step that fails; the MCP subcommands then exit 1.
 $script:McpFailed = $false
@@ -271,6 +272,7 @@ function Get-ServerLabel {
     switch ($Server) {
         'jetbrains'  { 'JetBrains (code insight from IntelliJ IDEA)' }
         'context7'   { 'Context7 (library docs, needs an API key)' }
+        'jmix-docs'  { 'Jmix Docs (Jmix documentation, Java API and UI samples)' }
         'playwright' { 'Playwright (browser automation)' }
     }
 }
@@ -1112,7 +1114,7 @@ function Invoke-CmdAgentsMd {
 }
 
 # =================================================================
-# MCP registration (shared by mcp, mcp-jetbrains, mcp-context7, playwright)
+# MCP registration (shared by mcp, mcp-jetbrains, mcp-context7, mcp-jmix-docs, playwright)
 # =================================================================
 #
 # Servers are written straight into each agent's config file. Local scope
@@ -1791,6 +1793,62 @@ function Invoke-CmdMcpContext7 {
 }
 
 # =================================================================
+# MCP install - Jmix Docs
+# =================================================================
+
+function Install-JmixDocsFor {
+    param([string]$Agent, [string]$Scope)
+    $url = $script:JmixDocsUrl
+    $bridge = [PSCustomObject][ordered]@{ command = 'npx'; args = @('-y', 'mcp-remote', $url) }
+    Write-Info "[Jmix Docs MCP] $(Get-AgentLabel -Agent $Agent)"
+    switch ($Agent) {
+        'claude' {
+            try {
+                Write-McpServer -Agent $Agent -Scope $Scope -Name 'jmix-docs' `
+                    -Entry ([PSCustomObject][ordered]@{ type = 'http'; url = $url }) `
+                    -CliArgs @('--scope', 'user', '--transport', 'http', 'jmix-docs', $url)
+            } finally {
+                Write-ClaudeDesktopServer -Name 'jmix-docs' -Entry $bridge
+            }
+        }
+        'codex' {
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'jmix-docs' -Entry @("url = `"$url`"")
+        }
+        'opencode' {
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'jmix-docs' `
+                -Entry ([PSCustomObject][ordered]@{ type = 'remote'; url = $url; enabled = $true })
+        }
+        'cline' {
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'jmix-docs' `
+                -Entry ([PSCustomObject][ordered]@{ type = 'streamableHttp'; url = $url })
+        }
+        default {
+            Write-McpServer -Agent $Agent -Scope $Scope -Name 'jmix-docs' -Entry $bridge
+        }
+    }
+}
+
+function Install-McpJmixDocs {
+    param([string[]]$AgentList, [string]$McpScope)
+    Write-Info ''
+    Invoke-McpForAgents -AgentList $AgentList -Step 'Install-JmixDocsFor' -StepParams @{ Scope = $McpScope }
+    if ($AgentList -contains 'junie') {
+        Write-NpxNote -What 'Jmix Docs for Junie'
+    } elseif (Test-DesktopSelected -AgentList $AgentList) {
+        Write-NpxNote -What 'Jmix Docs for Claude Desktop'
+    }
+}
+
+function Invoke-CmdMcpJmixDocs {
+    Assert-McpArgs -Subcommand 'mcp-jmix-docs'
+    $agentList = Resolve-AgentsCsv -Csv $Agents -Subcommand 'mcp-jmix-docs'
+    $mcpScope = Resolve-Scope -Scope $Scope -Default 'local' -Subcommand 'mcp-jmix-docs'
+    $script:McpKeyFiles = @()
+    Install-McpJmixDocs -AgentList $agentList -McpScope $mcpScope
+    Write-McpFollowups -AgentList $agentList -McpScope $mcpScope
+}
+
+# =================================================================
 # MCP install - Playwright
 # =================================================================
 
@@ -1851,6 +1909,7 @@ function Invoke-McpServers {
         switch ($server) {
             'jetbrains'  { Install-McpJetbrains -AgentList $AgentList -McpScope $McpScope }
             'context7'   { Install-McpContext7 -AgentList $AgentList -McpScope $McpScope -Key $Key }
+            'jmix-docs'  { Install-McpJmixDocs -AgentList $AgentList -McpScope $McpScope }
             'playwright' { Install-McpPlaywright -AgentList $AgentList -McpScope $McpScope }
         }
     }
@@ -1991,6 +2050,7 @@ try {
         'mcp'            { Invoke-CmdMcp }
         'mcp-jetbrains'  { Invoke-CmdMcpJetbrains }
         'mcp-context7'   { Invoke-CmdMcpContext7 }
+        'mcp-jmix-docs'  { Invoke-CmdMcpJmixDocs }
         'playwright'     { Invoke-CmdPlaywright }
         default          { Write-ErrAndExit "unknown subcommand: $Subcommand" }
     }
