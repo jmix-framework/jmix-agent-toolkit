@@ -1352,6 +1352,31 @@ if (-not $onWindows) {
 Check ((Invoke-Installer @('mcp-context7', '-Scope', 'global', '-Agents', 'codex', '-Context7Key', 'bad/key')) -ne 0) `
     'mcp-context7: a key with characters that need escaping is rejected'
 
+# Jmix Docs uses HTTP directly, and the existing stdio bridge for Junie/Desktop.
+$r = Invoke-InstallerResult @('mcp-jmix-docs', '-Scope', 'global', '-Agents', 'claude,codex,opencode,junie,cline')
+Check ($r.Code -eq 0) 'mcp-jmix-docs exits 0 without an API key'
+Check ((Get-ClaudeCalls).Contains('mcp add --scope user --transport http jmix-docs https://docs-mcp.jmix.io/mcp')) `
+    'mcp-jmix-docs: claude mcp add arguments'
+$toml = [System.IO.File]::ReadAllText($userCodex)
+Check ($toml -cmatch '(?m)^\[mcp_servers\.jmix-docs\]\r?\nurl = "https://docs-mcp\.jmix\.io/mcp"\r?$' -and $toml.Contains('[mcp_servers.mine]')) `
+    'mcp-jmix-docs: Codex HTTP entry, foreign server kept'
+$json = Read-Json $userOc
+Check ((Test-JsonEqual $json.mcp.'jmix-docs' '{"type":"remote","url":"https://docs-mcp.jmix.io/mcp","enabled":true}') -and
+       $json.mcp.mine.url -eq 'http://mine') 'mcp-jmix-docs: OpenCode entry, foreign server kept'
+Check (Test-JsonEqual (Read-Json $userJunie).mcpServers.'jmix-docs' '{"command":"npx","args":["-y","mcp-remote","https://docs-mcp.jmix.io/mcp"]}') `
+    'mcp-jmix-docs: Junie stdio bridge'
+Check (Test-JsonEqual (Read-Json $userCline).mcpServers.'jmix-docs' '{"type":"streamableHttp","url":"https://docs-mcp.jmix.io/mcp"}') `
+    'mcp-jmix-docs: Cline HTTP entry'
+$json = Read-Json $desktopCfg
+Check ((Test-JsonEqual $json.mcpServers.'jmix-docs' '{"command":"npx","args":["-y","mcp-remote","https://docs-mcp.jmix.io/mcp"]}') -and
+       $json.preferences.keep -eq $true) 'mcp-jmix-docs: Claude Desktop bridge, preferences kept'
+Check (Test-ProjectUntouched) 'mcp-jmix-docs: nothing written into the project'
+$hashes = @($userCodex, $userOc, $userJunie, $userCline, $desktopCfg | ForEach-Object { Get-Sha $_ })
+$r = Invoke-InstallerResult @('mcp-jmix-docs', '-Scope', 'global', '-Agents', 'claude,codex,opencode,junie,cline')
+Check ($r.Code -eq 0 -and (@($userCodex, $userOc, $userJunie, $userCline, $desktopCfg | ForEach-Object { Get-Sha $_ }) -join ',') -eq ($hashes -join ',') -and
+       $r.Output -notmatch 'Updated: |Created: |Quit Claude Desktop') 'mcp-jmix-docs: re-run leaves configs unchanged'
+Remove-Item -LiteralPath $clineHome -Recurse -Force
+
 # 3h. An invalid -Scope is refused; the claude CLI is also found where its
 #     installers put it, off PATH (an IDE started from the desktop often lacks
 #     ~/.local/bin).
@@ -1550,24 +1575,28 @@ $localJunie = Join-Path $localProj '.junie/mcp/mcp.json'
 Set-TestFile $localMcp "{`n  `"`$schema`": `"keep-me`",`n  `"mcpServers`": {`"mine`": {`"type`": `"http`", `"url`": `"http://mine`"}}`n}`n"
 Set-TestFile $localCodex "model = `"o3`"`n`n[mcp_servers.mine]`nurl = `"http://mine`"`n"
 Remove-Item -LiteralPath $claudeLog -Force -ErrorAction SilentlyContinue
-$r = Invoke-InstallerResult @('mcp', '-Servers', 'playwright,jetbrains', '-Agents', 'claude,codex,opencode,junie')
+$r = Invoke-InstallerResult @('mcp', '-Servers', 'playwright,jmix-docs,jetbrains', '-Agents', 'claude,codex,opencode,junie')
 Check ($r.Code -eq 0) 'mcp(local) exits 0'
 Check (-not (Test-Path $claudeLog)) 'mcp(local): the claude CLI is not called'
 $json = Read-Json $localMcp
 Check ((Test-JsonEqual $json.mcpServers.jetbrains '{"type":"http","url":"http://127.0.0.1:9/stream"}') -and
+       (Test-JsonEqual $json.mcpServers.'jmix-docs' '{"type":"http","url":"https://docs-mcp.jmix.io/mcp"}') -and
        (Test-JsonEqual $json.mcpServers.playwright '{"type":"stdio","command":"npx","args":["-y","@playwright/mcp@latest"]}') -and
        $json.mcpServers.mine.url -eq 'http://mine' -and $json.'$schema' -eq 'keep-me') 'mcp(local): .mcp.json entries added, other content kept'
 $toml = [System.IO.File]::ReadAllText($localCodex)
 Check ($toml -cmatch '(?m)^model = "o3"$' -and $toml -cmatch '(?m)^url = "http://127\.0\.0\.1:9/stream"$' -and
+       $toml -cmatch '(?m)^\[mcp_servers\.jmix-docs\]\r?\nurl = "https://docs-mcp\.jmix\.io/mcp"\r?$' -and
        $toml -cmatch '(?m)^\[mcp_servers\.playwright\]$') 'mcp(local): Codex project config'
 $json = Read-Json $localOc
-Check ($json.mcp.jetbrains.type -eq 'remote' -and $json.mcp.playwright.type -eq 'local') 'mcp(local): opencode.json'
+Check ($json.mcp.jetbrains.type -eq 'remote' -and $json.mcp.playwright.type -eq 'local' -and
+       (Test-JsonEqual $json.mcp.'jmix-docs' '{"type":"remote","url":"https://docs-mcp.jmix.io/mcp","enabled":true}')) 'mcp(local): opencode.json'
 $json = Read-Json $localJunie
-Check ($json.mcpServers.playwright.command -eq 'npx' -and -not $json.mcpServers.PSObject.Properties['jetbrains']) 'mcp(local): Junie project config'
+Check ($json.mcpServers.playwright.command -eq 'npx' -and -not $json.mcpServers.PSObject.Properties['jetbrains'] -and
+       (Test-JsonEqual $json.mcpServers.'jmix-docs' '{"command":"npx","args":["-y","mcp-remote","https://docs-mcp.jmix.io/mcp"]}')) 'mcp(local): Junie project config'
 Check ($r.Output -match 'approve the servers in \.mcp\.json' -and $r.Output -match 'trust this folder') 'mcp(local): follow-up notes'
-Check ($r.Output -match '(?s)\[JetBrains MCP\].*\[Playwright MCP\]') 'mcp(local): servers run in the documented order'
+Check ($r.Output -match '(?s)\[JetBrains MCP\].*\[Jmix Docs MCP\].*\[Playwright MCP\]') 'mcp(local): servers run in the documented order'
 $hashes = @((Get-Sha $localMcp), (Get-Sha $localCodex), (Get-Sha $localOc))
-$r = Invoke-InstallerResult @('mcp', '-Servers', 'jetbrains,playwright', '-Agents', 'claude,codex,opencode,junie')
+$r = Invoke-InstallerResult @('mcp', '-Servers', 'jetbrains,jmix-docs,playwright', '-Agents', 'claude,codex,opencode,junie')
 Check ($r.Code -eq 0 -and (@((Get-Sha $localMcp), (Get-Sha $localCodex), (Get-Sha $localOc)) -join ',') -eq ($hashes -join ',') -and
        $r.Output -notmatch 'Updated: |Created: ') 'mcp(local): re-run leaves the files unchanged'
 
@@ -1614,6 +1643,7 @@ $r = Invoke-InstallerResult @('mcp', '-Servers', 'Context7', '-Agents', 'CODEX',
 Check ($r.Code -eq 0 -and $r.Output -match '\[Context7 MCP\] Skipped') 'mcp: values are case-insensitive'
 Check ((Invoke-Installer @('mcp-jetbrains', '-Agents', 'codex', '-Servers', 'jetbrains')) -ne 0) 'mcp-jetbrains: -Servers is for mcp only'
 Check ((Invoke-Installer @('playwright', '-Agents', 'codex', '-Context7Key', 'x')) -ne 0) 'playwright: -Context7Key is for Context7 only'
+Check ((Invoke-Installer @('mcp-jmix-docs', '-Agents', 'codex', '-Context7Key', 'x')) -ne 0) 'mcp-jmix-docs: -Context7Key is for Context7 only'
 Set-Location $mcpProj
 Remove-Item -LiteralPath $localProj -Recurse -Force
 
@@ -1624,11 +1654,12 @@ Remove-Item -LiteralPath $localProj -Recurse -Force
 $clineServers = '{"mcpServers":{' +
     '"jetbrains":{"type":"streamableHttp","url":"http://127.0.0.1:9/stream"},' +
     '"context7":{"type":"streamableHttp","url":"https://mcp.context7.com/mcp","headers":{"Authorization":"Bearer ctx7sk-TESTKEY"}},' +
+    '"jmix-docs":{"type":"streamableHttp","url":"https://docs-mcp.jmix.io/mcp"},' +
     '"playwright":{"command":"npx","args":["-y","@playwright/mcp@latest"]}}}'
-$clineArgs = @('mcp', '-Servers', 'jetbrains,context7,playwright', '-Agents', 'cline', '-Context7Key', 'ctx7sk-TESTKEY')
+$clineArgs = @('mcp', '-Servers', 'jetbrains,context7,jmix-docs,playwright', '-Agents', 'cline', '-Context7Key', 'ctx7sk-TESTKEY')
 $r = Invoke-InstallerResult $clineArgs
 Check ($r.Code -eq 0) 'cline(local) exits 0'
-Check ((Test-Path $userCline) -and (Test-JsonEqual (Read-Json $userCline) $clineServers)) 'cline(local): the user file holds the three entries'
+Check ((Test-Path $userCline) -and (Test-JsonEqual (Read-Json $userCline) $clineServers)) 'cline(local): the user file holds all four entries'
 Check (Test-ProjectUntouched) 'cline(local): nothing written into the project'
 Check ($r.Output.Contains("Cline has no project MCP config: it reads the user config $userCline.")) `
     'cline(local): the follow-up names the user file'
@@ -1711,6 +1742,12 @@ Remove-Item -LiteralPath $altHome, $clineHome -Recurse -Force -ErrorAction Silen
 #     more with "false". Only ${id} is replaced, so "-Claude:$${skillsClaude}"
 #     becomes "-Claude:$true".
 $studioMeta = [System.IO.File]::ReadAllText((Join-Path $Source '.studio/studio-meta-data.json')) | ConvertFrom-Json
+$studioMcp = $studioMeta.'install-flow'.steps | Where-Object { $_.id -eq 'mcp' }
+$studioServers = $studioMcp.inputs | Where-Object { $_.id -eq 'mcpServers' }
+Check ((@($studioServers.choices.value) -join ',') -eq 'jetbrains,context7,jmix-docs,playwright' -and
+       ($studioServers.choices | Where-Object { $_.value -eq 'jmix-docs' }).label -eq 'Jmix Docs' -and
+       $studioMcp.message.Contains('Jmix documentation, Java API and UI samples')) `
+    'studio: Jmix Docs follows Context7 with the requested label and description'
 $studioDefaults = @{ guidelinesBranch = 'v2' }
 foreach ($inp in $studioMeta.'install-flow'.steps.inputs) {
     $studioDefaults[$inp.id] = if ($inp.type -eq 'options') {
@@ -1769,6 +1806,7 @@ $argText = Get-StudioArgText -Command ($studioMeta.'install-flow'.steps | Where-
 Check ((Invoke-InstallerScriptBlock "$argText -Source '$Source'") -eq 0) 'studio: the mcp command runs with Cline chosen'
 Check ((Test-Path $userCline) -and (Test-JsonEqual (Read-Json $userCline) ('{"mcpServers":{' +
        '"jetbrains":{"type":"streamableHttp","url":"http://127.0.0.1:9/stream"},' +
+       '"jmix-docs":{"type":"streamableHttp","url":"https://docs-mcp.jmix.io/mcp"},' +
        '"playwright":{"command":"npx","args":["-y","@playwright/mcp@latest"]}}}'))) 'studio: Cline chosen gets its user file'
 Set-Location $mcpProj
 Remove-Item -LiteralPath $studioProj, $clineHome -Recurse -Force -ErrorAction SilentlyContinue
@@ -1800,15 +1838,16 @@ function Invoke-WizardWith {
     param([string]$Answers)
     return ($Answers | & $pwshPath -NoProfile -File $install -Source $Source 2>&1 | Out-String)
 }
-$out = Invoke-WizardWith "y`nl`nn`nn`n2,3`n2`n`n`n"
+$out = Invoke-WizardWith "y`nl`nn`nn`n2,3,4`n2`n`n`n"
 Check ($LASTEXITCODE -eq 0) 'wizard exits 0'
 Check ($out -match '\[Context7 MCP\] Skipped') 'wizard: an empty key skips Context7'
 Check ($out -match 'Skills:\s+agents \(local\)' -and $out -match 'Guidelines:\s+skipped' -and
-       $out -match 'MCP:\s+context7, playwright for codex \(local\)') 'wizard: the summary names the choices'
+       $out -match 'MCP:\s+context7, jmix-docs, playwright for codex \(local\)') 'wizard: the summary names the choices'
 Check ((Test-RealDir ".agents/skills/$skill") -and -not (Test-Path '.skills') -and -not (Test-Path '.claude') -and
        -not (Test-Path 'AGENTS.md')) 'wizard: skills without Claude Code, no guidelines'
 $toml = Get-Content -Raw '.codex/config.toml'
-Check ($toml -match '(?m)^\[mcp_servers\.playwright\]' -and $toml -notmatch 'context7') 'wizard: local Codex config as chosen'
+Check ($toml -match '(?m)^\[mcp_servers\.playwright\]' -and $toml -match '(?m)^\[mcp_servers\.jmix-docs\]' -and
+       $toml -notmatch 'context7') 'wizard: local Codex config as chosen'
 # The guidelines' Claude Code answer defaults to the skills' one: no...
 $out = Invoke-WizardWith "y`nl`nn`ny`n`ns`n"
 Check ($LASTEXITCODE -eq 0 -and (Test-Path 'AGENTS.md') -and -not (Test-Path 'CLAUDE.md') -and -not (Test-Path '.claude') -and
@@ -1825,12 +1864,12 @@ Check ($LASTEXITCODE -eq 0 -and (Test-Path 'AGENTS.md') -and (Test-Path 'CLAUDE.
     'wizard: guidelines for Claude Code by default when the skills step is skipped'
 # Global skills make global the default MCP scope.
 $ocBefore = if (Test-Path $userOc) { [System.IO.File]::ReadAllBytes($userOc) } else { $null }
-$out = Invoke-WizardWith "y`ng`nn`nn`n3`n3`n`n"
+$out = Invoke-WizardWith "y`ng`nn`nn`n4`n3`n`n"
 Check ($LASTEXITCODE -eq 0 -and (Test-Path $userOc) -and (Get-Content -Raw $userOc | ConvertFrom-Json).mcp.playwright -and
        -not (Test-Path 'opencode.json')) 'wizard: the MCP scope defaults to the global skills scope'
 if ($null -eq $ocBefore) { Remove-Item -LiteralPath $userOc -Force } else { [System.IO.File]::WriteAllBytes($userOc, $ocBefore) }
 # The default agents are all but Cline, whose config is a user file at either scope.
-$out = Invoke-WizardWith "n`nn`n3`n`nl`n"
+$out = Invoke-WizardWith "n`nn`n4`n`nl`n"
 Check ($LASTEXITCODE -eq 0 -and $out -match 'MCP:\s+playwright for claude, codex, opencode, junie \(local\)' -and
        -not (Test-Path -LiteralPath $clineHome)) 'wizard: the default agents leave Cline out'
 Set-Location $mcpProj

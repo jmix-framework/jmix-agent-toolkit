@@ -1134,6 +1134,33 @@ PY
     fi
     pass "mcp-context7 registers every agent without printing the key"
 
+    # Jmix Docs uses HTTP directly, with a stdio bridge for Junie and Desktop.
+    PATH="$BIN_PATH" bash "$INSTALL" mcp-jmix-docs --scope global --agents claude,codex,opencode,junie,cline >/dev/null \
+        || fail "mcp-jmix-docs: non-zero exit"
+    grep -qF -- '--scope user --transport http jmix-docs https://docs-mcp.jmix.io/mcp' "${WORK}/claude.log" \
+        || fail "mcp-jmix-docs: wrong claude mcp add arguments"
+    grep -q '^\[mcp_servers.jmix-docs\]$' "$USER_CODEX" && grep -q '^url = "https://docs-mcp.jmix.io/mcp"$' "$USER_CODEX" \
+        && grep -q '^model = "o3"$' "$USER_CODEX" && grep -q '^\[mcp_servers.mine\]$' "$USER_CODEX" \
+        || fail "mcp-jmix-docs: Codex entry wrong or other content lost"
+    jq -e '.mcp["jmix-docs"] == {"type":"remote","url":"https://docs-mcp.jmix.io/mcp","enabled":true}
+           and .mcp.mine.url == "http://mine" and ."$schema" == "keep-me"' "$USER_OC" >/dev/null \
+        || fail "mcp-jmix-docs: OpenCode entry wrong or other content lost"
+    jq -e '.mcpServers["jmix-docs"] == {"type":"streamableHttp","url":"https://docs-mcp.jmix.io/mcp"}' "$USER_CLINE" >/dev/null \
+        || fail "mcp-jmix-docs: Cline entry wrong"
+    for f in "$USER_JUNIE" "${DESKTOP_DIR}/claude_desktop_config.json"; do
+        jq -e '.mcpServers["jmix-docs"] == {"command":"npx","args":["-y","mcp-remote","https://docs-mcp.jmix.io/mcp"]}
+               and .mcpServers.context7.env.CONTEXT7_API_KEY == "ctx7sk-TESTKEY"' "$f" >/dev/null \
+            || fail "mcp-jmix-docs: ${f} bridge entry wrong or Context7 lost"
+    done
+    jq -e '.preferences.keep == true' "${DESKTOP_DIR}/claude_desktop_config.json" >/dev/null \
+        || fail "mcp-jmix-docs: Desktop preferences lost"
+    project_untouched || fail "mcp-jmix-docs: wrote into the project"
+    out="$(PATH="$BIN_PATH" bash "$INSTALL" mcp-jmix-docs --scope global --agents codex,opencode,junie,cline,claude)" \
+        || fail "mcp-jmix-docs: re-run non-zero exit"
+    case "$out" in *"Updated: "*|*"Created: "*|*"Quit Claude Desktop"*) fail "mcp-jmix-docs: re-run changed a file" ;; esac
+    rm -rf "${HOME}/.cline"
+    pass "mcp-jmix-docs registers every agent globally, preserves other settings and is idempotent"
+
     # 5h. An invalid --scope is refused; the claude CLI is also found where its
     #     installers put it, off PATH (an IDE started from the desktop often
     #     lacks ~/.local/bin).
@@ -1339,24 +1366,29 @@ jetbrains = { command = "java", args = [] }' 'mcp_servers.jetbrains.command = "j
     printf '{\n  "$schema": "keep-me",\n  "mcpServers": {"mine": {"type": "http", "url": "http://mine"}}\n}\n' > .mcp.json
     printf 'model = "o3"\n\n[mcp_servers.mine]\nurl = "http://mine"\n' > .codex/config.toml
     : > "${WORK}/claude.log"
-    out="$(PATH="$BIN_PATH" bash "$INSTALL" mcp --servers playwright,jetbrains --agents claude,codex,opencode,junie)" \
+    out="$(PATH="$BIN_PATH" bash "$INSTALL" mcp --servers playwright,jmix-docs,jetbrains --agents claude,codex,opencode,junie)" \
         || fail "mcp(local): non-zero exit"
     [ ! -s "${WORK}/claude.log" ] || fail "mcp(local): called the claude CLI"
     jq -e '.mcpServers.jetbrains == {"type":"http","url":"http://127.0.0.1:9/stream"}
+           and .mcpServers["jmix-docs"] == {"type":"http","url":"https://docs-mcp.jmix.io/mcp"}
            and .mcpServers.playwright == {"type":"stdio","command":"npx","args":["-y","@playwright/mcp@latest"]}
            and .mcpServers.mine.url == "http://mine" and ."$schema" == "keep-me"' .mcp.json >/dev/null \
         || fail "mcp(local): .mcp.json entries wrong or other content lost"
     grep -q '^model = "o3"$' .codex/config.toml && grep -q '^url = "http://127.0.0.1:9/stream"$' .codex/config.toml \
-        && grep -q '^\[mcp_servers.playwright\]$' .codex/config.toml || fail "mcp(local): Codex project config wrong"
-    jq -e '.mcp.jetbrains.type == "remote" and .mcp.playwright.type == "local"' opencode.json >/dev/null \
+        && grep -q '^\[mcp_servers.playwright\]$' .codex/config.toml \
+        && grep -q '^\[mcp_servers.jmix-docs\]$' .codex/config.toml \
+        && grep -q '^url = "https://docs-mcp.jmix.io/mcp"$' .codex/config.toml || fail "mcp(local): Codex project config wrong"
+    jq -e '.mcp.jetbrains.type == "remote" and .mcp.playwright.type == "local"
+           and .mcp["jmix-docs"] == {"type":"remote","url":"https://docs-mcp.jmix.io/mcp","enabled":true}' opencode.json >/dev/null \
         || fail "mcp(local): opencode.json wrong"
-    jq -e '.mcpServers.playwright.command == "npx" and .mcpServers.jetbrains == null' .junie/mcp/mcp.json >/dev/null \
+    jq -e '.mcpServers.playwright.command == "npx" and .mcpServers.jetbrains == null
+           and .mcpServers["jmix-docs"] == {"command":"npx","args":["-y","mcp-remote","https://docs-mcp.jmix.io/mcp"]}' .junie/mcp/mcp.json >/dev/null \
         || fail "mcp(local): Junie project config wrong"
     case "$out" in *"approve the servers in .mcp.json"*) ;; *) fail "mcp(local): no note about approving .mcp.json" ;; esac
     case "$out" in *"trust this folder"*) ;; *) fail "mcp(local): no note about trusting the Codex project" ;; esac
-    case "$out" in *"[JetBrains MCP]"*"[Playwright MCP]"*) ;; *) fail "mcp(local): servers not run in the documented order" ;; esac
+    case "$out" in *"[JetBrains MCP]"*"[Jmix Docs MCP]"*"[Playwright MCP]"*) ;; *) fail "mcp(local): servers not run in the documented order" ;; esac
     cp .mcp.json "${WORK}/l1"; cp .codex/config.toml "${WORK}/l2"; cp opencode.json "${WORK}/l3"
-    out="$(PATH="$BIN_PATH" bash "$INSTALL" mcp --servers jetbrains,playwright --agents claude,codex,opencode,junie)" \
+    out="$(PATH="$BIN_PATH" bash "$INSTALL" mcp --servers jetbrains,jmix-docs,playwright --agents claude,codex,opencode,junie)" \
         || fail "mcp(local): re-run non-zero exit"
     cmp -s .mcp.json "${WORK}/l1" && cmp -s .codex/config.toml "${WORK}/l2" && cmp -s opencode.json "${WORK}/l3" \
         || fail "mcp(local): re-run changed a file"
@@ -1408,6 +1440,7 @@ jetbrains = { command = "java", args = [] }' 'mcp_servers.jetbrains.command = "j
         && case "$out" in *"[Context7 MCP] Skipped"*) true ;; *) false ;; esac || fail "mcp: values should be case-insensitive"
     if bash "$INSTALL" mcp-jetbrains --agents codex --servers jetbrains >/dev/null 2>&1; then fail "mcp-jetbrains: --servers is for mcp only"; fi
     if bash "$INSTALL" playwright --agents codex --context7-key x >/dev/null 2>&1; then fail "playwright: --context7-key is for Context7 only"; fi
+    if bash "$INSTALL" mcp-jmix-docs --agents codex --context7-key x >/dev/null 2>&1; then fail "mcp-jmix-docs: --context7-key is for Context7 only"; fi
     cd "$MCP_PROJ"
     rm -rf "$LOCAL_PROJ"
     pass "mcp checks --servers, skips Context7 on 'skip' and keeps options to their steps"
@@ -1416,10 +1449,11 @@ jetbrains = { command = "java", args = [] }' 'mcp_servers.jetbrains.command = "j
     #     merged in place, at the path its own variables set.
     mkdir -p "${WORK}/cline-project"
     cd "${WORK}/cline-project"
-    out="$(bash "$INSTALL" mcp --servers jetbrains,context7,playwright --agents cline --context7-key ctx7sk-TESTKEY 2>&1)" \
+    out="$(bash "$INSTALL" mcp --servers jetbrains,context7,jmix-docs,playwright --agents cline --context7-key ctx7sk-TESTKEY 2>&1)" \
         || fail "cline(local): non-zero exit"
     jq -e '. == {"mcpServers": {"jetbrains": {"type":"streamableHttp","url":"http://127.0.0.1:9/stream"},
            "context7": {"type":"streamableHttp","url":"https://mcp.context7.com/mcp","headers":{"Authorization":"Bearer ctx7sk-TESTKEY"}},
+           "jmix-docs": {"type":"streamableHttp","url":"https://docs-mcp.jmix.io/mcp"},
            "playwright": {"command":"npx","args":["-y","@playwright/mcp@latest"]}}}' "$USER_CLINE" >/dev/null \
         || fail "cline(local): user config entries wrong"
     [ -z "$(ls -A)" ] || fail "cline(local): wrote into the project"
@@ -1428,7 +1462,7 @@ jetbrains = { command = "java", args = [] }' 'mcp_servers.jetbrains.command = "j
     case "$out" in *TESTKEY*) fail "cline(local): the key was printed" ;; esac
     case "$out" in *"version control"*) fail "cline(local): the user config is listed as a project key file" ;; esac
     cp "$USER_CLINE" "${WORK}/cl1"
-    out="$(bash "$INSTALL" mcp --servers jetbrains,context7,playwright --agents CLINE --scope global --context7-key ctx7sk-TESTKEY 2>&1)" \
+    out="$(bash "$INSTALL" mcp --servers jetbrains,context7,jmix-docs,playwright --agents CLINE --scope global --context7-key ctx7sk-TESTKEY 2>&1)" \
         || fail "cline(global): non-zero exit"
     cmp -s "$USER_CLINE" "${WORK}/cl1" || fail "cline(global): rewrote the file of the local scope"
     case "$out" in *"Unchanged: ${USER_CLINE}"*) ;; *) fail "cline(global): --agents CLINE did not check the same user config" ;; esac
@@ -1476,6 +1510,10 @@ jetbrains = { command = "java", args = [] }' 'mcp_servers.jetbrains.command = "j
     #     Claude Code off (the true/false inputs set to false), once with Cline
     #     (off by default) among the MCP agents.
     STUDIO_META="${SOURCE}/.studio/studio-meta-data.json"
+    jq -e '.["install-flow"].steps[] | select(.id == "mcp")
+        | (.message | contains("Jmix documentation, Java API and UI samples"))
+          and ([.inputs[] | select(.id == "mcpServers") | .choices[].value] == ["jetbrains", "context7", "jmix-docs", "playwright"])' \
+        "$STUDIO_META" >/dev/null || fail "studio: Jmix Docs description or server order wrong"
     # Each input gets its Studio default: the default choices, or the default text.
     studio_sed="$(jq -r '.["install-flow"].steps[].inputs[]
         | "s/[$]{\(.id)}/" + (if .type == "options" then ([.choices[] | select(.default) | .value] | join(",")) else .default end) + "/g"' "$STUDIO_META")"
@@ -1558,8 +1596,8 @@ PY
         printf 'x\n' > .skills/jmix-old/SKILL.md
         ln -s ../../.skills/jmix-old .agents/skills/jmix-old
         # Skills local without Claude Code; guidelines with the default Claude
-        # answer, which follows the skills one; MCP context7 + playwright for codex.
-        out="$(HOME="$WIZ_HOME" PATH="$BIN_PATH" run_wizard $'y\nl\nn\ny\n\n2,3\n2\n\n\n')" || fail "wizard: non-zero exit"
+        # answer, which follows the skills one; MCP context7 + docs + playwright for codex.
+        out="$(HOME="$WIZ_HOME" PATH="$BIN_PATH" run_wizard $'y\nl\nn\ny\n\n2,3,4\n2\n\n\n')" || fail "wizard: non-zero exit"
         for p in "[1/3] Install Jmix skills into .agents/skills? [Y/n]" "For Claude Code too (links in .claude/skills)? [Y/n]" \
                  "[2/3] Merge Jmix coding guidelines into AGENTS.md in $(pwd -P)? [Y/n]" "For Claude Code too (CLAUDE.md)? [y/N]"; do
             case "$out" in *"$p"*) ;; *) fail "wizard: no prompt '${p}'" ;; esac
@@ -1567,18 +1605,19 @@ PY
         case "$out" in *"[Context7 MCP] Skipped"*) ;; *) fail "wizard: an empty key did not skip Context7" ;; esac
         case "$out" in *"Skills:      agents (local)"*) ;; *) fail "wizard: wrong skills summary" ;; esac
         case "$out" in *"Guidelines:  agents"*) ;; *) fail "wizard: wrong guidelines summary" ;; esac
-        case "$out" in *"MCP:         context7 playwright for codex (local)"*) ;; *) fail "wizard: wrong MCP summary" ;; esac
+        case "$out" in *"MCP:         context7 jmix-docs playwright for codex (local)"*) ;; *) fail "wizard: wrong MCP summary" ;; esac
         [ -f ".agents/skills/${SKILL}/SKILL.md" ] && [ ! -L ".agents/skills/${SKILL}" ] && [ ! -e .claude ] \
             || fail "wizard: skills not as chosen"
         [ -f AGENTS.md ] && [ ! -e CLAUDE.md ] || fail "wizard: the guidelines Claude default did not follow the skills answer"
         [ ! -e .skills ] && [ ! -L .agents/skills/jmix-old ] || fail "wizard: the old .skills store not migrated"
-        grep -q '^\[mcp_servers.playwright\]' .codex/config.toml && ! grep -q context7 .codex/config.toml \
+        grep -q '^\[mcp_servers.playwright\]' .codex/config.toml && grep -q '^\[mcp_servers.jmix-docs\]' .codex/config.toml \
+            && ! grep -q context7 .codex/config.toml \
             || fail "wizard: local Codex config not as chosen"
         # Global skills with Claude Code (the default), no guidelines; global
         # skills make global the default MCP scope; the default agents leave
         # Cline out.
         rm -f AGENTS.md
-        out="$(HOME="$WIZ_HOME" PATH="$BIN_PATH" run_wizard $'y\ng\n\nn\n3\n\n\n')" || fail "wizard(global): non-zero exit"
+        out="$(HOME="$WIZ_HOME" PATH="$BIN_PATH" run_wizard $'y\ng\n\nn\n4\n\n\n')" || fail "wizard(global): non-zero exit"
         case "$out" in *"Skills:      agents, claude (global)"*) ;; *) fail "wizard(global): wrong skills summary" ;; esac
         case "$out" in *"Guidelines:  skipped"*) ;; *) fail "wizard(global): wrong guidelines summary" ;; esac
         [ -e "$WIZ_HOME/.agents/skills/${SKILL}/SKILL.md" ] && [ -e "$WIZ_HOME/.claude/skills/${SKILL}/SKILL.md" ] \
