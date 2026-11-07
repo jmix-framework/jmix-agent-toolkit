@@ -1,298 +1,255 @@
 ---
 name: jmix-style-ui
-description: "Style Jmix Flow UI components — views, fragments, grid renderers, or components built in a controller. Read this before writing any getStyle().set(...), classNames, addThemeVariants, or CSS custom property (--aura-* / --lumo-* / --vaadin-*). A custom property the active theme does not define fails SILENTLY: no error, every gate green, wrong rendering."
+description: "Style Jmix Classic UI screens and components (Vaadin 8 themes: Helium, Halo, Hover). Read this before writing any stylename, css attribute, HtmlAttributes call, table styleProvider, or custom theme SCSS. A style name or CSS variable the active theme does not define fails SILENTLY: no error, every gate green, wrong rendering."
 ---
 
-# Style Flow UI components
+# Style Classic UI components
 
-Applies to any component you style: view and fragment layouts, grid renderers,
-badges, cards, and components built in a controller.
+Stack: Jmix 1.x (verified on 1.4.4), Classic UI (Vaadin 8). Themes are compiled SCSS
+(Helium, Halo, Hover), not Lumo/Aura. There is no `getStyle()`, no `classNames`, no
+`addThemeVariants`, no `--lumo-*` / `--aura-*` / `--vaadin-*` here — those are Flow UI.
 
-## Step 0 — identify the ACTIVE theme before typing a token
-
-Theme tokens are CSS custom properties, and each theme defines its OWN set. A
-token from the wrong theme is undefined, and an undefined custom property does
-not error — the browser silently falls back. So find the theme first:
+## Step 0 — identify the ACTIVE theme
 
 ```bash
-# the main application class declares the theme stylesheets
-grep -rn "@StyleSheet\|@Theme" src/main/java --include='*.java'
+grep -n "jmix.ui.theme" src/main/resources/application.properties
+ls src/main/themes 2>/dev/null          # a custom theme lives here
+grep -n "jmix-ui-themes\|themes '" build.gradle
 ```
 
-- `@StyleSheet(Aura.STYLESHEET)` + `@StyleSheet(JmixAura.STYLESHEET)` → **Aura**,
-  tokens are `--aura-*` (Jmix 3's newer default).
-- A Lumo theme declaration (or neither of the above) → **Lumo**, tokens are
-  `--lumo-*`.
+- No `jmix.ui.theme.name` → **Helium** (the default, `UiThemeProperties`). The 1.4
+  project template sets no theme property and depends on
+  `io.jmix.ui:jmix-ui-themes-compiled` — precompiled CSS of Helium, Halo and Hover. The
+  template's menu has the **Theme Settings** screen (`themeSettingsScreen`) where a user
+  switches the color preset (light/dark) and size (small/medium/large).
+- `jmix.ui.theme.name = halo` / `hover` → a built-in theme, still precompiled.
+- `jmix.ui.theme.name = <custom>` plus `src/main/themes/<custom>/` → a project theme
+  that the build compiles (below).
 
-The project's own CSS usually sits next to those declarations, e.g.
-`@StyleSheet("themes/<app>-aura/styles.css")` →
-`src/main/resources/META-INF/resources/themes/<app>-aura/styles.css`, or a
-`src/main/frontend/themes/<name>/` folder. That file is where your own rules go.
+What the theme family gives you:
 
-**Never mix the families.** `--lumo-primary-text-color` in an Aura app resolves to
-nothing.
+| Theme | variables you can use in your own rules |
+| --- | --- |
+| Helium | CSS custom properties, about 430 of them: `--primary-color`, `--secondary-color`, `--text-main-color`, `--text-secondary-color`, `--background-color`, `--border-color`, `--success-color`, `--error-color`, `--warning-color`, `--dim-color`, … They resolve at runtime and change with the light/dark preset. |
+| Halo, Hover | NO CSS custom properties at all (0 in the compiled CSS). Only SCSS variables (`$v-focus-color`, `$v-background-color`, `$v-unit-size`, …), resolved when the theme is compiled. |
 
-## Where the styling belongs — in this order
+So `var(--primary-color)` works under Helium and resolves to nothing under Halo/Hover.
+Enumerate what exists instead of guessing:
 
-**1. A CSS rule in the project theme + `classNames` — preferred.** Reusable,
-inspectable, and it keeps values out of Java:
+```bash
+J=$(find ~/.gradle/caches -name 'jmix-ui-themes-compiled-1.4.4.jar' | head -1)
+unzip -p "$J" VAADIN/themes/helium/styles.css | grep -oE '\-\-[a-z0-9_-]+:' | sort -u
+# a custom theme: grep build/themes/VAADIN/themes/<name>/styles.css after a build
+```
 
-```css
-/* src/main/resources/META-INF/resources/themes/<app>/<view>.css */
-.order-card {
-    border: 1px solid var(--aura-accent-border-color);
-    border-radius: var(--vaadin-radius-m);
+## Where styling goes — in this order
+
+**1. A predefined style name — for looks the theme already has.** Set it with
+`stylename` in XML or `setStyleName` / `addStyleName` / `removeStyleName` in Java.
+Constants are in `io.jmix.ui.theme.ThemeClassNames` (`BUTTON_PRIMARY = "primary"`,
+`BUTTON_FRIENDLY`, `BUTTON_DANGER`, `BUTTON_BORDERLESS`, `LABEL_H1`…`LABEL_H4`,
+`LABEL_BOLD`, `LABEL_SUCCESS`, `LABEL_FAILURE`, `TABLE_NO_STRIPES`, `TABLE_COMPACT`,
+`TEXTFIELD_ALIGN_RIGHT`, `LAYOUT_CARD`, `LAYOUT_WELL`, …):
+
+```xml
+<button id="confirmBtn" caption="msg://confirmBtn.caption" stylename="primary"/>
+```
+
+```java
+statusLabel.addStyleName(ThemeClassNames.LABEL_SUCCESS);
+```
+
+`stylename` holds space-separated names; `setStyleName` replaces them all,
+`addStyleName` appends one.
+
+A constant compiles in any theme and does nothing if the active theme has no rule for
+it. Vaadin 8 puts each style name on the widget twice — bare (`card`) and prefixed with
+the widget class (`v-verticallayout-card`, `v-button-primary`, `v-label-success`) — and
+the built-in themes style the PREFIXED form. Confirm the name for your component type:
+
+```bash
+unzip -p "$J" VAADIN/themes/helium/styles.css | grep -oE '\.v-button-[a-z-]+' | sort -u
+# e.g. LAYOUT_CARD is styled as .v-verticallayout-card / .v-horizontallayout-card /
+# .v-csslayout-card — not on a groupBox or panel
+```
+
+**2. A rule in a project theme + your own style name — preferred for anything
+reusable.** Requires a custom theme (next section). Define the class in the theme mixin
+and put the name on the component:
+
+```scss
+/* src/main/themes/helium-ext/helium-ext.scss */
+@import "../helium/helium";
+
+@mixin helium-ext {
+  @include helium;
+
+  .contact-count {
+    font-weight: bold;
+  }
 }
 ```
 
 ```xml
-<vbox id="orderBox" classNames="order-card"/>
+<label id="contactCountLabel" stylename="contact-count"/>
+```
+
+Your own rules can use the bare name (`.contact-count`) — it is on the element.
+Everything inside the mixin is compiled under `.<theme-name>` (`.helium-ext
+.contact-count`), so it applies only while that theme is active.
+
+**3. Inline CSS — last resort, for one-off or computed values.** Every component
+accepts a `css` attribute in XML; in Java use the `HtmlAttributes` bean:
+
+```xml
+<label id="hintLabel" value="msg://contactsLabel"
+       css="color: var(--text-secondary-color); font-style: italic"/>
 ```
 
 ```java
-card.addClassName("order-card");   // when the component is built in the controller
+@Autowired
+private HtmlAttributes htmlAttributes;
+
+htmlAttributes.setCssProperty(contactCountLabel, HtmlAttributes.CSS.COLOR, "var(--primary-color)");
 ```
 
-A new CSS file is not loaded by existing — wire it in: add
-`@import url('<view>.css');` to the theme's `styles.css` (the stylesheet the
-application declares). A file nothing imports fails exactly like an undefined
-token: no error anywhere, the rules just never apply.
+Both write an inline `style` on the component's root element. Inline styles do not
+change with the user's theme, and `var(--...)` in them still needs a Helium-family
+theme.
 
-**2. A built-in component theme variant — for looks the component already has.**
-Do not re-implement a badge or a size variant with hand-written CSS:
+**Table row/cell styles** come from a style provider; the returned name lands on the
+row (`<tr>` gets both `customer-without-contacts` and `v-table-row-...`) or cell, and
+the CSS goes into the project theme:
 
 ```java
-avatar.addThemeVariants(AvatarVariant.LARGE);
-badge.getElement().getThemeList().addAll(List.of("badge", "pill"));   // badge theme: Vaadin's under Lumo, Jmix's under Aura
+@Install(to = "customersTable", subject = "styleProvider")
+private String customersTableStyleProvider(Customer entity, String property) {
+    if (property == null && entity.getContactCount() == null) {
+        return "customer-without-contacts";   // property == null: row style
+    }
+    return null;
+}
 ```
 
-`ThemeList` holds single tokens — `add("badge pill")` happens to render (the
-attribute joins entries with spaces) but stores one bogus entry, so a later
-`remove("pill")` or `contains("badge")` silently does nothing.
-
-**A variant name is theme-specific, exactly like a token.** A `*Variant` constant
-is only a string the theme has to style: `ButtonVariant.LUMO_TERTIARY_INLINE`
-sets `theme="tertiary-inline"`, Aura has no rule for that name, and the call
-therefore does nothing — the button keeps its default background, border, and
-shadow. One enum holds all the families — `LUMO_*`, `AURA_*`, and theme-neutral
-constants (`PRIMARY`, `TERTIARY`, `SUCCESS`, `WARNING`, `ERROR`, `SMALL`,
-`LARGE`) — and they all compile the same. Prefer the theme-neutral constant, and
-confirm the active theme styles the name it maps to:
-
-**Grep every stylesheet the app declares, not just the Vaadin one.** A Jmix app
-loads `Aura.STYLESHEET` *and* `JmixAura.STYLESHEET`, and each layer brings its own
-`[theme~=...]` rules, so a name missing from one may be styled by the other. The
-`badge` and `pill` above are exactly that case: they come from the Jmix layer, and
-a grep of the Vaadin jar alone reports them as unstyled.
-
-```bash
-# the cache usually holds several versions — list them and set the two variables
-# to the ones matching the project's Vaadin and Jmix versions
-find ~/.gradle/caches \( -name 'vaadin-aura-theme-*.jar' \
-  -o -name 'jmix-flowui-themes-*.jar' \) ! -name '*-sources.jar'
-JAR=...     # vaadin-aura-theme-<vaadin version>.jar
-JMIX=...    # jmix-flowui-themes-<jmix version>.jar
-
-# 1. the Vaadin layer (Aura.STYLESHEET) — one file, values unquoted
-unzip -p "$JAR" 'META-INF/resources/aura/aura.css' \
-  | grep -ohE "theme~=['\"]?[a-z0-9-]+" | sed -E "s/theme~=['\"]?//" | sort -u
-
-# 2. the Jmix layer (JmixAura.STYLESHEET) — ~120 files, values quoted.
-# Extract, then grep: a member glob is not portable, because on Windows unzip a
-# '*' does not cross '/', so 'META-INF/resources/themes/jmix-aura/*.css' matches
-# only the top-level file and prints nothing. Same reason the whole jar comes
-# out, not just the theme folder — it is under 1 MB.
-DIR=$(mktemp -d)
-unzip -oq "$JMIX" -d "$DIR"
-grep -rhoE "theme~=['\"]?[a-z0-9-]+" "$DIR/META-INF/resources/themes/jmix-aura" \
-  | sed -E "s/theme~=['\"]?//" | sort -u
+```scss
+.v-table-row.customer-without-contacts {
+  color: var(--text-secondary-color);
+}
 ```
 
-Under Lumo the same two commands read `META-INF/resources/lumo/lumo.css` in
-`vaadin-lumo-theme-*.jar` and the extracted `themes/jmix-lumo` folder from the
-same Jmix jar. If grep reports the folder does not exist, check the version you
-picked — Jmix 2.x ships `jmix-lumo` only. A third place a name can be styled is
-the project's own theme CSS — grep that folder too.
+A selected row repaints its cells with the selection colors, so check an unselected
+row.
 
-Across both layers (Aura 25.1/25.2 with Jmix 3.0/3.1) `primary` and `tertiary`
-are styled, but `tertiary-inline` appears in neither — a name a Lumo-era call site
-is likely to carry.
+## Custom theme — create, wire, compile
 
-**Read the selector, not just the name.** A hit does not mean the variant works on
-your component. In the Jmix layer `contrast` exists only as
-`[theme~='badge'][theme~='contrast']` and `icon` only on one specific menu bar, so
-on a plain button both still do nothing. (`icon-button` is a different name, not a
-match for `icon`.)
+Studio: **User Interface → New → Custom Theme**, pick a name and the base theme. By
+hand, for a Helium extension named `helium-ext`:
 
-**3. Inline `getStyle().set(...)` — last resort.** Correct for a one-off dynamic
-value (a color computed from data, a width from a measurement), not for a look
-that repeats across components:
-
-```java
-statusLabel.getStyle().set("color", "var(--aura-accent-text-color)");
+```
+src/main/themes/helium-ext/styles.scss
+src/main/themes/helium-ext/helium-ext.scss
+src/main/themes/helium-ext/helium-ext-defaults.scss
+src/main/resources/<project package path>/theme/helium-ext-theme.properties
 ```
 
-## Tokens that exist — enumerate them, do not invent them
+```scss
+/* styles.scss — compile entry point */
+@import "helium-ext-defaults";
+@import "addons";
+@import "helium-ext";
 
-Verify a token the way you verify an API symbol: it must appear in the active
-theme's stylesheet. The full list is one command away, so there is no reason to
-guess:
-
-```bash
-# after a build, the theme is in node_modules
-grep -rhoE '\-\-aura-[a-z0-9-]+' node_modules/@vaadin/aura/ | sort -u
-grep -rhoE '\-\-lumo-[a-z0-9-]+' node_modules/@vaadin/vaadin-lumo-styles/ | sort -u
-
-# no node_modules? read it from the resolved jar
-JAR=$(find ~/.gradle/caches -name 'vaadin-aura-theme-*.jar' | grep -v sources | tail -1)
-unzip -p "$JAR" 'META-INF/resources/aura/aura.css' | grep -ohE '\-\-aura-[a-z0-9-]+' | sort -u
-
-# the same stylesheet also defines the shared --vaadin-* layer — enumerate it too
-unzip -p "$JAR" 'META-INF/resources/aura/aura.css' | grep -ohE '\-\-vaadin-[a-z0-9-]+' | sort -u
+.helium-ext {
+  @include addons;
+  @include helium-ext;
+}
 ```
 
-Aura's set is small — under a hundred names, so the enumeration above is quick to
-read in full. The ones you reach for most:
-
-| Purpose | Aura token |
-|---|---|
-| accent / link text | `--aura-accent-text-color` |
-| accent fill | `--aura-accent-color` |
-| text ON an accent fill | `--aura-accent-contrast-color` |
-| border | `--aura-accent-border-color` |
-| panel / card background | `--aura-surface-color`, `--aura-surface-color-solid` |
-| page background | `--aura-background-color`, `--aura-app-background` |
-| corner radius | `--vaadin-radius-s` / `-m` / `-l`. Aura derives them from `--aura-base-radius`, which is a unitless multiplier (`3`), not a length — `border-radius: var(--aura-base-radius)` is invalid and computes to `0` |
-| font size | `--aura-font-size-xs` … `-xl` |
-| font weight | `--aura-font-weight-regular` / `-medium` / `-semibold` |
-| line height | `--aura-line-height-xs` … `-xl` |
-| shadow | `--aura-shadow-xs` / `-s` / `-m` |
-| status colors | `--aura-red`, `--aura-green`, `--aura-yellow`, `--aura-orange`, `--aura-blue`, `--aura-purple` (each with a `-text` variant, e.g. `--aura-red-text`), `--aura-neutral` (no `-text` variant) |
-
-**The same stylesheet defines a second, bigger family: `--vaadin-*`.** These are
-the semantic tokens of Vaadin's base styles (~230 names in Aura 25.2, ~280 in
-Lumo 25.2), and for common needs they are the first place to look — Aura in
-particular has no secondary-text token of its own, but it does define
-`--vaadin-text-color-secondary`. The namespace is shared — a `--vaadin-*` name
-means the same thing under any theme — but each theme sets values only for the
-subset it restyles (just 82 names are common to Aura and Lumo in 25.2), so a
-name being theme-agnostic does not make it universally defined. Verify a
-`--vaadin-*` name in the active theme's stylesheet exactly like an
-`--aura-*`/`--lumo-*` one (e.g. `--vaadin-gap-*` / `--vaadin-radius-*` exist in
-Aura but not in Lumo). This core is defined by BOTH themes in 25.2:
-
-| Purpose | `--vaadin-*` token (in both Aura and Lumo) |
-|---|---|
-| body text | `--vaadin-text-color` |
-| muted / secondary text | `--vaadin-text-color-secondary` |
-| disabled text | `--vaadin-text-color-disabled` |
-| plain border | `--vaadin-border-color`, `--vaadin-border-color-secondary` |
-| background | `--vaadin-background-color`, `--vaadin-background-container`, `--vaadin-background-container-strong` |
-| focus ring | `--vaadin-focus-ring-color`, `--vaadin-focus-ring-width` |
-| per-component knobs | `--vaadin-button-padding`, `--vaadin-card-padding`, … (set ON the component to retune it) |
-
-**The two themes are not name-for-name equivalents.** Do not translate a Lumo
-token into an `--aura-` prefix and assume it exists. Concretely: Lumo has
-`--lumo-body-text-color`, `--lumo-secondary-text-color`, and a contrast scale
-(`--lumo-contrast-20pct` …); **Aura has none of those.** In Aura, body text is
-`--vaadin-text-color`, muted text is `--vaadin-text-color-secondary`, and a
-plain border is `--vaadin-border-color` — the theme-neutral layer above, not
-the `--aura-*` family. Going the other way, Lumo has no `--lumo-accent-surface`
-or `--lumo-surface-level`.
-
-## When the active theme has no suitable token
-
-Three acceptable options, in this order:
-
-1. **A `--vaadin-*` token from the base-styles layer** — it usually has
-   what the theme's own family lacks; enumerate and verify it the same way.
-2. **Define your own custom property or class in the project theme stylesheet**
-   and use it — the value lives in one place and survives a theme change.
-3. **Use a literal, theme-neutral value** for a genuinely neutral decoration:
-
-```java
-card.getStyle()
-        .set("border", "1px solid rgba(128, 128, 128, 0.3)")
-        .set("border-radius", "6px");
+```scss
+/* helium-ext-defaults.scss — SCSS variable overrides */
+@import "../helium/helium-defaults";
 ```
 
-Borrowing a token from the other theme is never an option — the next section is
-why it cannot be caught by any gate. When you
-rely on a token for something essential (a link's affordance, a status color),
-add a theme-independent fallback too, e.g. `text-decoration: underline` next to
-the accent color.
+`addons` is generated by the build from theme add-ons; do not create it.
 
-## Why a wrong token is invisible to every gate
+```properties
+# helium-ext-theme.properties — server-side theme constants
+@include=io/jmix/ui/theme/helium-theme.properties
+```
 
-An undefined CSS custom property is not an error anywhere in the stack. The
-declaration parses, the build succeeds, and the browser applies the fallback:
+```groovy
+// build.gradle
+implementation 'io.jmix.ui:jmix-ui-themes'
+themes 'io.jmix.ui:jmix-ui-themes'
+```
 
-| Property | Falls back to |
-|---|---|
-| `color` | the inherited color (often near-black) |
-| `background-color` | transparent |
-| `border-color` | `currentColor` |
-| `border-radius` | `0` |
-| any length | the property's initial value |
+```properties
+# application.properties
+jmix.ui.theme.name = helium-ext
+jmix.ui.theme-config = io/jmix/ui/theme/helium-theme.properties com/company/app/theme/helium-ext-theme.properties
+```
 
-So the defect survives `compileJava`, the Jmix inspection, and a green
-`clean test`. The rendering is merely wrong — no exception, no warning, nothing in
-the log.
+- `jmix.ui.theme-config` REPLACES the built-in list (helium, halo, hover), it does not
+  add to it. With only your file, `ThemeConstantsRepository` knows one theme
+  (verified: `[helium-ext]`); list every theme that must stay selectable, separated by
+  spaces (verified: `[helium-ext, helium]`).
+- The `themes` dependency is what enables compilation: with it, the `io.jmix` Gradle
+  plugin wires `compileThemes` into `classes`, so `build`, `test`, `bootRun` and `jar`
+  compile the SCSS (verified with `--dry-run`; without it, `compileThemes` is not in the
+  chain). The output is `build/themes/VAADIN/themes/<name>/styles.css` plus the
+  built-in themes, packaged into the jar.
+- While the app is running, `./gradlew compileThemes` recompiles; then hard-reload the
+  browser. `compileThemes` is the only gate that reads SCSS, and it is weak: a missing
+  import fails it (`Import '../helium/heliumX' ... could not be found`, `Unable to build
+  theme`), but an undefined `$variable` compiles with exit code 0 (both verified).
+- Helium variables are CSS custom properties: override them inside the mixin
+  (`--primary-color: #0097D8; --primary-color_rgb: 0, 151, 216;`). That changes the
+  LIGHT preset only — the dark preset is a separate `.helium-ext.dark { ... }` block
+  with its own `--primary-color` (verified in the compiled CSS). To restyle dark, add an
+  `&.dark { ... }` block; to add a preset, add `&.<preset> { ... }` and list it in
+  `jmix.ui.theme.modes` (optionally `jmix.ui.theme.default-mode-to-use`).
+- For Halo/Hover extensions override `$v-*` variables in `<name>-defaults.scss`
+  (`$v-font-size`, `$v-unit-size`, `$v-layout-margin-*`, `$v-table-row-height`, …);
+  they take effect only after recompiling.
+- Branding images: replace files in `src/main/themes/<name>/branding`.
 
-**CSS tokens do not resolve automatically in drawing APIs.** Some chart,
-diagram, or other components paint to a `<canvas>` and pass colour options
-directly to a JavaScript drawing API. Such APIs do not interpret `var(...)` as
-CSS. Before passing a theme token to a component option, check whether the
-component resolves CSS custom properties itself. If it does not, use the
-component's palette/theme API, a literal colour, or resolve the custom
-property first (for example with
-`getComputedStyle(...).getPropertyValue(...)`) and pass the resulting colour
-value.
+To find the class of an element you want to restyle (e.g. `.jmix-sidemenu-item-caption`),
+inspect it in the browser, then add the rule to the mixin.
+
+## Why a wrong style is invisible to every gate
+
+A style name no rule targets, a CSS variable the theme does not define, or a rule in a
+theme that is not active — none is an error anywhere. Java compiles, the descriptor
+loads, `clean test` and a `@UiTest` stay green (they never render CSS), and the browser
+silently falls back (`color` → inherited, `background-color` → transparent, length →
+initial value).
 
 ## Verify — the COMPUTED style, in a browser
 
-The declaration looks identical whether the property resolves or not, so reading
-the Java or the CSS proves nothing. Open the view with a browser tool (Gate 3 in
-`jmix-verify-bootrun`) and read the computed value:
+Run the app (`jmix-verify-bootrun`, Gate 3) and read computed values with a headless
+browser script:
 
 ```js
-getComputedStyle(document.querySelector('#statusLabel')).color
+getComputedStyle(document.querySelector('.v-app')).getPropertyValue('--primary-color')  // '#0097d8' after the override
+document.querySelector('.v-app').className   // 'v-app helium-ext appui' -> the active theme
+getComputedStyle(document.querySelector('.contact-count')).fontWeight                    // '700'
 ```
 
-A resolved token gives a real color (`rgb(...)`); an undefined one gives the
-inherited value — that difference is the check. Do the same for
-`borderRadius`/`borderColor` when you set them. If no browser tool is available,
-say `styling not browser-verified` rather than calling it done.
-
-This check applies only when the value becomes a CSS declaration. If a
-component passes the value directly to a drawing API, there may be no
-corresponding computed style to inspect; verify the rendered result and, when
-necessary, inspect the component's frontend implementation to confirm whether it
-resolves CSS custom properties.
-
-The same check catches a dead theme variant, because a variant the theme does not
-style computes exactly like the component with no variant at all:
-
-```js
-getComputedStyle(document.querySelector('#orderButton')).backgroundColor
-```
-
-Under Aura a working `tertiary` gives `rgba(0, 0, 0, 0)`; a name the theme never
-styles gives the default button fill. Compare against a plain component of the
-same type — if the two match, the variant did nothing.
+Select elements by your style name or the `v-<widget>-<stylename>` class. To select
+by component id, set `jmix.ui.test-mode = true`: components then carry a `j-test-id`
+attribute (`[j-test-id="contactCountLabel"]`). Compare against an unstyled component of the same
+type — if the values match, the style did nothing. If no browser is available, say
+`styling not browser-verified` instead of calling it done.
 
 ## Forbidden
 
-- `--lumo-*` tokens in an Aura app, or `--aura-*` in a Lumo app.
-- A `LUMO_*` theme variant in an Aura app (or `AURA_*` in a Lumo app) whose
-  variant string the active theme does not style — it compiles and does nothing.
-- A guessed token name — confirm it in the active theme's stylesheet first.
-- Passing `var(...)` to a component option consumed directly by a drawing API
-  unless the component explicitly resolves CSS custom properties before drawing.
-- Inline `getStyle().set(...)` for a look that a component theme variant or a
-  reusable CSS class already provides.
-- A repeated inline style across several components instead of one CSS class in
-  the project theme.
-- Claiming styling works from a green compile / `clean test` — neither renders
-  anything.
-- Editing generated frontend files — they are regenerated on every build.
+- Flow UI styling (`getStyle()`, `classNames`, `addThemeVariants`, `@StyleSheet`,
+  `--lumo-*`, `--aura-*`, `--vaadin-*`) in a 1.x project.
+- `var(--primary-color)` or any CSS custom property under Halo/Hover.
+- A guessed style name — confirm a rule for it in the active theme's compiled CSS.
+- `jmix.ui.theme-config` listing only the custom theme when users must still switch to
+  a built-in one.
+- A custom theme without `themes 'io.jmix.ui:jmix-ui-themes'` (nothing compiles it).
+- Editing `build/themes` or the generated `addons` file.
+- Inline `css` / `HtmlAttributes` for a look repeated across components — one class in
+  the project theme instead.
+- Claiming styling works from a green compile, `clean test`, or `@UiTest`.

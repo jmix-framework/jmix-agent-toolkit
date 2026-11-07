@@ -1,258 +1,277 @@
 ---
 name: jmix-verify-bootrun
-description: Gate 2 (mandatory) — verify the Spring/Jmix context loads via a TERMINATING `gradle clean test`, never a long-running bootRun. Gate 3 (optional) — if you have a browser/UI-automation tool, walk the views/buttons/fields you created to catch render-time defects that compile and clean test miss. A green compile/clean test is NOT proof a view renders.
+description: Gate 2 (mandatory) — verify the Spring/Jmix 1.x context loads via a TERMINATING `gradle clean test` on JDK 11/17, never a long-running bootRun; in 1.x it does not open screens, so add a @UiTest that opens each new screen. Gate 3 — walk the Classic UI screens you created (hash URLs, login screen, menu) with a browser tool to catch render-time defects. A green compile/clean test is NOT proof a screen opens.
 ---
 
-# Gate 2 (context load) + Gate 3 (optional render walk)
+# Gate 2 (context load) + Gate 3 (render walk)
+
+Stack: Jmix 1.x (verified on 1.4.4): Java 11/17, Spring Boot 2.7, Gradle 7.5 with the
+`io.jmix` plugin, Classic UI (Vaadin 8).
 
 ## When to use
 
-After writing your Jmix artifacts (entities, views, services, roles, …):
+After writing your Jmix artifacts (entities, screens, services, roles, …):
 - **Gate 2 (mandatory):** confirm the Spring/Jmix context loads cleanly.
-- **Gate 3 (optional):** confirm each view you created actually renders.
+- **Screen-opening tests / Gate 3:** confirm each screen you created actually opens.
 
-These run AFTER static analysis. Treat inspection findings (from MCP
-inspection tools when connected, your IDE otherwise) as WARNINGS to resolve
-first — and remember an EMPTY inspection result you did not confirm is
-false-clean, not a pass.
+These run AFTER static analysis (`jmix-ide-static-analysis`). Treat inspection
+findings as WARNINGS to resolve first — and remember an EMPTY inspection result you
+did not confirm is false-clean, not a pass.
+
+## JDK: 11 or 17, never 21
+
+Run every Gradle command of a 1.x project with `JAVA_HOME` pointing to JDK 11 or 17:
+
+```bash
+JAVA_HOME=/path/to/jdk-17 ./gradlew --no-daemon clean test
+```
+
+Gradle 7.5 does not support JDK 21. On 1.4.4 with the system JDK 21 the wrapper even
+starts, and then the build is broken in a misleading way: `compileJava` "succeeds" while
+the entity enhancer logs `Unsupported class file major version 65` for every class,
+and every test fails at context start with `BeanDefinitionStoreException ... Caused by:
+IllegalArgumentException at ClassReader` (Spring 5.3 cannot read Java 21 class
+files). That is the JDK, not your code — switch `JAVA_HOME` and run `clean test` again.
+Check with `"$JAVA_HOME/bin/java" -version` before the first build of the session.
 
 ## Gate 2 — `clean test` (NEVER bootRun)
 
 Before rebuilding, check whether an existing application process consumes this
-checkout's output JARs. Replacing an archive it holds open can cause ZIP/resource
-read failures. Coordinate an approved stop/rebuild/restart with its owner, or use
-isolated build outputs. Do not overwrite a running process's archives blindly.
-
-Run the project's terminating context-load test:
+checkout's output JARs or its HSQLDB files. Coordinate an approved stop/rebuild/restart
+with its owner, or use isolated build outputs and a separate test datasource. Do not
+overwrite a running process's archives blindly.
 
 ```bash
 ./gradlew --no-daemon clean test
 ```
 
-It boots the Spring/Jmix context, runs the project's seed tests, and EXITS.
-Confirm `BUILD SUCCESSFUL` and no failed tests. Also confirm tests actually
-ran: `Tests run: 0` (or no test task at all) means the context was never
-booted and Gate 2 did NOT pass — ensure at least one context-load test exists
-and executed.
+It boots the Spring/Jmix context, runs the project's tests, and EXITS. Confirm
+`BUILD SUCCESSFUL` and no failed tests. Also confirm tests actually ran: `Tests run: 0`
+(or no test task at all) means the context was never booted and Gate 2 did NOT pass.
+With `-q` Gradle prints nothing on success; read the counts from
+`build/test-results/test/*.xml` (`<testsuite ... tests="N" failures="0" errors="0">`).
 
 **NEVER use `./gradlew bootRun` (or any non-terminating server start) as the
-Gate-2 check.** bootRun does not exit — it hangs your turn and leaves the HTTP
-port locked by a zombie process. bootRun is not a gate; Gate 2 is `clean test`.
+Gate-2 check.** bootRun does not exit — it hangs your turn and leaves the HTTP port
+locked by a zombie process.
 
-### When the first Gate 2 failure hides the real cause
+### The generated test writes into the development database
 
-The Gradle console tail may show only a wrapper exception such as
-`RuntimeException at HikariConfig.java:514`. Read the generated JUnit XML before
-diagnosing the failure:
+The 1.4 template's `<App>ApplicationTests` is a bare `@SpringBootTest` with no test
+properties, so it runs against `main.datasource.url` from `application.properties` —
+the developer's file HSQLDB under `.jmix/hsqldb/`. Liquibase migrates it and any test
+data lands there. For tests you add, override the datasource on the test class:
 
-```bash
-rg -n -C 3 "Failed to load driver class|Caused by" \
-  build/test-results/test/*.xml
+```java
+@SpringBootTest(properties = "main.datasource.url=jdbc:hsqldb:mem:testdb")
 ```
 
-One known failure in a freshly generated project is:
+### Gate 2 does NOT open screens in 1.x
 
-```text
-Failed to load driver class org.hsqldb.jdbc.JDBCDriver in either of
-HikariConfig class loader or Thread context classloader
-```
-
-If `src/test/resources/application-test.properties` configures HSQLDB but
-`build.gradle` declares only the production database driver, the test runtime is
-incomplete. Add the HSQLDB test-runtime driver:
-
-```groovy
-testRuntimeOnly 'org.hsqldb:hsqldb'
-```
-
-Then rerun `./gradlew --no-daemon clean test`. Do not change the test datasource
-or investigate unrelated application code when the XML report shows this exact
-missing-driver failure.
-
-If the test suite passed before your changes and a seed test is now RED, assume
-you broke it and fix it to green. Do not call that failure "pre-existing". On the
-first Gate 2 run of a freshly generated project, inspect the JUnit XML and build
-dependencies before deciding whether your changes caused the failure.
-
-Common causes when a seed test goes red after your change:
-
-- **`NoSuchViewException` after you added views** → you broke the VIEW REGISTRY;
-  it scans all `@ViewController` classes at startup and one broken view poisons
-  navigation to EVERY view, including pre-existing ones. Check, in order: (1) every
-  new view `.java` has a `package` line matching its directory — a class in the
-  default package registers its `@Route`/`@ViewController` wrong; (2) no two
-  `@ViewController(id=…)` share an id; (3) every `@ViewDescriptor` path resolves
-  to a real XML next to the class; (4) no `*-view.xml` is empty or malformed — an
-  empty descriptor throws `SAXParseException: Premature end of file` and poisons
-  the registry.
-- **`MetaClass not found for class X`** → the entity is missing `@JmixEntity`, or
-  its package is outside the application scan root.
-- **`ConstraintViolationException` on save** → a `@NotNull` persistent field has
-  no value on the `DataManager` path (see `jmix-create-entity`).
-
-A test that goes red and you cannot explain is a blocker, never a footnote in
-your "done" summary.
-
-A green Gate 2 is necessary but NOT sufficient: the seed tests load the context
-but do NOT open your new views, exercise your new roles, or fire code that only
-runs outside a user request (see `jmix-run-background-code`). It catches catastrophic 
-breakage (broken view registry, schema/Liquibase error, missing `@JmixEntity`), 
-not render-time UI defects — those are caught by the mechanical checks and Gate 3.
-
-The rule behind it: a defect survives every gate when nothing enters its code
-path. So when you add a path that nothing yet calls, ADD THE CALLER — a test or a
-render walk — or report it as unverified. Never write "all gates passed" for a
-path no gate entered.
-
-## Gate 3 — render walk (REQUIRED for every view/role you created or changed)
-
-Gate 3 is the ONLY gate that opens your new views/roles at runtime (Gate 2 does
-not), so it is NOT optional when you created or changed one. Per such view, pick
-ONE:
-- a browser/UI-automation tool is connected → render-walk it (below); or
-- no browser tool → write a minimal headless `@UiTest` that navigates to the
-  view and asserts it opens (see `jmix-create-test`).
-
-Do not write "no browser tool" without checking the connected tools. Only if a
-view can be reached by NEITHER a browser tool NOR a `@UiTest`, skip it — and then
-report `render NOT verified: <view>`, never "all gates passed".
-
-**Prerequisite — Spring Boot Actuator.** The readiness probe below polls
-`/actuator/health`, so the project must include the Actuator starter and expose
-the `health` endpoint:
+In Jmix 1.4.4 a context-load test does not parse screen descriptors or wire
+controllers. Verified: a screen whose descriptor contains an unknown element and whose
+controller `@Autowired`s a non-existent component passes `contextLoads()`; it fails only
+when opened, with `GuiDevelopmentException: Unknown component: ...` or
+`DevelopmentException: Unable to find an instance of type ... named ...`. So for every
+screen you created or changed, add a headless test that OPENS it (see
+`jmix-create-test`):
 
 ```groovy
 // build.gradle
-implementation 'org.springframework.boot:spring-boot-starter-actuator'
+testImplementation 'io.jmix.ui:jmix-ui-test-assist'
 ```
 
-```properties
-# application.properties
-management.endpoints.web.exposure.include=health
+```java
+import io.jmix.ui.Screens;
+import io.jmix.ui.testassist.UiTestAssistConfiguration;
+import io.jmix.ui.testassist.junit.UiTest;
+
+@UiTest
+@SpringBootTest(classes = {DemoApplication.class, UiTestAssistConfiguration.class},
+        properties = "main.datasource.url=jdbc:hsqldb:mem:uitest")
+class TicketScreensTest {
+    @Test
+    void browseOpens(Screens screens) {
+        screens.create(TicketBrowse.class).show();
+    }
+}
 ```
 
-Jmix projects do NOT bundle Actuator by default — add the dependency and
-property above (verify with `./gradlew dependencies | grep actuator`). If you
-cannot add/configure it, use the `@UiTest` path instead, or an alternative
-readiness signal: tail the boot log for `Started <App>Application in ...`.
+`@UiTest` authenticates as the system user by default (`authenticatedUser = "..."` for
+a real user, who must already exist) and opens the main screen first. An unresolved
+`msg://` key still passes such a test: it renders as the bare key without an exception.
+
+### When the first Gate 2 failure hides the real cause
+
+The console tail may show only a wrapper exception. Read the generated JUnit XML
+before diagnosing:
+
+```bash
+rg -n -C 3 "Caused by|message=" build/test-results/test/*.xml
+```
+
+If the test suite passed before your changes and a test is now RED, assume you broke
+it and fix it to green. Do not call that failure "pre-existing".
+
+Common causes when a test goes red after your change:
+
+- **`MetaClass not found for class X`** → the entity is missing `@JmixEntity`, its
+  package is outside the application scan root, or it was not enhanced: run a full
+  Gradle build (`clean test`), not a bare IDE compile, on JDK 11/17.
+- **Liquibase error at context start** → a changelog does not match the entity or
+  breaks on HSQLDB (see `jmix-create-liquibase-changelog`).
+- **`SQLIntegrityConstraintViolationException` / NOT NULL error on save** → a required
+  persistent field has no value on the `DataManager` path. Bean Validation does not run
+  on save in 1.x, so the database is what fails (see `jmix-create-entity`).
+- **`GuiDevelopmentException` / `DevelopmentException` in a `@UiTest`** → a descriptor
+  or controller wiring defect of the screen it opened (see `jmix-ide-static-analysis`).
+
+A test that goes red and you cannot explain is a blocker, never a footnote in your
+"done" summary.
+
+A green Gate 2 is necessary but NOT sufficient: the context-load test does not open
+your screens, exercise your roles, or fire code that only runs outside a user request
+(see `jmix-run-background-code`). The rule behind it: a defect survives every gate
+when nothing enters its code path. So when you add a path that nothing yet calls, ADD
+THE CALLER — a test or a render walk — or report it as unverified. Never write "all
+gates passed" for a path no gate entered.
+
+## Gate 3 — render walk (REQUIRED for every screen/role you created or changed)
+
+Per such screen, pick ONE:
+- a browser/UI-automation tool is connected → render-walk it (below); or
+- no browser tool → the `@UiTest` above that opens the screen, plus role checks
+  through `AccessManager` (see `jmix-create-resource-role`).
+
+Do not write "no browser tool" without checking the connected tools. Only if a screen
+can be reached by NEITHER, report `render NOT verified: <screen>`, never "all gates
+passed".
+
+**Readiness signal.** Jmix 1.x projects do not include Spring Boot Actuator. Poll the
+root URL until it answers 200, or wait for `Started <App>Application in` in the log:
+
+```bash
+curl --retry-connrefused --retry 60 --retry-delay 2 -s -o /dev/null -w '%{http_code}\n' \
+     -m 5 http://localhost:8080/
+```
+
+If you add Actuator instead (`spring-boot-starter-actuator`,
+`management.endpoints.web.exposure.include=health`), poll `/actuator/health`.
 
 **Before you start it — decide which database the walk writes into.** A walk of a
-data-driven view usually has to CREATE data: the view shows nothing until
-reference records, their parents, and the child rows that give them amounts all
-exist. Those records are written by the walk and left behind, and there is no
-undo step below. The configured development datasource is frequently the
-developer's own working dataset, so choose deliberately:
+data-driven screen usually has to CREATE data, and there is no undo step. The configured
+datasource (`.jmix/hsqldb/<name>`) is frequently the developer's own working dataset:
 
-- **A throwaway datasource — the default choice.** Select it on the run command
-  line so the properties file is never touched:
+- **A throwaway datasource — the default choice.** Select it on the run command line so
+  the properties file is never touched:
   ```bash
-  nohup ./gradlew --no-daemon bootRun \
-        --args="--main.datasource.url=jdbc:hsqldb:file:/tmp/renderwalk" > /tmp/jmix_app.log 2>&1 &
+  JAVA_HOME=/path/to/jdk-17 nohup ./gradlew --no-daemon bootRun \
+        --args="--server.port=8093 --jmix.ui.test-mode=true --main.datasource.url=jdbc:hsqldb:file:/tmp/renderwalk/db" \
+        > /tmp/jmix_app.log 2>&1 &
   ```
-  Do NOT edit `application.properties` to point it elsewhere: that file is
-  tracked, and it often carries a local change of the developer's that you would
-  then be committing or reverting by accident.
-- **The configured development database — only for a read-only walk**, where
-  every view you open already has the data it needs and you create nothing.
+  Do NOT edit `application.properties` to point it elsewhere: that file is tracked.
+  Pick a free port (`ss -ltn | grep ':8080 '`); the IDE often already runs an app on 8080.
+- **The configured development database — only for a read-only walk.**
 
-The fixture data is a side effect you own. Report what you created and where it
-landed.
-
-If you do have one, run the mechanical checks first, then:
+The fixture data is a side effect you own. Report what you created and where it landed.
 
 **If the application is already running** — the owner started it, possibly on a
-non-default port — take that base URL and port as given. Confirm it loads the
-verified artifacts before the walk. If a restart is needed, obtain the owner's
-approval; without it report the new build's browser check as unverified. Do NOT
-run steps 1, 2 or 4 against an owner-managed process: never start a second instance
-or shut theirs down without approval ("leave the port free" applies only when
-you started it yourself). Note in the report that the app was not started by the
-gate. The numbered steps below are for when you start and own the process.
+non-default port — take that base URL and port as given. Confirm it loads the verified
+artifacts before the walk. If a restart is needed, obtain the owner's approval; without
+it report the new build's browser check as unverified. Never start a second instance on
+their port or shut theirs down without approval. Note in the report that the app was
+not started by the gate. The numbered steps below are for when you start and own the
+process.
 
-1. Start the app in the BACKGROUND so it does not block your turn, capturing its
-   log — e.g. `nohup ./gradlew --no-daemon bootRun > /tmp/jmix_app.log 2>&1 &`,
-   adding the datasource override above unless the walk is read-only.
-2. Poll readiness on the Spring Boot Actuator health endpoint, then proceed — do
-   not wait on the (non-terminating) process:
-   ```bash
-   curl --retry-connrefused --retry 40 --retry-delay 2 -sf -m 5 \
-        http://localhost:8080/actuator/health && echo READY
-   ```
-   Use `/actuator/health` — Spring Boot does not expose a bare `/health`. If it
-   never becomes ready, tail the log, skip Gate 3, and shut the process down.
-3. With your browser/UI-automation tool, navigate to each view you created, click
-   each button/action, fill each field, and confirm no error overlay or server
-   exception. When you created roles, log in through the login form as one user of
-   each role, not only as `admin`: `admin` usually holds `system-full-access`, which
-   hides missing login, view and menu policies. If the application accepts file
-   uploads, select and upload a real file through the browser, then confirm the UI
-   reports success and the file can be opened or otherwise read back.
-   A Jmix UI is a Vaadin web-component UI, so it does not respond to a browser
-   tool the way a plain HTML page does — see the next section.
-   Drive the walk **only through real input events** — a genuine click,
-   real typing, `Enter`. Never assign a component's `.value` or set a component
-   property from the page or console: in a server-driven UI the server holds the
-   component state, so a scripted mutation never reaches it and can desync the
-   session, silently invalidating the gate (the app bounces to the login view
-   mid-walk with nothing in the browser console, so it reads as an environment
-   problem rather than a self-inflicted one). Reading the DOM to assert what
-   rendered is fine; mutating it is not.
-   exception. 
-4. **Shut the background app down** when finished (`kill` the bootRun PID; if the
-   port stays held, kill whatever holds it). Always leave the port free, and state
-   in your report which database the walk ran against and what data it created
-   there.
+1. Start the app in the BACKGROUND (command above), capturing its log.
+2. Poll readiness (above). If it never becomes ready, tail the log, skip the walk,
+   and shut the process down.
+3. Walk the screens (next section). When you created roles, log in through the login
+   screen as one user of each role, not only as `admin`: `admin` holds
+   `system-full-access`, which hides missing login, screen and menu policies. A user
+   without `ui-minimal` / `ui.loginToUi` gets an "Access denied" notification on the
+   login screen. If the application accepts file uploads, upload a real file through
+   the browser and confirm it can be read back.
+4. **Shut the background app down** when finished: kill the Java process that listens
+   on your port and the Gradle process you started, BY PID (`ss -ltnp | grep ':8093 '`
+   for the Java PID). Never `pkill` by a name pattern such as `Application` or
+   `bootRun`: other agents and the IDE run processes with the same names. Leave the port
+   free, and state which database the walk ran against and what data it created.
+
+### Classic UI URLs, login and navigation (verified on 1.4.4)
+
+- The UI lives at the context root; the navigation state is the URL **fragment**:
+  `http://localhost:8080/#login` (login screen, `@Route(path = "login", root = true)`),
+  `#main` after login.
+- A screen with `@Route("tickets")` opens at `http://localhost:8080/#main/tickets` once
+  logged in. The app rewrites it to `#main/<n>/tickets`: `<n>` is a state mark used
+  internally by navigation, not something to construct. An editor with
+  `@Route(value = "tickets/edit", parentPrefix = "tickets")` shows
+  `#main/<n>/tickets/edit` for a new entity and `...?id=<id>` for an existing one
+  (UUIDs Base32-encoded). Screens without `@Route` are not URL-addressable: open them
+  from the menu or from another screen.
+- Opening a screen by URL or menu goes through the screen policy: a non-permitted screen
+  shows "Access denied" instead.
+- Start with `--jmix.ui.test-mode=true` (property `jmix.ui.test-mode`): components then
+  carry a `j-test-id` attribute equal to their XML id — `usernameField`,
+  `passwordField` on the generated login screen, `ticketsTable`, `createBtn` — and side
+  menu items carry their menu item id (`Ticket.browse`, group `helpdesk`). Without it,
+  locate elements by visible text.
+- Login: fill `[j-test-id="usernameField"]` and `[j-test-id="passwordField"]`, press
+  `Enter` (or click the login button), then wait until `location.hash` starts with
+  `#main`. The template's default credentials are `admin` / `admin`.
+
+### Driving a Classic UI (Vaadin 8)
+
+The page is a Vaadin 8 client: GWT widgets with `v-*` CSS classes, rendered by a
+client that keeps working after the HTTP response is done (not `vaadin-*` web
+components as in Flow UI):
+
+- **Wait for the client to render before you look.** The first snapshot after
+  navigation is routinely blank; wait for a selector you expect.
+- **Refs go stale after every action.** Retake the snapshot immediately before each
+  interaction rather than reusing refs captured earlier in the walk.
+- **Prefer `j-test-id` selectors** (test mode) over role/name locators.
+- **A disabled action is usually a precondition, not a defect.** Jmix list actions
+  enable on selection and permissions — satisfy what this one waits for before
+  reporting it broken.
+- Drive the walk **only through real input events** — a genuine click, real typing,
+  `Enter`. Never set a field's value from the page or console: the server holds the
+  component state, so a scripted mutation never reaches it and can desync the session,
+  silently invalidating the gate. Reading the DOM to assert what rendered is fine;
+  mutating it is not.
 
 ### When the browser sees older resources than the tests
 
-If a fresh-context test passes but the running view cannot find a component or
-`@Subscribe` target, compare the source, built resource and effective runtime
-resource. Inspect the process classpath and configured overrides, including the
-exact descriptor under a module's `.jmix/conf/`, before changing valid code.
-Remove the entire `.jmix/conf/` directory if it exists. 
-Archive-read failures after a rebuild need the approved restart above. Repeat the walk against the verified artifacts.
+If a fresh-context test passes but the running screen cannot find a component or
+`@Subscribe` target, compare the source, the built resource and the effective runtime
+resource. Jmix 1.x loads overrides from `jmix.core.conf-dir` (default
+`${user.dir}/.jmix/conf`) before the classpath, including screen descriptors and
+hot-deployed controller classes. Remove the entire `.jmix/conf/` directory if it
+exists, before changing valid code. Archive-read failures after a rebuild need the
+approved restart above.
 
 Remove `.jmix/conf/` also after every walk during which code was edited while the app
-was running, and before the next Gate 2 run. The IDE hot deploy writes changed controller
-classes there, `clean test` does not clean `.jmix/`, and Jmix then loads the stale class
-with its own class loader. The symptom is a `ClassCastException` between two classes with
-the same name (`OrderDetailView cannot be cast to OrderDetailView`) in every test that
-opens the view.
-
-### Driving a Jmix/Vaadin UI
-
-The page is built from `vaadin-*` custom elements, rendered by a client that keeps
-working after the HTTP response is done:
-
-- **Wait for the client to render before you look.** The first snapshot or
-  screenshot after navigation is routinely blank; retry until the expected content
-  is there instead of reporting a render failure.
-- **Refs go stale after every action.** Retake the snapshot immediately before each
-  interaction rather than reusing refs captured earlier in the walk.
-- **Role/name locators often miss `vaadin-*` components.** Prefer a ref from the
-  current snapshot, falling back to a DOM query on tag name and visible text.
-- **A disabled action is usually a precondition, not a defect.** Jmix actions enable
-  on state — find and satisfy what this one waits for before reporting it broken.
+was running, and before the next Gate 2 run: `clean test` does not clean `.jmix/`, and
+Jmix then loads the stale class with its own class loader. The symptom is a
+`ClassCastException` between two classes with the same name in every test that opens
+the screen.
 
 ### File uploads in a non-root container
 
 If the deliverable includes a container image, a local upload does not verify the
-container filesystem permissions. Run the upload check against the built image or
-the deployed application.
-
-For an image that runs as a non-root `app` user with `/app` as its working
-directory, create the Jmix temporary directory and give the application user
-ownership before switching to that user:
+container filesystem permissions. Jmix 1.x writes temporary files to
+`jmix.core.temp-dir` (default `${user.dir}/.jmix/temp`) and the local file storage to
+`jmix.core.work-dir/filestorage` (default `${user.dir}/.jmix/work/filestorage`). For an
+image that runs as a non-root `app` user with `/app` as its working directory:
 
 ```dockerfile
-RUN mkdir -p /app/.jmix/temp && chown -R app:app /app/.jmix
+RUN mkdir -p /app/.jmix/temp /app/.jmix/work && chown -R app:app /app/.jmix
 ```
 
 ## Honest scope — Gate 3 is a render gate
 
-A browser walk catches the gross render exceptions a user would hit, but the
-test suite may exercise a different, headless server-side code path
-(`jmix-flowui-test-assist` `@UiTest`). A defect can therefore pass in the
-browser and still fail a test (e.g. a required default set only in the view, or
-a non-standard save-action id). Never let a green render walk override the
-mechanical checks.
+A browser walk catches the gross exceptions a user would hit, but a `@UiTest`
+exercises a different, headless code path (`jmix-ui-test-assist`). A defect can pass
+in the browser and still fail a test, and the reverse. Never let a green render walk
+override the mechanical checks.

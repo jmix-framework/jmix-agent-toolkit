@@ -1,28 +1,78 @@
 ---
 name: jmix-create-liquibase-changelog
-description: Create Liquibase changelogs that exactly match Jmix entity model changes, and register database changelogs supplied by Jmix add-ons that own persistent entities.
+description: Create Liquibase changelogs that exactly match Jmix 1.x entity model changes, placed where the Jmix 1.4 project layout picks them up automatically.
 ---
 
 # Create Liquibase Changelog
 
-Use this skill for every persistent entity or schema change, including adding a
-Jmix add-on that owns database tables.
+Stack: Jmix 1.x (verified on 1.4.4) — Liquibase 4.11.0 (managed by the Jmix BOM),
+HSQLDB 2.5 by default.
+
+Use this skill for every persistent entity or schema change.
+
+## How Jmix 1.4 finds changelogs
+
+There is no `spring.liquibase.change-log` in a Jmix 1.4 project. At startup Jmix
+(`io.jmix.data.impl.liquibase.LiquibaseChangeLogProcessor`) builds a master changelog that
+`<include>`s `/<base-package>/liquibase/changelog.xml` of **every Jmix module** on the
+classpath — the framework modules, every add-on, and the application itself (its base
+package, e.g. `/com/company/app/liquibase/changelog.xml`). An additional data store
+uses `/<base-package>/liquibase/<store>-changelog.xml` the same way.
+
+The application's own `changelog.xml`, as rendered by the 1.4 project template:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                      http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-3.8.xsd">
+
+    <!-- DO NOT REMOVE. This is a master changelog that runs all other changelogs. -->
+
+    <property name="uuid.type" dbms="oracle" value="varchar2(32)"/>
+    <property name="uuid.type" dbms="!oracle" value="uuid"/>
+
+    <includeAll path="/com/company/app/liquibase/changelog"/>
+
+</databaseChangeLog>
+```
+
+So the application changelogs live in `src/main/resources/<base-package>/liquibase/changelog/`
+and run in file-name order (`010-init-user.xml` is the template's first one). Keep the
+`dbchangelog-3.8.xsd` header the project's files already use; Liquibase 4.11 also accepts a
+`dbchangelog-4.11.xsd` header (both verified), but do not mix styles without a reason.
 
 ## Steps
 
-1. Find the root changelog path from `application.properties`.
-2. Follow the existing naming style: sequential files or date/time folders.
+1. Open `<base-package>/liquibase/changelog.xml` and see how it reaches the change files
+   (`<includeAll>` in the template, explicit `<include>` in some projects).
+2. Follow the existing naming style: numbered files (`020-...xml`) or date folders, so
+   the new file sorts AFTER every file it depends on.
 3. Create a new changelog file for the schema change.
-4. Make sure it is reachable from the root `changelog.xml`: usually by placing it under the directory covered by the project's `<includeAll>`, or by adding an explicit `<include>` only when the project uses explicit includes.
+4. Make sure it is reachable from that `changelog.xml`: usually by placing it under the directory covered by `<includeAll>`, or by adding an explicit `<include>` only when the project uses explicit includes.
 5. Check whether the project also keeps a **baseline** changelog — one that creates the whole schema for a fresh database. If it does, mirror the change there too. See "Baseline changelogs" below.
-6. When adding a Jmix add-on that owns persistent entities, add its module changelog to the root changelog with an explicit `<include>`.
-7. Use a changeset id and author that match project style; do not reuse an id within the same changelog file.
-8. Add `ID` and `VERSION` columns for standard Jmix entities.
-9. Add every persistent entity field with exact type, length, precision, scale, and nullability.
-10. Add foreign keys for references.
-11. Add indexes and unique constraints required by the entity or domain.
-12. Verify the table and column names match Java annotations.
-13. Use only type macros already present in the project. If no macro exists, use the standard Liquibase type.
+6. Use a changeset id and author that match project style; do not reuse an id within the same changelog file.
+7. Add `ID` and `VERSION` columns for standard Jmix entities.
+8. Add every persistent entity field with exact type, length, precision, scale, and nullability.
+9. Add foreign keys for references.
+10. Add indexes and unique constraints required by the entity or domain.
+11. Verify the table and column names match Java annotations.
+12. Use only type macros already present in the project (the template defines only `${uuid.type}`). If no macro exists, use the standard Liquibase type.
+13. Run `clean test`: the Spring context start applies the changelogs, so a broken changeset fails the context-load test.
+
+**The 1.4 template's tests share the development database.** There is no test
+datasource: `application.properties` points `main.datasource.url` at the file database
+`jdbc:hsqldb:file:.jmix/hsqldb/<project>`, and the test context uses it too. A test run
+therefore APPLIES your changesets to the dev database for good; editing one of them
+afterwards is "modifying an applied changeset" (checksum failure at the next start).
+While a changelog is still unreleased and you need to change it, delete
+`.jmix/hsqldb/` (the database is recreated from the changelogs) rather than piling up
+fix-up changesets — never do this to a shared or production database.
+
+The template's own changesets carry `context="!cuba"` (a CUBA-migration switch). Copy it
+into new changesets only if the project's other changesets use it.
 
 ## Standard Types
 
@@ -36,6 +86,7 @@ Jmix add-on that owns database tables.
 | Boolean | `boolean` |
 | LocalDate | `date` |
 | LocalDateTime | `timestamp` |
+| `java.util.Date` with `@Temporal(TIMESTAMP)` (audit, soft delete) | `timestamp` |
 | OffsetDateTime / ZonedDateTime | `timestamp with time zone` |
 | `@Lob` String (unlimited text) | `clob` |
 | `@Lob` byte[] | `blob` |
@@ -46,25 +97,25 @@ A column NAME is not a free choice either: if it is a reserved word in any
 targeted dialect the `createTable` fails there, and the dialects disagree —
 PostgreSQL rejects `END` outright (check with
 `select catcode from pg_get_keywords() where word = '<lower-case name>'`) while
-HSQLDB accepts SQL-standard keywords as identifiers by default and never warns.
+HSQLDB 2.5 (the 1.4 default) rejects `ORDER` but accepts `START`, `END`, `LANGUAGE`,
+`USER` and `NUMBER` without a warning.
 Liquibase emits the name unquoted, so this surfaces only when the changelog
-first reaches the production dialect. Rename instead of quoting. See
+first reaches the production dialect. Rename instead of quoting (the template's convention is a trailing underscore: `USER_`). See
 `jmix-create-entity` (Column names).
 
 An entity with an **assigned natural key** takes the id column type of its Java
 field — `bigint` for a `Long` id, not `${uuid.type}`. See `jmix-create-entity`
 (Id strategy).
 
-An entity extending a framework `@MappedSuperclass` inherits its key, and usually
-a version and a tenant column with it. No field in the subclass names them, but
-the table must still create them: read the superclass and take each inherited
-column's name and type from there — do not assume `${uuid.type}` for the primary
-key, these base classes are commonly keyed by an `int`.
+An entity extending a `@MappedSuperclass` inherits its key, and often a version,
+audit or tenant columns with it. No field in the subclass names them, but the table
+must still create them: read the superclass and take each inherited column's name and
+type from there — do not assume `${uuid.type}` for the primary key.
 
 ## Entity Table Skeleton
 
 ```xml
-<changeSet id="create-customer" author="app">
+<changeSet id="1" author="app">
     <createTable tableName="CUSTOMER">
         <column name="ID" type="${uuid.type}">
             <constraints nullable="false" primaryKey="true" primaryKeyName="PK_CUSTOMER"/>
@@ -95,7 +146,7 @@ the checksum and hard-fails startup.
     </addColumn>
 </changeSet>
 
-<!-- FK and index for the new reference column: separate changesets -->
+<!-- FK and index for the new reference column: a separate changeset -->
 <changeSet id="2" author="app">
     <addForeignKeyConstraint baseTableName="CUSTOMER" baseColumnNames="MANAGER_ID"
                              referencedTableName="EMPLOYEE" referencedColumnNames="ID"
@@ -234,7 +285,7 @@ sets its `MANAGER_ID` to null.
 In this case, separate statements from the application side: clear or delete the self-references first, 
 then delete the owner.
 
-## Root Changelog Reachability
+## Application changelog reachability
 
 ```xml
 <includeAll path="/com/company/app/liquibase/changelog"/>
@@ -270,41 +321,23 @@ When a project has one, a schema change lands in both places, in the same commit
 Keep every name identical across the dated file, the baseline and the entity's
 `@Table(indexes = ...)`.
 
-## Jmix add-on changelogs
+## Jmix add-on changelogs — included automatically in 1.4
 
-Adding an add-on dependency does not make its module changelog reachable from a
-project master changelog that lists module changelogs explicitly. When the add-on
-owns persistent entities, find its changelog resource and add an explicit include
-to the root `changelog.xml`. For example, the Audit add-on requires:
+Adding an add-on starter dependency is enough for its tables: the add-on is a Jmix
+module, and its `/<addon-base-package>/liquibase/changelog.xml` is included by the
+generated master changelog (see "How Jmix 1.4 finds changelogs"). Do NOT add an
+`<include file="/io/jmix/<addon>/liquibase/changelog.xml"/>` to the application's
+`changelog.xml` — the add-on changesets would be reached twice. Proof in the template
+itself: `010-init-user.xml` inserts into `SEC_ROLE_ASSIGNMENT`, a table created by the
+security-data module's changelog that the application never includes.
 
-```xml
-<include file="/io/jmix/audit/liquibase/changelog.xml"/>
-```
-
-Jmix module changelogs commonly use this path pattern:
-
-```xml
-<include file="/io/jmix/<addon>/liquibase/changelog.xml"/>
-```
-
-Confirm the actual resource path in the add-on before adding it. Do not assume
-that the application's `<includeAll>` covers changelogs packaged in add-on JARs.
-
-After startup, verify that the add-on tables exist and exercise a feature that
-uses them. Also search the complete startup log for missing-schema errors:
-
-```bash
-rg -n 'does not exist|relation .* does not exist' /path/to/startup.log
-```
-
-Treat every match as a failure until it is explained. A green `clean test` proves
-that the context loads, but it does not prove the add-on schema was created when
-no test accesses its tables. Some add-ons log the missing-table error and allow
-the application to continue running with the feature unavailable.
+Order follows module dependencies, so an application changeset may reference add-on
+tables. After adding an add-on, still exercise a feature that uses its tables: a green
+context-load test proves the changelogs ran, not that the feature works.
 
 ## Forbidden
 
-- New changelog file that is not reachable from the root changelog.
+- New changelog file that is not reachable from `<base-package>/liquibase/changelog.xml`.
 - Reusing a changeset id in the same changelog file.
 - Modifying a changeset already applied to a DB: it changes the checksum and Liquibase hard-fails at startup. Add a NEW changeset instead.
 - Raw `UUID` type instead of `${uuid.type}`.
@@ -318,7 +351,7 @@ the application to continue running with the feature unavailable.
 - `nullable="false"` on a column added to a populated table without a default or a backfill.
 - `value=""` where NULL is meant — omit the value attribute instead.
 - An index in the changelog with no matching `@Index` in the entity's `@Table`.
-- A Jmix add-on with persistent entities whose module changelog is not explicitly
-  reachable from the root changelog.
+- An explicit `<include>` of a Jmix module or add-on changelog in the application changelog — 1.4 includes them itself.
+- `spring.liquibase.change-log` or a hand-made master changelog replacing the Jmix-generated one.
 - A dated migration with no matching entry in the project's baseline changelogs, when
   the project keeps one.
