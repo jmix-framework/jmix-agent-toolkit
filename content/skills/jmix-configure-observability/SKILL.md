@@ -140,6 +140,16 @@ MDC is per thread: copy it explicitly into `@Async` / executor code
 - Drop unused observations by prefix: `management.observations.enable.spring.security=false`.
 - Drop long task timers (`*_active_*` series) if unused:
   `management.metrics.observations.ignored-meters=long-task-timer`.
+- With multitenancy, `jmix.user.tenantId` is a tag of every `jmix.*` metric
+  (jmix-framework/jmix#5795) and multiplies the series by the number of tenants.
+  Unless a per-tenant breakdown is needed, drop it; Spring Boot applies `MeterFilter`
+  beans to its registries, and the filter takes the dotted Micrometer key:
+  ```java
+  @Bean
+  MeterFilter ignoreTenantTag() {   // io.micrometer.core.instrument.config.MeterFilter
+      return MeterFilter.ignoreTags("jmix.user.tenantId");
+  }
+  ```
 
 ## Verify
 
