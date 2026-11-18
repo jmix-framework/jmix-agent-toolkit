@@ -185,7 +185,7 @@ Check ((Get-Item -LiteralPath $claudeMd).LastWriteTimeUtc -eq $mtimeBefore) `
 # 1b2. The same no-op guarantee holds when the checked-out block uses CRLF.
 $crlfSource = Join-Path $work 'source-crlf'
 $crlfContent = Join-Path $crlfSource 'content'
-New-Item -ItemType Directory -Force -Path (Join-Path $crlfContent 'skills') | Out-Null
+New-Item -ItemType Directory -Force -Path $crlfContent, (Join-Path $crlfSource 'skills') | Out-Null
 $crlfBlock = [regex]::Replace($blockText, '\r?\n', "`r`n")
 [System.IO.File]::WriteAllText((Join-Path $crlfContent 'guidelines-block.md'), $crlfBlock,
     (New-Object System.Text.UTF8Encoding($false)))
@@ -611,7 +611,7 @@ Reset-Guidelines
 #    into .claude/skills; an old .skills store is migrated away.
 # ---------------------------------------------------------------------------
 $linkType = if (Test-SymlinkCapable) { 'SymbolicLink' } elseif ($onWindows) { 'Junction' } else { $null }
-$skillNames = @(Get-ChildItem -LiteralPath (Join-Path $Source 'content/skills') -Directory | ForEach-Object { $_.Name })
+$skillNames = @(Get-ChildItem -LiteralPath (Join-Path $Source 'skills') -Directory | ForEach-Object { $_.Name })
 
 # True when $Path is a real folder, not a link (or junction) to one.
 function Test-RealDir {
@@ -674,7 +674,7 @@ function New-LegacyLayout {
     param([string]$Dir, [string[]]$AgentDirs = @('.agents/skills', '.claude/skills'))
     $legacy = Join-Path $Dir '.skills'
     New-Item -ItemType Directory -Force -Path $legacy | Out-Null
-    Copy-Item -Path (Join-Path $Source 'content/skills/*') -Destination $legacy -Recurse
+    Copy-Item -Path (Join-Path $Source 'skills/*') -Destination $legacy -Recurse
     foreach ($n in 'jmix-obsolete-skill', "$skill.bak") {
         New-Item -ItemType Directory -Force -Path (Join-Path $legacy $n) | Out-Null
         [System.IO.File]::WriteAllText((Join-Path $legacy "$n/SKILL.md"), "# $n`n")
@@ -706,6 +706,7 @@ $convProj = New-TestProject 'agents-only-project'
 $r = Invoke-LocalSkills -Dir $convProj -More @('-Claude:$false')
 Check ($r.Code -eq 0 -and (Test-RealDir (Join-Path $convProj ".agents/skills/$skill")) -and
        -not (Test-Path (Join-Path $convProj '.claude'))) 'skills: -Claude:$false installs .agents/skills alone'
+Check ($r.Output -match [regex]::Escape("Using skills from $Source")) 'skills: the output names the source it installs from'
 $r = Invoke-LocalSkills -Dir $convProj -More @('-Claude:$false')
 Check ($r.Code -eq 0 -and -not (Test-Path (Join-Path $convProj '.claude'))) 'skills: -Claude:$false makes no .claude'
 $r = Invoke-LocalSkills -Dir $convProj -More @('-Claude:$true')
@@ -882,7 +883,7 @@ if ($linkType) {
     $clutterProj = New-TestProject 'legacy-clutter-project'
     New-LegacyLayout -Dir $clutterProj
     [System.IO.File]::WriteAllText((Join-Path $clutterProj '.skills/.DS_Store'), '')
-    Copy-Item -Path (Join-Path $Source "content/skills/$skill") -Destination (Join-Path $clutterProj ".claude/skills/$skill.bak1") -Recurse
+    Copy-Item -Path (Join-Path $Source "skills/$skill") -Destination (Join-Path $clutterProj ".claude/skills/$skill.bak1") -Recurse
     $r = Invoke-LocalSkills -Dir $clutterProj -More @('-Claude')
     Check ($r.Code -eq 0 -and -not (Test-Path (Join-Path $clutterProj '.skills')) -and @(Get-LegacyLeftovers $clutterProj).Count -eq 0 -and
            (Test-Path (Join-Path $clutterProj ".agents/.jmix/backups/$skill.bak1.bak/SKILL.md"))) `
@@ -909,7 +910,7 @@ if ($linkType) {
     # and nothing in it is removed.
     $userLinkProj = New-TestProject 'agents-link-project'
     New-Item -ItemType Directory -Force -Path (Join-Path $userLinkProj '.skills'), (Join-Path $userLinkProj '.agents') | Out-Null
-    Copy-Item -Path (Join-Path $Source 'content/skills/*') -Destination (Join-Path $userLinkProj '.skills') -Recurse
+    Copy-Item -Path (Join-Path $Source 'skills/*') -Destination (Join-Path $userLinkProj '.skills') -Recurse
     New-Item -ItemType $linkType -Path (Join-Path $userLinkProj '.agents/skills') -Target (Join-Path $userLinkProj '.skills') | Out-Null
     $r = Invoke-LocalSkills -Dir $userLinkProj -More @('-Claude')
     Check ($r.Code -eq 0 -and (Test-RealDir (Join-Path $userLinkProj ".skills/$skill")) -and
@@ -1109,6 +1110,17 @@ Check ((Invoke-Installer @('skills', '-ContentRef', 'no-agents-md-test', '-Claud
     'skills(global): content-ref override exits 0'
 Check (Test-Path (Join-Path $homeDir '.agents/.jmix/skills/no-agents-md-test')) `
     'skills(global): content-ref override keys the store'
+
+# A checkout from before #217 keeps its skills in content/skills: the installer
+# names the missing skills/ folder rather than installing nothing.
+$oldSource = Join-Path $work 'pre-217-source'
+$oldSkill = Join-Path $oldSource "content/skills/$skill"
+New-Item -ItemType Directory -Force -Path $oldSkill | Out-Null
+Copy-Item -LiteralPath (Join-Path $Source "skills/$skill/SKILL.md") -Destination $oldSkill
+Copy-Item -LiteralPath $blockPath -Destination (Join-Path $oldSource 'content')
+$r = Invoke-InstallerResult @('skills', '-Scope', 'global', '-Source', $oldSource)
+Check ($r.Code -ne 0 -and $r.Output -match 'skills/ not found in') `
+    'skills: a pre-#217 source with only content/skills fails, naming skills/'
 
 # ---------------------------------------------------------------------------
 # 3. MCP servers. 3a-3q: at user level (-Scope global) in the isolated HOME;

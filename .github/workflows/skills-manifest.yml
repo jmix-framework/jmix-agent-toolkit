@@ -4,7 +4,7 @@ on:
   push:
     branches: [ 'v[0-9]*' ]
     paths:
-      - 'content/skills/**'
+      - 'skills/**'
       - '.studio/gen_skills_manifest.py'
   workflow_dispatch:
 
