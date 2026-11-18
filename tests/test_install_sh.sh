@@ -955,20 +955,17 @@ bash "$INSTALL" skills --content-ref no-agents-md-test --claude \
     || fail "skills(global): content-ref override did not key the store"
 pass "skills(global) honours --content-ref"
 
-# A checkout from before #217 keeps its skills in content/skills: the installer
-# names the missing skills/ folder rather than installing nothing.
-OLD_SOURCE="${WORK}/pre-217-source"
-mkdir -p "${OLD_SOURCE}/content/skills/${SKILL}"
-cp "${SOURCE}/skills/${SKILL}/SKILL.md" "${OLD_SOURCE}/content/skills/${SKILL}/"
-cp "${SOURCE}/content/guidelines-block.md" "${OLD_SOURCE}/content/"
-if err="$(bash "$INSTALL" skills --scope global --source "$OLD_SOURCE" 2>&1 >/dev/null)"; then
+# A source without skills/ fails and names the missing folder.
+NO_SKILLS_SOURCE="${WORK}/no-skills-source"
+mkdir -p "$NO_SKILLS_SOURCE"
+if err="$(bash "$INSTALL" skills --scope global --source "$NO_SKILLS_SOURCE" 2>&1 >/dev/null)"; then
     fail "skills: a source without skills/ should be rejected"
 fi
 case "$err" in
-    *"skills/ not found in ${OLD_SOURCE}"*) ;;
+    *"skills/ not found in ${NO_SKILLS_SOURCE}"*) ;;
     *) fail "skills: a source without skills/ fails without naming it (${err})" ;;
 esac
-pass "skills rejects a pre-#217 source that keeps its skills in content/skills"
+pass "skills rejects a source without skills/"
 
 # Every Studio command must pass the same resolved branch to the script it
 # downloads; otherwise a feature-branch script silently fetches v3 content.

@@ -1111,16 +1111,12 @@ Check ((Invoke-Installer @('skills', '-ContentRef', 'no-agents-md-test', '-Claud
 Check (Test-Path (Join-Path $homeDir '.agents/.jmix/skills/no-agents-md-test')) `
     'skills(global): content-ref override keys the store'
 
-# A checkout from before #217 keeps its skills in content/skills: the installer
-# names the missing skills/ folder rather than installing nothing.
-$oldSource = Join-Path $work 'pre-217-source'
-$oldSkill = Join-Path $oldSource "content/skills/$skill"
-New-Item -ItemType Directory -Force -Path $oldSkill | Out-Null
-Copy-Item -LiteralPath (Join-Path $Source "skills/$skill/SKILL.md") -Destination $oldSkill
-Copy-Item -LiteralPath $blockPath -Destination (Join-Path $oldSource 'content')
-$r = Invoke-InstallerResult @('skills', '-Scope', 'global', '-Source', $oldSource)
+# A source without skills/ fails and names the missing folder.
+$noSkillsSource = Join-Path $work 'no-skills-source'
+New-Item -ItemType Directory -Force -Path $noSkillsSource | Out-Null
+$r = Invoke-InstallerResult @('skills', '-Scope', 'global', '-Source', $noSkillsSource)
 Check ($r.Code -ne 0 -and $r.Output -match 'skills/ not found in') `
-    'skills: a pre-#217 source with only content/skills fails, naming skills/'
+    'skills: a source without skills/ fails, naming the folder'
 
 # ---------------------------------------------------------------------------
 # 3. MCP servers. 3a-3q: at user level (-Scope global) in the isolated HOME;

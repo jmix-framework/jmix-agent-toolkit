@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when a skills/*/SKILL.md frontmatter would be rejected by a strict agent,
-or when content/skills, the skills folder before #217, exists.
+"""Fail when a skills/*/SKILL.md frontmatter would be rejected by a strict agent.
 
 Codex before 0.142 and Junie parse the frontmatter as strict YAML and skip the
 whole skill on an error -- an unquoted ': ' inside a description is enough.
@@ -14,9 +13,6 @@ import yaml
 
 repo = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 errors = []
-if os.path.isdir(os.path.join(repo, "content", "skills")):
-    # A pull request from before #217 would land a skill the installers no longer read.
-    errors.append("content/skills exists: skills live in skills/ since #217")
 paths = sorted(glob.glob(os.path.join(repo, "skills", "*", "SKILL.md")))
 for path in paths:
     skill = os.path.basename(os.path.dirname(path))

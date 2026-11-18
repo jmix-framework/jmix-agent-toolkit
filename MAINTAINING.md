@@ -51,8 +51,7 @@ skill whose frontmatter fails to parse; an unquoted `: ` inside a `description` 
 enough, so quote such descriptions. `tests/check_skill_frontmatter.py`, run by
 `.github/workflows/skills-lint.yml` on changes under `skills/`, enforces strict
 YAML without a BOM, `name` matching the folder (at most 64 characters), and a non-empty
-`description` of at most 1024 characters. It also fails while a `content/skills/` folder
-exists: skills lived there before #217, and the installers no longer read it.
+`description` of at most 1024 characters.
 
 ## Cutting a new version branch (e.g. Jmix 4 → `v4`)
 
