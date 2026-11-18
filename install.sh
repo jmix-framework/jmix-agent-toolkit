@@ -26,7 +26,8 @@ RESOLVED_VERSION_DIR=""
 TARBALL_READY=0
 
 # Branch identity: this script lives on the CONTENT_REF branch and installs that
-# branch's content/. Set per branch when cutting a new version (see MAINTAINING.md).
+# branch's skills/ and content/. Set per branch when cutting a new version (see
+# MAINTAINING.md).
 CONTENT_REF="v1"
 SOURCE_DIR=""
 BACKUP_EXISTING=0
@@ -332,7 +333,7 @@ EOF
 # Tarball download
 # =================================================================
 
-# Downloads and extracts the tarball, locates the content/ folder, and populates
+# Downloads and extracts the tarball, locates skills/ and content/, and populates
 # SOURCE_SKILLS_DIR / SOURCE_GUIDELINES_BLOCK / RESOLVED_VERSION_DIR. Idempotent.
 ensure_tarball() {
     [ "$TARBALL_READY" -eq 1 ] && return 0
@@ -366,12 +367,11 @@ ensure_tarball() {
         [ -n "$EXTRACTED_DIR" ] || die "extracted source directory not found in ${STAGING}"
     fi
 
-    local content_dir="${EXTRACTED_DIR}/content"
-    if [ ! -d "${content_dir}/skills" ]; then
-        die "content/skills not found in ${SOURCE_DIR:-$CONTENT_REF}"
+    SOURCE_SKILLS_DIR="${EXTRACTED_DIR}/skills"
+    if [ ! -d "$SOURCE_SKILLS_DIR" ]; then
+        die "skills/ not found in ${SOURCE_DIR:-$CONTENT_REF}"
     fi
-    SOURCE_SKILLS_DIR="${content_dir}/skills"
-    SOURCE_GUIDELINES_BLOCK="${content_dir}/guidelines-block.md"
+    SOURCE_GUIDELINES_BLOCK="${EXTRACTED_DIR}/content/guidelines-block.md"
 
     # Store segment under ~/.agents/.jmix/skills/<seg>: the branch name, so
     # multiple Jmix majors coexist on one machine.
@@ -380,7 +380,7 @@ ensure_tarball() {
     vlog "extracted dir: ${EXTRACTED_DIR}"
     vlog "store segment: ${RESOLVED_VERSION_DIR}"
     vlog "source skills dir: ${SOURCE_SKILLS_DIR}"
-    log "Using guidelines from ${SOURCE_SKILLS_DIR#"${EXTRACTED_DIR}"/}"
+    log "Using skills from ${SOURCE_DIR:-$CONTENT_REF}"
 
     TARBALL_READY=1
 }

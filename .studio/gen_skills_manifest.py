@@ -47,7 +47,7 @@ def aggregate_hash(skills_dir, skill_names):
     return digest.hexdigest()
 
 def build_manifest():
-    skills_dir = os.path.join(REPO_ROOT, "content", "skills")
+    skills_dir = os.path.join(REPO_ROOT, "skills")
     names = list_skill_names(skills_dir)
     return {
         "schemaVersion": 1,

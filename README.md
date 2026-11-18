@@ -4,9 +4,9 @@ Agent skills, guidelines and tools that teach AI coding agents the Jmix-specific
 
 ## Repository Structure
 
-Each Jmix major version lives on its own branch: `v2` for Jmix 2, `v3` for Jmix 3, and so on. The default branch is the current stable major. A branch's `content/` folder holds:
+Each Jmix major version lives on its own branch: `v2` for Jmix 2, `v3` for Jmix 3, and so on. The default branch is the current stable major. A branch holds:
 
-- `guidelines-block.md`: a short block, delimited by `<!-- BEGIN jmix-agent-toolkit -->` / `<!-- END jmix-agent-toolkit -->` markers, that the installer merges into the project's agent guidelines file. It points the agent at the `jmix` skill.
+- `content/guidelines-block.md`: a short block, delimited by `<!-- BEGIN jmix-agent-toolkit -->` / `<!-- END jmix-agent-toolkit -->` markers, that the installer merges into the project's agent guidelines file. It points the agent at the `jmix` skill.
 - `skills/`: one folder per skill, each with a `SKILL.md` (instructions and rules for a specific Jmix feature) and optional subfolders with examples or other materials.
 
 ## Studio Installation
@@ -75,7 +75,7 @@ The MCP subcommands take **agents**, each with its own config: `claude`, `codex`
 
 | Flag (bash)               | Flag (PowerShell)      | Default | Meaning                                                                                                                                                                                                                                                                                                              |
 |:--------------------------|:-----------------------|:--------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `--content-ref REF`       | `-ContentRef REF`      | `v1`    | Branch/ref whose `content/` is downloaded; it also names the global skills store. Studio passes its resolved toolkit branch.                                                                                                                                                                                         |
+| `--content-ref REF`       | `-ContentRef REF`      | `v1`    | Branch/ref whose skills and guidelines block are downloaded; it also names the global skills store. Studio passes its resolved toolkit branch.                                                                                                                                                                       |
 | `--source DIR`            | `-Source DIR`          | -       | Install from a local checkout of this repository instead of downloading (CI, offline use).                                                                                                                                                                                                                           |
 | `--claude[=true\|false]`  | `-Claude`              | on      | `skills`, `agents-md`: set up Claude Code by default. Use `--claude=false` / `-Claude:$false` to skip `.claude/skills` links and `CLAUDE.md`. `.agents/skills` and `AGENTS.md` are always installed. |
 | `--agents CSV`            | `-Agents CSV`          | -       | MCP subcommands: `claude`, `codex`, `opencode`, `junie`, `cline`. Required.                                                                                                                                                                                                                                          |
@@ -94,9 +94,19 @@ The MCP subcommands take **agents**, each with its own config: `claude`, `codex`
 
 > The installer writes MCP servers straight into each agent's config file (see [MCP Servers](#3-mcp-servers)), keeping its other servers and settings; only Claude CLI at `global` scope goes through `claude mcp add`. A file that is already up to date is not rewritten. On macOS/Linux, merging into an existing JSON config file needs `jq` or `node`; a new file is written without them. Servers started through `npx` need Node.js 20+ when the agent starts them, not at install time.
 
+## Skills with `npx skills`
+
+The [`skills` CLI](https://github.com/vercel-labs/skills) installs the skills of a branch for the agents you pick: into the project, or with `-g` into your home directory. Name the branch for your Jmix major in the URL:
+
+```bash
+npx skills add https://github.com/jmix-framework/jmix-agent-toolkit/tree/v1
+```
+
+It installs the skills only. Add the guidelines block and the MCP servers with the installer's `agents-md` and `mcp` subcommands, or by hand (see [Manual Installation](#manual-installation)). Both tools put the Jmix skills into `.agents/skills`, so manage them with one tool per project or home directory.
+
 ## Manual Installation
 
-To skip the script, check out the branch for your Jmix major and take the files from its `content/` folder.
+To skip the script, check out the branch for your Jmix major and take its `skills/` folder and `content/guidelines-block.md`.
 
 ### 1. Project Guidelines
 
@@ -125,7 +135,7 @@ Re-run after pulling new skills: `ln -sfn` refreshes existing links and leaves o
 ```bash
 mkdir -p ~/.claude/skills
 # run from a checkout of your major's branch (v2, v3, ...)
-for skill in /path/to/jmix-agent-toolkit/content/skills/*/; do
+for skill in /path/to/jmix-agent-toolkit/skills/*/; do
     ln -sfn "$skill" ~/.claude/skills/"$(basename "$skill")"
 done
 ```
