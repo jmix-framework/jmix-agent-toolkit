@@ -513,7 +513,7 @@ assert_no_leftovers() {
 make_legacy_layout() {
     local rel skill
     mkdir -p "$1/.skills/jmix-obsolete-skill"
-    cp -R "${SOURCE}/content/skills/." "$1/.skills/"
+    cp -R "${SOURCE}/skills/." "$1/.skills/"
     printf -- '---\nname: jmix-obsolete-skill\n---\n' > "$1/.skills/jmix-obsolete-skill/SKILL.md"
     cp -R "$1/.skills/${SKILL}" "$1/.skills/${SKILL}.bak"
     for rel in $2; do
@@ -542,7 +542,11 @@ mkdir -p "${PROJECT}/.agents/skills/my-skill" "${PROJECT}/.claude/skills/my-skil
 printf 'mine\n' > "${PROJECT}/.agents/skills/my-skill/SKILL.md"
 printf 'mine\n' > "${PROJECT}/.claude/skills/my-skill/SKILL.md"
 out="$(local_skills "$PROJECT" --claude)" || fail "skills(local): install failed"
-for skill in "${SOURCE}/content/skills"/*/; do
+case "$out" in
+    *"Using skills from ${SOURCE}"*) ;;
+    *) fail "skills(local): the output does not name the source it installs from" ;;
+esac
+for skill in "${SOURCE}/skills"/*/; do
     assert_local_skill "$PROJECT" "$(basename "$skill")" "skills(local)"
 done
 [ ! -e "${PROJECT}/.skills" ] || fail "skills(local): created the old .skills store"
@@ -642,12 +646,12 @@ LEGACY_PROJ="$(new_project legacy-project)"
 LEGACY_BACKUPS="${LEGACY_PROJ}/.agents/.jmix/backups"
 make_legacy_layout "$LEGACY_PROJ" ".agents/skills .claude/skills"
 : > "${LEGACY_PROJ}/.skills/.DS_Store"
-cp -R "${SOURCE}/content/skills/${SKILL}" "${LEGACY_PROJ}/.claude/skills/${SKILL}.bak1"
+cp -R "${SOURCE}/skills/${SKILL}" "${LEGACY_PROJ}/.claude/skills/${SKILL}.bak1"
 mkdir -p "${LEGACY_PROJ}/.cursor/skills"
 ln -s "../../.skills/${SKILL}" "${LEGACY_PROJ}/.cursor/skills/${SKILL}"
 ln -s ../../.skills/jmix-obsolete-skill "${LEGACY_PROJ}/.cursor/skills/jmix-obsolete-skill"
 out="$(local_skills "$LEGACY_PROJ" --claude)" || fail "skills(local): migrating .skills failed"
-for skill in "${SOURCE}/content/skills"/*/; do
+for skill in "${SOURCE}/skills"/*/; do
     assert_local_skill "$LEGACY_PROJ" "$(basename "$skill")" "skills(local, migrated)"
 done
 assert_no_leftovers "$LEGACY_PROJ" "skills(local, migrated)"
@@ -751,7 +755,7 @@ pass "skills(local) migrates an old claude-only layout"
 #     updated in place and kept.
 USER_PROJ="$(new_project user-link-project)"
 mkdir -p "${USER_PROJ}/.skills" "${USER_PROJ}/.agents"
-cp -R "${SOURCE}/content/skills/." "${USER_PROJ}/.skills/"
+cp -R "${SOURCE}/skills/." "${USER_PROJ}/.skills/"
 ln -s ../.skills "${USER_PROJ}/.agents/skills"
 local_skills "$USER_PROJ" --claude >/dev/null || fail "skills(local): failed with .agents/skills -> ../.skills"
 [ -f "${USER_PROJ}/.skills/${SKILL}/SKILL.md" ] && [ ! -L "${USER_PROJ}/.skills/${SKILL}" ] \
@@ -836,7 +840,7 @@ pass "skills(local) puts backups into .agents/.jmix/backups"
 # A real folder where a .claude/skills link goes (a user copy) is backed up
 # there too, and the link takes its place.
 rm "${BAK_PROJ}/.claude/skills/${SKILL}"
-cp -R "${SOURCE}/content/skills/${SKILL}" "${BAK_PROJ}/.claude/skills/${SKILL}"
+cp -R "${SOURCE}/skills/${SKILL}" "${BAK_PROJ}/.claude/skills/${SKILL}"
 printf 'mine\n' > "${BAK_PROJ}/.claude/skills/${SKILL}/MINE"
 local_skills "$BAK_PROJ" --claude --backup-existing-files >/dev/null \
     || fail "skills(local, backup): run over a real .claude/skills/${SKILL} failed"
@@ -950,6 +954,18 @@ bash "$INSTALL" skills --content-ref no-agents-md-test --claude \
 [ -d "${HOME}/.agents/.jmix/skills/no-agents-md-test" ] \
     || fail "skills(global): content-ref override did not key the store"
 pass "skills(global) honours --content-ref"
+
+# A source without skills/ fails and names the missing folder.
+NO_SKILLS_SOURCE="${WORK}/no-skills-source"
+mkdir -p "$NO_SKILLS_SOURCE"
+if err="$(bash "$INSTALL" skills --scope global --source "$NO_SKILLS_SOURCE" 2>&1 >/dev/null)"; then
+    fail "skills: a source without skills/ should be rejected"
+fi
+case "$err" in
+    *"skills/ not found in ${NO_SKILLS_SOURCE}"*) ;;
+    *) fail "skills: a source without skills/ fails without naming it (${err})" ;;
+esac
+pass "skills rejects a source without skills/"
 
 # Every Studio command must pass the same resolved branch to the script it
 # downloads; otherwise a feature-branch script silently fetches v3 content.

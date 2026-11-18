@@ -6,8 +6,9 @@ No build step: shell and PowerShell scripts, Markdown skills, JSON metadata.
 
 ## Where to look
 
-- `content/skills/<skill>/SKILL.md` — the skills; `jmix` is the umbrella skill.
-  `content/guidelines-block.md` — the block merged into a project's guidelines files.
+- `skills/<skill>/SKILL.md` — the skills, at the top level for `npx skills`; `jmix` is the
+  umbrella skill. `content/guidelines-block.md` — the block merged into a project's
+  guidelines files.
 - `install.sh` / `install.ps1` — the installers: interactive wizard plus the subcommands
   `skills`, `agents-md`, `mcp`, `mcp-jetbrains`, `mcp-context7`, `playwright`.
 - `tests/` — functional installer suites (temp `HOME` and project dirs) and the skill
@@ -31,11 +32,12 @@ No build step: shell and PowerShell scripts, Markdown skills, JSON metadata.
   The branch is the version.
 - Keep the mechanics identical on every maintained `v*` branch: installers, tests, CI,
   `.studio/` metadata and generator, README and MAINTAINING. Branches differ only in
-  `content/` (skills and guidelines block, written for their Jmix major, never synced) and in
-  the branch identity: `CONTENT_REF` / `$ContentRef` and `v<N>` in help, tests and README URLs.
+  `skills/` and `content/` (skills and guidelines block, written for their Jmix major, never
+  synced) and in the branch identity: `CONTENT_REF` / `$ContentRef` and `v<N>` in help, tests
+  and README URLs.
 - Land a mechanics change on one branch, then port it to the others in a sync commit (as
   `3fb296f` did for v2). This diff must show branch-identity lines only:
-  `git diff v2 v3 -- . ':!content' ':!.studio/skills-manifest.json'`.
+  `git diff v2 v3 -- . ':!content' ':!skills' ':!.studio/skills-manifest.json'`.
 
 ## When changing things
 

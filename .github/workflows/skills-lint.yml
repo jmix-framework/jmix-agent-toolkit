@@ -4,12 +4,12 @@ on:
   push:
     branches: [ 'v[0-9]*' ]
     paths:
-      - 'content/skills/**'
+      - 'skills/**'
       - 'tests/check_skill_frontmatter.py'
       - '.github/workflows/skills-lint.yml'
   pull_request:
     paths:
-      - 'content/skills/**'
+      - 'skills/**'
       - 'tests/check_skill_frontmatter.py'
       - '.github/workflows/skills-lint.yml'
   workflow_dispatch:
