@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when a content/skills/*/SKILL.md frontmatter would be rejected by a strict agent.
+"""Fail when a skills/*/SKILL.md frontmatter would be rejected by a strict agent.
 
 Codex before 0.142 and Junie parse the frontmatter as strict YAML and skip the
 whole skill on an error -- an unquoted ': ' inside a description is enough.
@@ -13,7 +13,7 @@ import yaml
 
 repo = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 errors = []
-paths = sorted(glob.glob(os.path.join(repo, "content", "skills", "*", "SKILL.md")))
+paths = sorted(glob.glob(os.path.join(repo, "skills", "*", "SKILL.md")))
 for path in paths:
     skill = os.path.basename(os.path.dirname(path))
     with open(path, "rb") as f:
@@ -45,7 +45,7 @@ for path in paths:
         errors.append(f"{skill}: description longer than 1024 characters")
 
 if not paths:
-    errors.append("no content/skills/*/SKILL.md found")
+    errors.append("no skills/*/SKILL.md found")
 for e in errors:
     print(f"FAIL: {e}")
 if errors:

@@ -416,12 +416,11 @@ function Initialize-Tarball {
         }
     }
 
-    $contentDir = Join-Path $script:ExtractedDir 'content'
-    $script:SourceSkillsDir = Join-Path $contentDir 'skills'
+    $script:SourceSkillsDir = Join-Path $script:ExtractedDir 'skills'
     if (-not (Test-Path $script:SourceSkillsDir -PathType Container)) {
-        Write-ErrAndExit "content/skills not found in $(if ($Source) { $Source } else { $ContentRef })"
+        Write-ErrAndExit "skills/ not found in $(if ($Source) { $Source } else { $ContentRef })"
     }
-    $script:SourceGuidelinesBlock = Join-Path $contentDir 'guidelines-block.md'
+    $script:SourceGuidelinesBlock = Join-Path (Join-Path $script:ExtractedDir 'content') 'guidelines-block.md'
 
     # Store segment under ~/.agents/.jmix/skills/<seg>: the branch name, so multiple
     # Jmix majors coexist on one machine.
@@ -430,7 +429,7 @@ function Initialize-Tarball {
     Write-Verbose "extracted dir: $($script:ExtractedDir)"
     Write-Verbose "store segment: $($script:ResolvedVersionDir)"
     Write-Verbose "source skills dir: $($script:SourceSkillsDir)"
-    Write-Info "Using guidelines from $($script:SourceSkillsDir.Substring($script:ExtractedDir.Length + 1))"
+    Write-Info "Using skills from $(if ($Source) { $Source } else { $ContentRef })"
 
     $script:TarballReady = $true
 }
