@@ -2,20 +2,29 @@
 
 Agent skills, guidelines and tools that teach AI coding agents the Jmix-specific patterns, mandatory rules and best practices for developing applications with the [Jmix framework](https://www.jmix.io/).
 
-## Repository Structure
+The toolkit adds three things to your project:
 
-Each Jmix major version lives on its own branch: `v2` for Jmix 2, `v3` for Jmix 3, and so on. The default branch is the current stable major. A branch holds:
+- **Skills**: instructions and rules for Jmix features such as entities, views and data access. Browse them in [`skills/`](skills).
+- **Guidelines**: a short block in `AGENTS.md` that points the agent at the `jmix` skill, the entry point to the others.
+- **MCP servers**: connections to IntelliJ IDEA, documentation and a browser, see [MCP Servers](#mcp-servers).
 
-- `content/guidelines-block.md`: a short block, delimited by `<!-- BEGIN jmix-agent-toolkit -->` / `<!-- END jmix-agent-toolkit -->` markers, that the installer merges into the project's agent guidelines file. It points the agent at the `jmix` skill.
-- `skills/`: one folder per skill, each with a `SKILL.md` (instructions and rules for a specific Jmix feature) and optional subfolders with examples or other materials.
+Supported agents: Claude Code and every agent that reads `.agents/skills` and `AGENTS.md`, such as Codex, OpenCode, Junie, Cline, Cursor, GitHub Copilot and Gemini CLI.
 
-## Studio Installation
+Each Jmix major version has its own branch, named `v<major>`. This is the `v3` branch. For a project on another Jmix major, switch to that branch and use its commands.
 
-The simplest way is Jmix Studio 3.0+: run the **AI Agents Toolkit** action from the **Settings** menu of the **Jmix** tool window and follow the wizard.
+## Installation
 
-## Quick CLI Installation
+| Method                                      | Installs                        | Needs                 |
+|:--------------------------------------------|:--------------------------------|:----------------------|
+| [Installer script](#quick-cli-installation) | Skills, guidelines, MCP servers | bash or PowerShell 5+ |
+| [npx skills](#npx-skills)                 | Skills only                          | Node.js               |
+| [Jmix Studio](#jmix-studio)                 | Skills, guidelines, MCP servers | Jmix Studio 3.0+      |
 
-One command starts an interactive wizard with three steps: installing skills, adding guidelines, and registering the JetBrains, Context7, Jmix Docs and Playwright MCP servers.
+To set everything up by hand, follow [Manual Installation](docs/manual-installation.md).
+
+### Quick CLI Installation
+
+One command starts a wizard that asks about each step: skills, guidelines, MCP servers. Run it from the project root.
 
 **macOS / Linux:**
 
@@ -29,6 +38,9 @@ curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/v
 Invoke-RestMethod https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/v3/install.ps1 | Invoke-Expression
 ```
 
+<details>
+<summary>If Windows blocks the script</summary>
+
 If the execution policy blocks the script, bypass it:
 
 ```powershell
@@ -41,362 +53,51 @@ If `powershell.exe` itself is blocked by a corporate policy (`CreateProcess erro
 pwsh -NoProfile -ExecutionPolicy Bypass -Command "Invoke-RestMethod 'https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/v3/install.ps1' | Invoke-Expression"
 ```
 
-### Non-Interactive Subcommands
+</details>
 
-Each runs one step without the wizard. **CSV** is a comma-separated list (e.g. `claude,codex`) or a single value.
+Each step is also a subcommand, for scripts and CI: see the [installer reference](docs/installer.md).
 
-```bash
-install.sh skills     [--scope global|local] [--claude=false]
-install.sh agents-md  [--claude=false]
-install.sh mcp        --servers CSV --agents CSV [--scope local|global] [--context7-key KEY]
-install.sh mcp-jetbrains | mcp-context7 | mcp-jmix-docs | playwright --agents CSV [--scope local|global]
-                                     # mcp-context7 also takes [--context7-key KEY]
-```
+### npx skills
 
-Piped from `curl`, pass the subcommand after `bash -s --`:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/v3/install.sh | bash -s -- mcp --servers jetbrains,playwright --agents claude,codex
-```
-
-PowerShell takes the same subcommands and flags (e.g. `install.ps1 skills -Scope local -Claude:$false` to skip Claude Code). To run one straight from the URL:
-
-```powershell
-& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/jmix-framework/jmix-agent-toolkit/v3/install.ps1).Content)) mcp -Servers 'jetbrains,playwright' -Agents 'claude,codex'
-```
-
-Quote lists: unquoted, `claude,codex` is an array in PowerShell.
-
-`skills` always installs the skills into `.agents/skills`, and `agents-md` always merges the guidelines into `AGENTS.md`: Codex, OpenCode, Junie, Cline, Cursor, GitHub Copilot, Gemini CLI and others read them there. Claude Code is included by default: each skill is linked into `.claude/skills`, and a new `CLAUDE.md` contains only `@AGENTS.md`, so the shared instructions have one copy. Existing `CLAUDE.md` files keep the current merge and backup rules; a file that already imports `AGENTS.md` is left untouched. Use `--claude=false` (`-Claude:$false`) to skip Claude Code.
-
-The MCP subcommands take **agents**, each with its own config: `claude`, `codex`, `opencode`, `junie`, `cline`. `claude` also sets up [Claude Desktop](#claude-desktop) when it is installed. [Cline](#cline) has only a user config, which it gets whatever the `--scope`.
-
-### Flags
-
-| Flag (bash)               | Flag (PowerShell)      | Default | Meaning                                                                                                                                                                                                                                                                                                              |
-|:--------------------------|:-----------------------|:--------|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `--content-ref REF`       | `-ContentRef REF`      | `v3`    | Branch/ref whose skills and guidelines block are downloaded; it also names the global skills store. Studio passes its resolved toolkit branch.                                                                                                                                                                       |
-| `--source DIR`            | `-Source DIR`          | -       | Install from a local checkout of this repository instead of downloading (CI, offline use).                                                                                                                                                                                                                           |
-| `--claude[=true\|false]`  | `-Claude`              | on      | `skills`, `agents-md`: set up Claude Code by default. Use `--claude=false` / `-Claude:$false` to skip `.claude/skills` links and `CLAUDE.md`. `.agents/skills` and `AGENTS.md` are always installed. |
-| `--agents CSV`            | `-Agents CSV`          | -       | MCP subcommands: `claude`, `codex`, `opencode`, `junie`, `cline`. Required.                                                                                                                                                                                                                                          |
-| `--servers CSV`           | `-Servers CSV`         | -       | `mcp`: `jetbrains`, `context7`, `jmix-docs`, `playwright`. Required.                                                                                                                                                                                                                                                              |
-| `--scope global\|local`   | `-Scope global\|local` | global  | `skills`: install into the user home or the current project, see **Skills store** below.                                                                                                                                                                                                                             |
-| `--scope local\|global`   | `-Scope local\|global` | local   | MCP subcommands: write the project files in the current directory or each agent's user config. Claude Desktop and Cline have only a user config.                                                                                                                                                                     |
-| `--context7-key K`        | `-Context7Key K`       | prompt  | `mcp`, `mcp-context7`: Context7 API key (letters, digits, `.`, `_`, `-`); `skip` leaves Context7 out. Never printed. At `local` scope it goes into the project files: keep them out of version control.                                                                                                              |
-| `--backup-existing-files` | `-BackupExistingFiles` | off     | Rename overwritten files/dirs to `<name>.bak` (`.bak1`, `.bak2`, ... when taken) instead of deleting them. Not for guidelines files: they are merged, and backed up (with or without this flag) only when the toolkit rewrites content it does not own: an older toolkit's file, or your own file getting the block. |
-| `--verbose`, `--debug`    | `-Verbose`             | off     | Print diagnostics (OS, PATH, resolved paths, tool versions).                                                                                                                                                                                                                                                         |
-
-**Environment:** `JMIX_IDE_MCP_PORT` sets the port of the IntelliJ IDEA MCP server (default `64342`), e.g. `curl ... | JMIX_IDE_MCP_PORT=64343 bash -s -- mcp-jetbrains --agents claude`. `CLINE_MCP_SETTINGS_PATH`, `CLINE_DATA_DIR` and `CLINE_DIR` move Cline's MCP config, as they do for Cline itself.
-
-**Skills store:** the skills are copied into a store, and each skill folder is linked into `.agents/skills` and, unless `--claude=false`, into `.claude/skills`, next to any other skills there.
-- **Global:** store at `~/.agents/.jmix/skills/<ref>/` (the `--content-ref`, e.g. `v3`), linked into `~/.agents/skills` and, unless `--claude=false`, into `~/.claude/skills`.
-- **Local:** the store is `<project>/.agents/skills/` itself, so the skills are real folders there. Each skill is linked into `<project>/.claude/skills` unless `--claude=false`. With `--backup-existing-files`, replaced skill folders go to `<project>/.agents/.jmix/backups/`, where no agent reads them as skills.
-
-> The installer writes MCP servers straight into each agent's config file (see [MCP Servers](#3-mcp-servers)), keeping its other servers and settings; only Claude CLI at `global` scope goes through `claude mcp add`. A file that is already up to date is not rewritten. On macOS/Linux, merging into an existing JSON config file needs `jq` or `node`; a new file is written without them. Servers started through `npx` need Node.js 20+ when the agent starts them, not at install time.
-
-## Skills with `npx skills`
-
-The [`skills` CLI](https://github.com/vercel-labs/skills) installs the skills of a branch for the agents you pick: into the project, or with `-g` into your home directory. Name the branch for your Jmix major in the URL:
+The [npx skills](https://github.com/vercel-labs/skills) installs the skills for the agents you pick. Run it from the project root:
 
 ```bash
 npx skills add https://github.com/jmix-framework/jmix-agent-toolkit/tree/v3
 ```
 
-It installs the skills only. Add the guidelines block and the MCP servers with the installer's `agents-md` and `mcp` subcommands, or by hand (see [Manual Installation](#manual-installation)). Both tools put the Jmix skills into `.agents/skills`, so manage them with one tool per project or home directory.
+Keep the branch in the URL: it selects the skills for your Jmix major. When the CLI asks which skills to install, pick all of them, because the `jmix` skill routes each task to the others. With `-g` the skills go to your home directory instead of the project.
 
-## Manual Installation
+The `skills` CLI installs the skills only. For the guidelines and the MCP servers, run the [installer script](#quick-cli-installation) and answer `n` at its skills step. Both tools put the Jmix skills into `.agents/skills`, so manage the skills with one tool per project or home directory.
 
-To skip the script, check out the branch for your Jmix major and take its `skills/` folder and `content/guidelines-block.md`.
+### Jmix Studio
 
-### 1. Project Guidelines
+In Jmix Studio 3.0+, run the **AI Agents Toolkit** action from the **Settings** menu of the **Jmix** tool window and follow the wizard.
 
-The guidelines live in the `jmix` skill; the project's agent guidelines file gets only a short block that points the agent at it. Add the content of `guidelines-block.md` to that file, or create the file with just the block. Keep the `<!-- BEGIN jmix-agent-toolkit -->` / `<!-- END jmix-agent-toolkit -->` markers: a later installer run replaces only the region between them, so keep your own instructions outside them. In an `AGENTS.md`, put the block at the top: Codex reads only the first 32 KiB.
+<!-- docs.jmix.io links to #quick-cli-installation: keep this heading -->
 
-- [Claude CLI](https://code.claude.com/docs): `CLAUDE.md` in the project root.
-- [Codex](https://developers.openai.com/codex/cli): `AGENTS.md` in the project root. If an `AGENTS.override.md` sits next to it, Codex reads that file instead; copy the block into it.
-- [OpenCode](https://opencode.ai/docs): `AGENTS.md` in the project root.
-- [Junie](https://www.jetbrains.com/junie): `AGENTS.md` in the project root. If your project has `.junie/AGENTS.md`, Junie reads only that file; add the block there (the installer does not).
-- [Cline](https://docs.cline.bot): `AGENTS.md` in the project root (it does not read `CLAUDE.md`).
+## MCP Servers
 
-A full `AGENTS.md` or `CLAUDE.md` from an earlier toolkit version is replaced, not extended: delete its toolkit content and paste in the block. The installer does this itself and keeps the old file as `<name>.bak`.
+Jmix Studio and the installer script register these servers for Claude Code, Codex, OpenCode, Junie and Cline:
 
-### 2. Agent Skills
+| Server       | Gives the agent                                              | Needs                             |
+|:-------------|:-------------------------------------------------------------|:----------------------------------|
+| `jetbrains`  | The code analysis and inspections of a running IntelliJ IDEA | The MCP server enabled in the IDE |
+| `context7`   | Docs and code examples from official sources                 | A Context7 API key                |
+| `jmix-docs`  | Jmix documentation, Java API and UI samples                  | -                                 |
+| `playwright` | A browser to check the running application                   | Node.js 20+                       |
 
-`skills/` holds the skills for Jmix features (entities, UI views, data access, etc.). Copy or symlink **each** skill folder so it sits directly inside the agent's skills folder in the project or your home directory (e.g. `~/.claude/skills/jmix-create-entity/`): agents do not scan nested subfolders, so do not link the whole `skills/` directory as one entry. Leave other (non-Jmix) skills in that folder alone.
+`jetbrains` is highly recommended. To enable it, go to **Settings → Tools → MCP Server** in IntelliJ IDEA, select **Enable MCP Server** and keep your project open in the IDE. `context7` and `jmix-docs` are optional.
 
-| Agent                         | Project Skills Folder Path | Global Skills Folder Path |
-|:------------------------------|:---------------------------|:--------------------------|
-| Claude CLI                    | `.claude/skills/`          | `~/.claude/skills/`       |
-| Codex, OpenCode, Junie, Cline | `.agents/skills/`          | `~/.agents/skills/`       |
+Servers registered in the project files need a confirmation: Claude Code asks to approve the servers in `.mcp.json`, and Codex reads `.codex/config.toml` only in trusted projects.
 
-#### Example
-
-Re-run after pulling new skills: `ln -sfn` refreshes existing links and leaves other skills untouched:
-```bash
-mkdir -p ~/.claude/skills
-# run from a checkout of your major's branch (v2, v3, ...)
-for skill in /path/to/jmix-agent-toolkit/skills/*/; do
-    ln -sfn "$skill" ~/.claude/skills/"$(basename "$skill")"
-done
-```
-
-To copy instead (the skills then survive deleting the clone), replace the `ln -sfn` line with `cp -R "${skill%/}" ~/.claude/skills/`. Keep the `%/`: on macOS, `cp -R` with a trailing slash copies the folder's contents, not the folder.
-
-#### Agent Conventions Summary
-
-| Agent      | Project Guidelines     | Home Directory Base   |
-|:-----------|:-----------------------|:----------------------|
-| Claude CLI | `CLAUDE.md`            | `~/.claude/`          |
-| Codex      | `AGENTS.md`            | `~/.codex/`           |
-| OpenCode   | `AGENTS.md`            | `~/.config/opencode/` |
-| Junie      | `AGENTS.md`            | `~/.junie/`           |
-| Cline      | `AGENTS.md`            | `~/.cline/`           |
-
-### 3. MCP Servers
-
-Three MCP servers help AI agents build Jmix apps:
-
-- JetBrains (**highly recommended**): lets an external agent talk to a running IntelliJ IDEA to use its code analysis and inspections.
-
-- Context7 (optional): gives the agent docs and code examples from official sources.
-
-- Jmix Docs (optional): Jmix documentation, Java API and UI samples.
-
-The installer registers them and the [Playwright](#4-playwright-tests) server in the project files (`--scope local`, the default) or in each agent's user config (`--scope global`, serves every project). Project servers need a confirmation: Claude Code asks to approve the servers in `.mcp.json`, and Codex reads `.codex/config.toml` only in trusted projects (its desktop app ignores project servers). At user level, Claude CLI is registered through `claude mcp add --scope user`, so the installer needs `claude` on PATH, in `~/.local/bin` or in `~/.claude/local`, and skips Claude CLI without it.
-
-| Agent                                          | Project file          | User file                                                             | Servers key            |
-|:-----------------------------------------------|:----------------------|:----------------------------------------------------------------------|:-----------------------|
-| Claude CLI                                     | `.mcp.json`           | `~/.claude.json`, through `claude mcp add --scope user`               | `mcpServers`           |
-| Codex                                          | `.codex/config.toml`  | `~/.codex/config.toml` (`$CODEX_HOME`)                                | `[mcp_servers.<name>]` |
-| OpenCode                                       | `opencode.json`       | `~/.config/opencode/opencode.json` (`$XDG_CONFIG_HOME`)               | `mcp`                  |
-| Junie                                          | `.junie/mcp/mcp.json` | `~/.junie/mcp/mcp.json` (`$JUNIE_HOME` for the Junie CLI)             | `mcpServers`           |
-| Cline                                          | -                     | `~/.cline/data/settings/cline_mcp_settings.json`, see [Cline](#cline) | `mcpServers`           |
-| Claude Desktop (with `claude`, when installed) | -                     | `claude_desktop_config.json`, see [Claude Desktop](#claude-desktop)   | `mcpServers`           |
-
-To run the JetBrains MCP server in IntelliJ IDEA, go to **Settings → Tools → MCP Server** and select **Enable MCP Server ✓**, then keep your project open in the IDE. The server listens on `127.0.0.1`, port `64342` by default. The endpoint depends on the IDE version:
-
-- IntelliJ IDEA 2026.1+: Streamable HTTP at `http://127.0.0.1:64342/stream`.
-- IntelliJ IDEA 2025.2 / 2025.3: SSE at `http://127.0.0.1:64342/sse`.
-
-The installer probes `/stream` to choose the endpoint. If the IDE does not answer, it assumes 2026.1+, so on 2025.x run the step with the IDE open and its MCP server enabled. Context7 uses the remote endpoint `https://mcp.context7.com/mcp` with the header `Authorization: Bearer YOUR_API_KEY`. Junie and Claude Desktop use the stdio package `@upstash/context7-mcp` instead, with the key in `CONTEXT7_API_KEY`.
-
-Jmix Docs uses `https://docs-mcp.jmix.io/mcp` without an API key; Junie and Claude Desktop connect through the `mcp-remote` stdio bridge.
-
-Below are the entries the installer writes for each agent. Merge them into the existing project or user file.
-
-#### Claude CLI
-
-For the project, use `--scope project` instead of `--scope user`: it writes `.mcp.json`.
-
-- JetBrains MCP:
-    ```bash
-    claude mcp add --scope user --transport http jetbrains http://127.0.0.1:64342/stream
-    # IntelliJ IDEA 2025.2/2025.3:
-    claude mcp add --scope user --transport sse jetbrains http://127.0.0.1:64342/sse
-    ```
-
-- Context7 MCP. Keep `--header` after the URL: it takes several values and would swallow any arguments after it.
-    ```bash
-    claude mcp add --scope user --transport http context7 https://mcp.context7.com/mcp --header "Authorization: Bearer YOUR_API_KEY"
-    ```
-
-- Jmix Docs MCP:
-    ```bash
-    claude mcp add --scope user --transport http jmix-docs https://docs-mcp.jmix.io/mcp
-    ```
-
-#### Codex
-
-- JetBrains MCP, `.codex/config.toml` or `~/.codex/config.toml`:
-    ```toml
-    [mcp_servers.jetbrains]
-    url = "http://127.0.0.1:64342/stream"
-    ```
-    Codex has no SSE transport, so on IntelliJ IDEA 2025.2/2025.3 use the stdio bridge:
-    ```toml
-    [mcp_servers.jetbrains]
-    command = "npx"
-    args = ["-y", "mcp-remote", "http://127.0.0.1:64342/sse", "--transport", "sse-only"]
-    startup_timeout_sec = 60
-    ```
-    The stdio command from **Copy Stdio Config** (**Settings → Tools → MCP Server**, **Manual Client Configuration**) works too.
-
-- Context7 MCP, `.codex/config.toml` or `~/.codex/config.toml`:
-    ```toml
-    [mcp_servers.context7]
-    url = "https://mcp.context7.com/mcp"
-    http_headers = { Authorization = "Bearer YOUR_API_KEY" }
-    ```
-
-- Jmix Docs MCP, `.codex/config.toml` or `~/.codex/config.toml`:
-    ```toml
-    [mcp_servers.jmix-docs]
-    url = "https://docs-mcp.jmix.io/mcp"
-    ```
-
-#### OpenCode
-
-- JetBrains MCP, `opencode.json` or `~/.config/opencode/opencode.json` (on IntelliJ IDEA 2025.2/2025.3 use the `/sse` URL):
-    ```json
-    {
-      "mcp": {
-        "jetbrains": {
-          "type": "remote",
-          "url": "http://127.0.0.1:64342/stream",
-          "enabled": true
-        }
-      }
-    }
-    ```
-
-- Context7 MCP, `opencode.json` or `~/.config/opencode/opencode.json`:
-    ```json
-    {
-      "mcp": {
-        "context7": {
-          "type": "remote",
-          "url": "https://mcp.context7.com/mcp",
-          "headers": { "Authorization": "Bearer YOUR_API_KEY" },
-          "enabled": true
-        }
-      }
-    }
-    ```
-
-- Jmix Docs MCP, `opencode.json` or `~/.config/opencode/opencode.json`:
-    ```json
-    {
-      "mcp": {
-        "jmix-docs": {
-          "type": "remote",
-          "url": "https://docs-mcp.jmix.io/mcp",
-          "enabled": true
-        }
-      }
-    }
-    ```
-
-#### Junie
-
-- JetBrains MCP: not needed, so the installer skips it. Junie runs inside IntelliJ IDEA and already has native access to the IDE.
-
-- Context7 MCP, `.junie/mcp/mcp.json` or `~/.junie/mcp/mcp.json`:
-    ```json
-    {
-      "mcpServers": {
-        "context7": {
-          "command": "npx",
-          "args": ["-y", "@upstash/context7-mcp"],
-          "env": { "CONTEXT7_API_KEY": "YOUR_API_KEY" }
-        }
-      }
-    }
-    ```
-
-- Jmix Docs MCP, `.junie/mcp/mcp.json` or `~/.junie/mcp/mcp.json`:
-    ```json
-    {
-      "mcpServers": {
-        "jmix-docs": {
-          "command": "npx",
-          "args": ["-y", "mcp-remote", "https://docs-mcp.jmix.io/mcp"]
-        }
-      }
-    }
-    ```
-
-#### Cline
-
-The Cline VS Code extension, JetBrains plugin and CLI share one user-level file, `~/.cline/data/settings/cline_mcp_settings.json` (`%USERPROFILE%\.cline\data\settings\` on Windows). `CLINE_MCP_SETTINGS_PATH` (the file), `CLINE_DATA_DIR` (instead of `~/.cline/data`) or `CLINE_DIR` (instead of `~/.cline`) move it. Cline has no project MCP config, so `cline` in an MCP step writes this file whatever the `--scope`. The extension and the plugin pick up a change on their own; the CLI reads the file when a session starts.
-
-Cline checks the whole file: with one entry it does not accept, such as Claude Code's `"type": "http"`, it loads none of the servers. Spell `type` as `streamableHttp`, `sse` or `stdio`; a `url` entry without `type` is taken as SSE.
-
-```json
-{
-  "mcpServers": {
-    "jetbrains": {
-      "type": "streamableHttp",
-      "url": "http://127.0.0.1:64342/stream"
-    },
-    "context7": {
-      "type": "streamableHttp",
-      "url": "https://mcp.context7.com/mcp",
-      "headers": { "Authorization": "Bearer YOUR_API_KEY" }
-    },
-    "jmix-docs": {
-      "type": "streamableHttp",
-      "url": "https://docs-mcp.jmix.io/mcp"
-    }
-  }
-}
-```
-
-#### Claude Desktop
-
-Claude Desktop reads MCP servers from a user-level `claude_desktop_config.json`:
-
-- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- Windows: `%APPDATA%\Claude\claude_desktop_config.json`. The Store (MSIX) build reads its own copy under `%LOCALAPPDATA%\Packages\*Claude_*\LocalCache\Roaming\Claude`. The installer updates every copy that exists.
-- Linux: `~/.config/Claude/claude_desktop_config.json` (`$XDG_CONFIG_HOME`)
-
-It is not a separate agent. When `claude` is selected in an MCP step, the installer also updates this file, whatever the `--scope`, if Claude Desktop is installed, i.e. its config folder exists. Start Claude Desktop once before running the installer. Claude Desktop accepts only stdio entries, so JetBrains MCP always goes through the `mcp-remote` bridge to `/sse`.
-
-```json
-{
-  "mcpServers": {
-    "jetbrains": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "http://127.0.0.1:64342/sse", "--transport", "sse-only"]
-    },
-    "context7": {
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp"],
-      "env": { "CONTEXT7_API_KEY": "YOUR_API_KEY" }
-    },
-    "jmix-docs": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "https://docs-mcp.jmix.io/mcp"]
-    }
-  }
-}
-```
-
-After a change, quit Claude Desktop completely (not just its window) and start it again.
-
-### 4. Playwright Tests
-
-[Playwright](https://playwright.dev) lets the agent verify a running application in the browser, from navigation to complex UI behavior. The toolkit registers the [Playwright MCP server](https://github.com/microsoft/playwright-mcp) (`@playwright/mcp`), which the agent starts through `npx` (Node.js 20+).
-
-Add the server to the files listed in [MCP Servers](#3-mcp-servers):
-
-- Claude CLI: `claude mcp add --scope user playwright -- npx -y @playwright/mcp@latest`.
-
-- Codex (the first `npx` download can outlast the default startup timeout):
-    ```toml
-    [mcp_servers.playwright]
-    command = "npx"
-    args = ["-y", "@playwright/mcp@latest"]
-    startup_timeout_sec = 60
-    ```
-
-- OpenCode:
-    ```json
-    {
-      "mcp": {
-        "playwright": { "type": "local", "command": ["npx", "-y", "@playwright/mcp@latest"], "enabled": true }
-      }
-    }
-    ```
-
-- Junie, Cline and Claude Desktop:
-    ```json
-    {
-      "mcpServers": {
-        "playwright": { "command": "npx", "args": ["-y", "@playwright/mcp@latest"] }
-      }
-    }
-    ```
-
-Then give the agent instructions like:
+With Playwright, give the agent instructions like:
 
 > Run the app and use Playwright MCP to log in and test all created views
+
+The config files and the entries for each agent are in [Manual Installation](docs/manual-installation.md#3-mcp-servers).
+
+## Next Steps
+
+Start the agent in the project and describe a task in Jmix terms: entities, attributes, views, roles. The [AI Agent Setup](https://docs.jmix.io/jmix/agent-setup.html) guide shows how to check that the agent sees the skills and the MCP servers, and how to make a first request.
+
+To update the toolkit, run the Studio action or the installer script again: it replaces the Jmix skills and its own block in `AGENTS.md`, and keeps your text outside the block. If you installed the skills with the `skills` CLI, run `npx skills update`.

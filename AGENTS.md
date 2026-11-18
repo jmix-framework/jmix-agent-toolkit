@@ -22,7 +22,11 @@ No build step: shell and PowerShell scripts, Markdown skills, JSON metadata.
 
 ## Documentation
 
-- `README.md` — for users: install commands, Claude Code option, flags, skills store layout, MCP.
+- `README.md` — for users, kept short: what the toolkit adds, the install methods
+  (`npx skills`, Studio, installer wizard), MCP servers overview. Details go to `docs/`.
+- `docs/installer.md` — installer reference: subcommands, flags, Claude Code option, skills
+  store layout.
+- `docs/manual-installation.md` — setup by hand: guidelines block, skills, MCP entries per agent.
 - `MAINTAINING.md` — branch model, how install works, skill frontmatter rules, cutting a new
   version branch.
 
@@ -31,10 +35,10 @@ No build step: shell and PowerShell scripts, Markdown skills, JSON metadata.
 - One branch per Jmix major (`v2`, `v3`, ...); the default branch is the current stable one.
   The branch is the version.
 - Keep the mechanics identical on every maintained `v*` branch: installers, tests, CI,
-  `.studio/` metadata and generator, README and MAINTAINING. Branches differ only in
+  `.studio/` metadata and generator, README, `docs/` and MAINTAINING. Branches differ only in
   `skills/` and `content/` (skills and guidelines block, written for their Jmix major, never
-  synced) and in the branch identity: `CONTENT_REF` / `$ContentRef` and `v<N>` in help, tests
-  and README URLs.
+  synced) and in the branch identity: `CONTENT_REF` / `$ContentRef` and `v<N>` in help, tests,
+  README and `docs/`.
 - Land a mechanics change on one branch, then port it to the others in a sync commit (as
   `3fb296f` did for v2). This diff must show branch-identity lines only:
   `git diff v2 v3 -- . ':!content' ':!skills' ':!.studio/skills-manifest.json'`.
