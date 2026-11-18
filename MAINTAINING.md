@@ -62,7 +62,8 @@ YAML without a BOM, `name` matching the folder (at most 64 characters), and a no
    - `install.ps1`: `$ContentRef = 'v4'`
 
    Then replace the other `v3` that name this branch: both installers' help, `tests/`,
-   and the README's install URLs (`grep -rn v3 install.sh install.ps1 tests/ README.md`).
+   and the `v3` in the README and `docs/`
+   (`grep -rn v3 install.sh install.ps1 tests/ README.md docs/*.md`).
 4. Regenerate the manifest: `python3 .studio/gen_skills_manifest.py`.
 5. Run the tests (without `jq` the sh suite skips its MCP checks; without `python3`, its
    wizard and SSE tests):
