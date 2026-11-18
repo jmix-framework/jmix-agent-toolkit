@@ -22,6 +22,8 @@ Each Jmix major version has its own branch, named `v<major>`. This is the `v3` b
 
 To set everything up by hand, follow [Manual Installation](docs/manual-installation.md).
 
+<!-- docs.jmix.io links to #quick-cli-installation: keep this heading -->
+
 ### Quick CLI Installation
 
 One command starts a wizard that asks about each step: skills, guidelines, MCP servers. Run it from the project root.
@@ -72,8 +74,6 @@ The `skills` CLI installs the skills only. For the guidelines and the MCP server
 ### Jmix Studio
 
 In Jmix Studio 3.0+, run the **AI Agents Toolkit** action from the **Settings** menu of the **Jmix** tool window and follow the wizard.
-
-<!-- docs.jmix.io links to #quick-cli-installation: keep this heading -->
 
 ## MCP Servers
 
