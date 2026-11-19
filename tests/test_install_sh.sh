@@ -1530,6 +1530,13 @@ jetbrains = { command = "java", args = [] }' 'mcp_servers.jetbrains.command = "j
         | (.message | contains("Jmix documentation, Java API and UI samples"))
           and ([.inputs[] | select(.id == "mcpServers") | .choices[].value] == ["jetbrains", "context7", "jmix-docs", "playwright"])' \
         "$STUDIO_META" >/dev/null || fail "studio: Jmix Docs description or server order wrong"
+    # Each default MCP agent names the project config the installer writes for it at local
+    # scope and the servers it never gets: the files and the Junie exception of section 5s.
+    jq -e '[.["install-flow"].steps[] | select(.id == "mcp") | .inputs[] | select(.id == "mcpAgents")
+            | .choices[] | select(.default) | {(.value): [.projectConfig, (.skipServers // [])]}] | add
+           == {"claude": [".mcp.json", []], "codex": [".codex/config.toml", []],
+               "opencode": ["opencode.json", []], "junie": [".junie/mcp/mcp.json", ["jetbrains"]]}' \
+        "$STUDIO_META" >/dev/null || fail "studio: an MCP agent names the wrong projectConfig or skipServers"
     # Each input gets its Studio default: the default choices, or the default text.
     studio_sed="$(jq -r '.["install-flow"].steps[].inputs[]
         | "s/[$]{\(.id)}/" + (if .type == "options" then ([.choices[] | select(.default) | .value] | join(",")) else .default end) + "/g"' "$STUDIO_META")"
@@ -1557,6 +1564,15 @@ STUDIO
     for f in .agents/skills .claude/skills AGENTS.md CLAUDE.md .mcp.json .codex/config.toml opencode.json .junie/mcp/mcp.json; do
         [ -e "$f" ] || fail "studio: the default commands did not create ${f}"
     done
+    # Every default MCP agent names its project config, and it is the file the installer wrote.
+    jq -e '[.["install-flow"].steps[] | select(.id == "mcp") | .inputs[] | select(.id == "mcpAgents")
+        | .choices[] | select(.default) | has("projectConfig")] | all' "$STUDIO_META" >/dev/null \
+        || fail "studio: a default MCP agent names no projectConfig"
+    while IFS= read -r f; do
+        [ -f "$f" ] || fail "studio: the default commands did not write the projectConfig ${f}"
+    done <<STUDIO_CONFIGS
+$(jq -r '.["install-flow"].steps[] | select(.id == "mcp") | .inputs[] | select(.id == "mcpAgents") | .choices[] | select(.default) | .projectConfig' "$STUDIO_META")
+STUDIO_CONFIGS
     [ ! -e "${HOME}/.cline" ] || fail "studio: the default commands registered Cline"
     run_studio_commands "$studio_false"
     [ -d ".agents/skills/${SKILL}" ] && [ -f AGENTS.md ] && [ ! -e .claude ] && [ ! -e CLAUDE.md ] \

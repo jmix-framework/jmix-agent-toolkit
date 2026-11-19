@@ -1756,6 +1756,12 @@ Check ((@($studioServers.choices.value) -join ',') -eq 'jetbrains,context7,jmix-
        ($studioServers.choices | Where-Object { $_.value -eq 'jmix-docs' }).label -eq 'Jmix Docs' -and
        $studioMcp.message.Contains('Jmix documentation, Java API and UI samples')) `
     'studio: Jmix Docs follows Context7 with the requested label and description'
+# Each default MCP agent names the project config the installer writes for it at local scope
+# and the servers it never gets: the files and the Junie exception of the mcp(local) checks.
+$studioAgentConfigs = (@(($studioMcp.inputs | Where-Object { $_.id -eq 'mcpAgents' }).choices | Where-Object { $_.default }) |
+    ForEach-Object { "$($_.value)=$($_.projectConfig)|$(@($_.skipServers) -join ',')" }) -join ' '
+Check ($studioAgentConfigs -ceq 'claude=.mcp.json| codex=.codex/config.toml| opencode=opencode.json| junie=.junie/mcp/mcp.json|jetbrains') `
+    "studio: each MCP agent names its projectConfig and skipServers ($studioAgentConfigs)"
 $studioDefaults = @{ guidelinesBranch = 'v3' }
 foreach ($inp in $studioMeta.'install-flow'.steps.inputs) {
     $studioDefaults[$inp.id] = if ($inp.type -eq 'options') {
@@ -1794,6 +1800,11 @@ foreach ($claudeValue in 'true', 'false') {
     }
     foreach ($f in '.agents/skills', 'AGENTS.md', '.mcp.json', '.codex/config.toml', 'opencode.json', '.junie/mcp/mcp.json') {
         Check (Test-Path -LiteralPath (Join-Path $studioProj $f)) "studio: the commands created $f ($claudeValue)"
+    }
+    # Every default MCP agent names its project config, and it is the file the installer wrote.
+    foreach ($agent in @(($studioMcp.inputs | Where-Object { $_.id -eq 'mcpAgents' }).choices | Where-Object { $_.default })) {
+        Check ($agent.projectConfig -and (Test-Path -LiteralPath (Join-Path $studioProj $agent.projectConfig) -PathType Leaf)) `
+            "studio: $($agent.value) wrote its projectConfig $($agent.projectConfig) ($claudeValue)"
     }
     foreach ($f in '.claude/skills', 'CLAUDE.md') {
         Check ((Test-Path -LiteralPath (Join-Path $studioProj $f)) -eq ($claudeValue -eq 'true')) `
