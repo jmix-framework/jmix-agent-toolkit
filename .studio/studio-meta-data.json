@@ -132,22 +132,27 @@
               {
                 "value": "claude",
                 "label": "Claude Code",
-                "default": true
+                "default": true,
+                "projectConfig": ".mcp.json"
               },
               {
                 "value": "codex",
                 "label": "Codex",
-                "default": true
+                "default": true,
+                "projectConfig": ".codex/config.toml"
               },
               {
                 "value": "opencode",
                 "label": "OpenCode",
-                "default": true
+                "default": true,
+                "projectConfig": "opencode.json"
               },
               {
                 "value": "junie",
                 "label": "Junie",
-                "default": true
+                "default": true,
+                "projectConfig": ".junie/mcp/mcp.json",
+                "skipServers": ["jetbrains"]
               },
               {
                 "value": "cline",

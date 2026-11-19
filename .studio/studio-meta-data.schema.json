@@ -172,6 +172,17 @@
           "type": "boolean",
           "default": false,
           "description": "When true, this choice is preselected. For single-select inputs the last 'default: true' wins; for multi-select all matching choices are preselected."
+        },
+        "projectConfig": {
+          "type": "string",
+          "pattern": "^(?!\\.\\.?(/|$))[A-Za-z0-9._-]+(/(?!\\.\\.?(/|$))[A-Za-z0-9._-]+)*$",
+          "description": "mcpAgents choices only: the project MCP config file the installers write for this agent at local scope, relative to the project root, without . or .. elements. Absent for an agent without a project config. Read by jmix-cli; Studio ignores it."
+        },
+        "skipServers": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true,
+          "description": "mcpAgents choices only: the mcpServers values the installers never configure for this agent, so its projectConfig names every other offered server. Absent when the agent gets them all. Read by jmix-cli; Studio ignores it."
         }
       }
     },
