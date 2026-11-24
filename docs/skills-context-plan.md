@@ -16,7 +16,7 @@ Re-measure after each step with:
 wc -c skills/*/SKILL.md | sort -n
 ```
 
-## Step 1. Router and guidelines block (#216)
+## Step 1. Router and guidelines block (#216) — done
 
 Files: `skills/jmix/SKILL.md`, `content/guidelines-block.md`.
 
@@ -33,32 +33,7 @@ Files: `skills/jmix/SKILL.md`, `content/guidelines-block.md`.
 
 Done when: the router no longer requires reading every skill, the precedence rule matches the list above, and `python3 tests/check_skill_frontmatter.py`, `bash tests/test_install_sh.sh` and `pwsh tests/test_install_ps1.ps1` pass.
 
-## Step 2. Split large skills into a core file and `references/`
-
-Keep in `SKILL.md`: the steps, the rules whose failure nothing reports (compile, tests and render all pass), the **Forbidden** list, and one line per reference file saying when to read it. Target 4 to 6 KB per core file. Move rare cases and long templates to `skills/<skill>/references/<topic>.md`, linked with paths relative to `SKILL.md`.
-
-Before the first split, confirm that Studio's `AiSkillsHasher` hashes files in subfolders the same way `gen_skills_manifest.py` does (it walks the whole skill folder). The installers already copy the whole folder (`cp -R`), so they need no change. Commit the regenerated `.studio/skills-manifest.json` (CI also regenerates it).
-
-Order, one skill per change, with the split proposed for each:
-
-| Skill | Keep in core | Move to `references/` |
-|---|---|---|
-| `jmix-verify-bootrun` | Gate 2 | Gate 3 render walk; troubleshooting (HSQLDB driver, `.jmix/conf` stale classes, container uploads) |
-| `jmix-create-entity` | steps, template, id strategy, required-field defaults | composition and cascade, delete policies, index parity, file attributes, embeddable and inheritance, constraint audit |
-| `jmix-ide-static-analysis` | choice of path by connected tools, per-file loop | IDE inspection; mechanical checks |
-| `jmix-create-test` | unit, integration, security patterns | UI integration tests, fragments, dropdown items, hidden columns |
-| `jmix-create-detail-view` | the two render-time failures, steps, skeleton, Forbidden | reference fields, to-many grid, confirmation before save, cross-field validation |
-| `jmix-create-list-view` | steps, skeleton, Forbidden | hierarchical list, URL query parameters, settings facet, saved user settings |
-| `jmix-add-entity-event-listener` | steps, listener template, Forbidden | event timing, cascades, values derived from composition children |
-| `jmix-configure-fetch-plan` | steps, XML and DataManager patterns, Forbidden | inheritance, fetch modes, `BATCH` on nested collections |
-| `jmix-style-ui` | active theme check, where styling belongs, Forbidden | token enumeration commands, missing-token cases |
-| `jmix-create-liquibase-changelog` | steps, standard types, skeleton, Forbidden | data fixes, baselines, add-on changelogs, two referential actions |
-
-`jmix-migrate-theme-to-aura` has `disable-model-invocation: true` and is used once per project, so it comes last or not at all.
-
-Done when: each split skill's core is at most 6 KB and the frontmatter lint passes.
-
-## Step 3. Keep each rule in one skill
+## Step 2. Keep each rule in one skill
 
 Keep the full rule in its owner skill and replace the copies with a one-line pointer:
 
@@ -73,16 +48,48 @@ Keep the full rule in its owner skill and replace the copies with a one-line poi
 
 Done when: `grep` for each rule finds the full text in the owner only.
 
-## Step 4. Write rules more briefly
+## Step 3. Write rules more briefly and move special cases to the end
+
+Edit each skill once, doing all of the following in the same change.
+
+### Shorter text
 
 - One line per rule, with a short reason only when the rule is not obvious.
 - Delete sections that repeat other sections, for example "Cost vs benefit" in `jmix-verify-api-symbol` and the parts of "Honest scope" in `jmix-verify-bootrun` that repeat Gate 3.
 - Use fewer all-caps words.
 - Remove the duplicate `exception.` line at the end of step 3 of the render walk in `jmix-verify-bootrun`.
 
-Do this together with step 2 for each skill, so each skill is edited once.
+### One layout for every skill
 
-Also fix these problems in the skills' content, found while testing step 1:
+1. Steps.
+2. The common patterns and templates.
+3. `## Forbidden`. The router tells an agent that has a working example to check only this section, so it must hold every known failure of the common case.
+4. `## Special cases`, always the last section. Each case is a `### When <condition>` subsection, where the condition is something the agent can see in the task or the code (for example "When the entity has a `@Composition` collection" or "When the parent is hard-deleted").
+
+A step that leads into a special case names the subsection: "If the entity has a `@Composition` collection, read **When the entity has a `@Composition` collection** below." Special cases do not refer to each other.
+
+This layout makes maintenance easier on its own: the common case is short and at the top, and each special case has one place. It also prepares step 5, where a `### When ...` subsection can become a reference file without rewriting it.
+
+Proposed moves to `## Special cases`:
+
+| Skill | Stays in the main part | Moves to `## Special cases` |
+|---|---|---|
+| `jmix-verify-bootrun` | Gate 2 | Gate 3 render walk; HSQLDB driver missing; stale classes in `.jmix/conf`; uploads in a non-root container |
+| `jmix-create-entity` | steps, template, id strategy, required-field defaults | composition and cascade, delete policies, index parity, file attributes, embeddable and inheritance |
+| `jmix-ide-static-analysis` | choice of path by connected tools, per-file loop | IDE inspection details, known false positives |
+| `jmix-create-test` | unit, integration, security patterns | UI integration tests, fragments, dropdown items, hidden columns, code outside a user session |
+| `jmix-create-detail-view` | the two render-time failures, steps, skeleton | reference fields, to-many grid, confirmation before save, cross-field validation |
+| `jmix-create-list-view` | steps, skeleton | hierarchical list, URL query parameters, settings facet, saved user settings |
+| `jmix-add-entity-event-listener` | steps, listener template | event timing, cascades, values derived from composition children |
+| `jmix-configure-fetch-plan` | steps, XML and DataManager patterns | single-table inheritance, fetch modes, `BATCH` on nested collections |
+| `jmix-style-ui` | active theme check, where styling belongs | token enumeration commands, no suitable token |
+| `jmix-create-liquibase-changelog` | steps, standard types, skeleton | one-time data fixes, baselines, add-on changelogs, two referential actions |
+
+The other skills get the same layout where they have special cases. `jmix-migrate-theme-to-aura` has `disable-model-invocation: true` and is a one-time procedure in steps, so it keeps its order and gets only the shorter text.
+
+### Content problems to fix
+
+Found while testing step 1:
 
 - `jmix-verify-bootrun` calls Gate 3 "optional" in its description and under "When to use", but "REQUIRED for every view/role you created or changed" under the Gate 3 heading. The router now follows the second.
 - `jmix-create-entity`, "Id strategy", describes UUID and assigned keys but not sequence-generated `Long` ids. It also does not say that a new entity follows the id strategy of the project's existing entities.
@@ -93,16 +100,35 @@ Also fix these problems in the skills' content, found while testing step 1:
 - `jmix-verify-api-symbol` puts the docs server first but does not say that the resolved jars win when the two disagree (the docs server is filtered to `v3`, not to the pinned version). The router now says so; repeat it in the skill.
 - `jmix-create-liquibase-changelog` has no guidance on creating a sequence for sequence-generated ids.
 
-## Step 5. Shorten the descriptions
+Done when: every skill in the table has the layout above, each rule is written once, and the frontmatter lint passes.
+
+## Step 4. Shorten the descriptions
 
 A description says when to use the skill, not what the skill says. Shorten the long ones to about 200 characters: `jmix-verify-api-symbol`, `jmix-ide-static-analysis`, `jmix-run-background-code`, `jmix-style-ui`, `jmix-migrate-theme-to-aura`, `jmix-verify-bootrun`, `jmix-configure-observability`. Expected saving: about 600 tokens in every session.
 
 Done when: the total description size is under 4 KB.
 
+## Step 5. Split large skills into a core file and `references/`
+
+Move `### When ...` subsections from `## Special cases` into `skills/<skill>/references/<topic>.md`. The pointer in the steps then names the file instead of the subsection. No agent loads a reference by itself: the agent must see the pointer and open the file. Weaker models skip pointers more often, and users with small context windows often run such models. So a missed reference must do little harm.
+
+What may move to a reference: a special case only, and only if its condition is visible in the task or the code, or a mechanical check in `jmix-ide-static-analysis` or Gate 2 catches the failure even when the reference was not read. Everything else stays in `SKILL.md`, including the whole `## Forbidden` section.
+
+Before the first split:
+
+- Check that every supported agent (Claude Code, Codex, OpenCode, Junie) can open a file next to `SKILL.md` from a relative path. Put a test reference into one skill, install it into each agent, and ask the agent to read it. If an agent resolves the path against the project root, use paths from the skill folder that the installer knows, or keep that content in `SKILL.md`.
+- Confirm that Studio's `AiSkillsHasher` hashes files in subfolders the same way `gen_skills_manifest.py` does (it walks the whole skill folder). The installers already copy the whole folder (`cp -R`). Commit the regenerated `.studio/skills-manifest.json` (CI also regenerates it).
+
+Then try one skill first: `jmix-verify-bootrun`, moving the Gate 3 render walk out. Run scenarios where the condition holds (a view was created) and where it does not, with a small model (for example Haiku) and, if possible, a non-Claude model through Codex or OpenCode. Count how often the reference is opened in each case. Split the other skills only if the reference is opened reliably when the condition holds.
+
+If the trial fails, keep the skills as single files with the step 3 layout.
+
+Done when: the trial result is recorded here, and each split skill's `SKILL.md` is at most 6 KB.
+
 ## Step 6 (optional). Merge small skills that overlap
 
-- `jmix-create-enum` into `jmix-create-entity/references/enum.md`.
-- `jmix-create-composition-detail-view` into `jmix-create-detail-view/references/composition.md`.
+- `jmix-create-enum` into `jmix-create-entity`, as a special case (or a reference file after step 5).
+- `jmix-create-composition-detail-view` into `jmix-create-detail-view`, the same way.
 
 This shortens the routing list and the descriptions. Projects that installed an earlier version keep the removed skill folders unless the installers learn to delete them, so decide this together with the installer behavior.
 
@@ -114,4 +140,4 @@ This shortens the routing list and the descriptions. Projects that installed an 
 
 ## Other version branches
 
-`skills/` and `content/` differ per branch and are not synced. Steps 1 to 6 apply to v3 here; decide separately whether to repeat them on v2. A size check from step 7 is a test change, so it goes to every maintained branch in a sync commit.
+`skills/` and `content/` differ per branch and are not synced. Steps 1 to 6 apply to v3 here (step 1 is done on `v3_refactor`); decide separately whether to repeat them on v2. A size check from step 7 is a test change, so it goes to every maintained branch in a sync commit.
