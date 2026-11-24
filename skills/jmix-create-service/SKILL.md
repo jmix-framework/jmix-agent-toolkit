@@ -94,10 +94,9 @@ compile-only Gate 1 lets it through (see `jmix-ide-static-analysis`).
 
 ## Called from a scheduler, `@Async`, or a listener?
 
-A service method reached from a thread with no logged-in user needs
-`@Authenticated` (or a `SystemAuthenticator` block), or its first `DataManager`
-call throws `IllegalStateException: Authentication is not set`. No gate catches
-this — see `jmix-run-background-code`.
+Such a thread has no logged-in user, and the first `DataManager` call throws
+`IllegalStateException: Authentication is not set` — see
+`jmix-run-background-code`.
 
 ## Forbidden
 

@@ -471,4 +471,3 @@ Apply common Java validation and persistence mappings when the field semantics a
 - Nullable child back references in composition aggregates.
 - Relying only on UI initialization for required persistence fields.
 - Instantiating or replacing a collection field that Jmix populated — it may be a `NotInstantiatedList`/`NotInstantiatedSet`. Leave collection fields uninitialized; do not assign `new ArrayList`/`new HashSet`.
-- A 0-byte `.java` — it passes compile and the clean test boot, but breaks the registry. Confirm every file you wrote is non-empty.

@@ -33,7 +33,7 @@ Files: `skills/jmix/SKILL.md`, `content/guidelines-block.md`.
 
 Done when: the router no longer requires reading every skill, the precedence rule matches the list above, and `python3 tests/check_skill_frontmatter.py`, `bash tests/test_install_sh.sh` and `pwsh tests/test_install_ps1.ps1` pass.
 
-## Step 2. Keep each rule in one skill
+## Step 2. Keep each rule in one skill — done
 
 Keep the full rule in its owner skill and replace the copies with a one-line pointer:
 
@@ -99,6 +99,7 @@ Found while testing step 1:
 - `jmix-verify-api-symbol`, "A close-but-not-exact doc example still confirms the symbol", can be read as permission to follow a docs example that differs in JPA annotations. Say that it confirms only that the symbol exists, not that the example's annotations are complete.
 - `jmix-verify-api-symbol` puts the docs server first but does not say that the resolved jars win when the two disagree (the docs server is filtered to `v3`, not to the pinned version). The router now says so; repeat it in the skill.
 - `jmix-create-liquibase-changelog` has no guidance on creating a sequence for sequence-generated ids.
+- `jmix-create-list-view` says a click handler with the wrong event type fails `compileJava`; `jmix-add-dialog-detail-flow` says it compiles and throws `IllegalArgumentException: argument type mismatch` at the click. Check which is true and keep the full rule in `jmix-add-dialog-detail-flow` only.
 
 Done when: every skill in the table has the layout above, each rule is written once, and the frontmatter lint passes.
 

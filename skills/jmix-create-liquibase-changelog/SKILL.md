@@ -116,11 +116,9 @@ Rules for a widening changelog:
 
 ## Index parity — the changelog is only half of it
 
-Every index in a changelog must also exist as an `@Index` in the entity's
-`@Table(indexes = {...})`, with the SAME name — and the reverse. Nothing enforces
-this: `compileJava`, the Jmix inspection, and a green `clean test` all pass when
-the index exists only in the changelog. Write both sides in the same edit, while
-you still remember the column. See `jmix-create-entity` (Index parity).
+Every index in a changelog must also be an `@Index` in the entity's
+`@Table(indexes = ...)` with the same name, and the reverse — see **Index
+parity** in `jmix-create-entity`.
 
 ## One-time data fixes — `<update>`, and how to write NULL
 

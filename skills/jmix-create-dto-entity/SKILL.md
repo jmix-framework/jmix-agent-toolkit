@@ -95,9 +95,7 @@ fails when the view initializes / renders.
    `@JmixGeneratedValue` come from `io.jmix.core.entity.annotation`;
    `@JmixEntity`, `@InstanceName`, `@JmixProperty` from
    `io.jmix.core.metamodel.annotation`. Confirm the package and members of any
-   annotation new to the project via Context7 (`/jmix-framework/jmix-context7`)
-   or the Jmix docs MCP (`search-jmix-docs`), or IDE symbol search — see
-   `jmix-verify-api-symbol`.
+   annotation new to the project with `jmix-verify-api-symbol`.
 2. **Static inspection (Gate 1).** Run `jmix-ide-static-analysis`
    (get_file_problems) on the view XML that binds the DTO container — it flags
    a container `class` or property path that does not resolve, which the

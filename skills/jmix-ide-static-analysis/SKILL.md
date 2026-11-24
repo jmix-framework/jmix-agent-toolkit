@@ -120,8 +120,7 @@ precondition for Gate 2. But **compileJava is BLIND to XML descriptors.** A
 `*-view.xml` with an enum bound to `entityComboBox` instead of `comboBox`, an
 `itemsQuery` without `:searchString`, a `msg://` typo, or an action opening a
 non-existent view id compiles perfectly clean and then throws at render time. A
-clean compile proves NOTHING about any `.xml`, and a 0-byte `.java`/`.xml` also
-compiles clean — confirm written files are non-empty.
+clean compile proves NOTHING about any `.xml`.
 
 ## 3. Mechanical descriptor checks — floor when no inspection
 

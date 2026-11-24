@@ -209,10 +209,8 @@ never the compiler.
    name="...">` in a `<fetchPlan>` and every `.add("...")` in a fluent plan
    must be a real attribute of the entity, and the `FetchPlan` constants
    (`FetchPlan.BASE`, `FetchPlan.INSTANCE_NAME`) and built-in plan names
-   (`_base`, `_instance_name`) must be spelled exactly. Confirm against the
-   entity source, Context7 (`/jmix-framework/jmix-context7`) or the Jmix docs
-   MCP (`search-jmix-docs`), or IDE symbol search — see
-   `jmix-verify-api-symbol`.
+   (`_base`, `_instance_name`) must be spelled exactly. Confirm attributes
+   against the entity source, and anything else with `jmix-verify-api-symbol`.
 2. **Static inspection (Gate 1).** Run `jmix-ide-static-analysis`
    (get_file_problems) on the view/fragment XML — the Jmix-XSD-aware
    inspection flags an invalid property path inside a `<fetchPlan>` that the

@@ -81,7 +81,7 @@ audit timestamps).
 6. Add `@EditedEntityContainer("<entity>Dc")`.
 7. Create XML descriptor with instance container, loader, `dataLoadCoordinator`, typed form fields, `detail_saveClose`, and `detail_close`.
 8. Configure reference fields with a verified data source: lookup action, `itemsContainer`, or `itemsQuery`.
-9. Use `InitEntityEvent` for UI-only defaults ONLY. A required persistent default must be set at the ENTITY layer (field initializer / `@PostConstruct` / `EntitySavingEvent`) — NOT in an `InitEntityEvent` alone, NOT in a service, NOT in `EntityChangedEvent` (it fires after persist and cannot satisfy `@NotNull`). Tests save via `DataManager` and bypass the view — see `jmix-create-entity` (required-field defaults).
+9. Use `InitEntityEvent` for UI-only defaults only. A required persistent default belongs at the entity layer — see **Required-field defaults** in `jmix-create-entity`.
 10. Add message keys for the title and field labels.
 11. Grant access for roles that can open the detail view with `@ViewPolicy(viewIds = "Entity.detail")` — declared on a **method of a `@ResourceRole` interface** (the annotation is `@Target(METHOD)`), not on the view controller. The annotation has no `value()` member: `@ViewPolicy("...")` does not compile; use `viewIds = "..."` (or `viewClasses = ...`). See `jmix-create-resource-role`.
 12. Before finishing, compare every form field component against the Java property type.
