@@ -1,6 +1,6 @@
 ---
 name: jmix-run-background-code
-description: Use when writing code that runs outside a user request — a Quartz/scheduled job, an @Async method, an application-startup runner, or an integration event listener. Such threads have no authenticated user, so DataManager fails with "Authentication is not set" the first time the code actually runs. Compile, static analysis, and a green clean test all pass; only the real firing fails.
+description: Use when writing code that runs outside a user request, such as a Quartz or scheduled job, an @Async method, a startup runner, or an integration event listener. Such code has no authenticated user.
 ---
 
 # Code that runs outside a user session

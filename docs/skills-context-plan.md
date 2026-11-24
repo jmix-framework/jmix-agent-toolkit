@@ -106,7 +106,9 @@ Found while testing step 1:
 
 Done when: every skill in the table has the layout above, each rule is written once, and the frontmatter lint passes.
 
-## Step 4. Shorten the descriptions
+## Step 4. Shorten the descriptions — done
+
+Result: the seven descriptions are 157–197 characters each. The total description size went from 5.2 KB to 3.8 KB, about 360 tokens less in every session.
 
 A description says when to use the skill, not what the skill says. Shorten the long ones to about 200 characters: `jmix-verify-api-symbol`, `jmix-ide-static-analysis`, `jmix-run-background-code`, `jmix-style-ui`, `jmix-migrate-theme-to-aura`, `jmix-verify-bootrun`, `jmix-configure-observability`. Expected saving: about 600 tokens in every session.
 

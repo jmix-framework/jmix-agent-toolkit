@@ -1,6 +1,6 @@
 ---
 name: jmix-configure-observability
-description: Enable and use Jmix 3 observability - metrics of views, data loaders, actions and DataManager, Prometheus or OTLP export, tracing spans, MDC log context, and custom observations for business operations. Use when adding monitoring, metrics, tracing, Grafana dashboards, or request-scoped log context to a Jmix application.
+description: Use when adding monitoring, metrics, tracing, Prometheus or OTLP export, Grafana dashboards, MDC log context, or custom observations to a Jmix 3 application.
 ---
 
 # Configure Observability

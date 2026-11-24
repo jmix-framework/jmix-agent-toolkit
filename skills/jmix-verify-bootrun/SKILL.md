@@ -1,6 +1,6 @@
 ---
 name: jmix-verify-bootrun
-description: Use when closing a Jmix task. Gate 2 checks that the Spring/Jmix context loads with a terminating `gradle clean test`, never bootRun. Gate 3 opens every view or role you created or changed, in a browser or with a `@UiTest`, to catch render-time defects that compile and clean test miss.
+description: Use when Gate 2 (gradle clean test) fails, and for Gate 3, which opens every view or role you created or changed in a browser or with a @UiTest to catch render-time defects.
 ---
 
 # Gate 2 (context load) and Gate 3 (render)

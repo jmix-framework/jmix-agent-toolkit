@@ -1,6 +1,6 @@
 ---
 name: jmix-migrate-theme-to-aura
-description: Switch a project that came from Jmix 2.x over to the Aura theme, including porting Lumo utility classes. Studio's 2.x→3.x migration deliberately keeps Lumo and there is no automated conversion, so every step here is manual. Each step has a SILENT failure mode — the app boots, compiles, and passes a green clean test while still rendering Lumo, or renders Aura tokens on top of Lumo components.
+description: Use to switch a project upgraded from Jmix 2.x from the Lumo theme to Aura, including Lumo utility classes. The Studio 2.x→3.x migration keeps Lumo, so this is a separate manual task.
 disable-model-invocation: true
 ---
 

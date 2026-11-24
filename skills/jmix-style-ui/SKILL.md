@@ -1,6 +1,6 @@
 ---
 name: jmix-style-ui
-description: "Style Jmix Flow UI components — views, fragments, grid renderers, or components built in a controller. Read this before writing any getStyle().set(...), classNames, addThemeVariants, or CSS custom property (--aura-* / --lumo-* / --vaadin-*). A custom property the active theme does not define fails SILENTLY: no error, every gate green, wrong rendering."
+description: Use before styling Jmix Flow UI components with getStyle().set(...), class names, theme variants, or CSS custom properties (--aura-*, --lumo-*, --vaadin-*) in views, fragments, or renderers.
 ---
 
 # Style Flow UI components
