@@ -75,8 +75,8 @@ string the theme has to style. `ButtonVariant.LUMO_TERTIARY_INLINE` sets
 default background, border, and shadow. One enum holds `LUMO_*`, `AURA_*`, and
 theme-neutral constants (`PRIMARY`, `TERTIARY`, `SUCCESS`, `WARNING`, `ERROR`,
 `SMALL`, `LARGE`), and they all compile the same. Prefer the theme-neutral
-constant, and confirm that the active theme styles the name it maps to: read
-**When you add a theme variant** below.
+constant, and confirm that the active theme styles the name it maps to: first read
+`references/theme-variant.md` in this skill's folder.
 
 **3. Inline `getStyle().set(...)` — last resort.** Correct for a one-off dynamic
 value (a color computed from data, a width from a measurement), not for a look
@@ -149,16 +149,14 @@ plain border is `--vaadin-border-color` — the `--vaadin-*` layer, not the
 `--aura-*` family. The other way, Lumo has no `--lumo-accent-surface` or
 `--lumo-surface-level`.
 
-If the active theme has no suitable token, read **When the active theme has no
-suitable token** below.
+If the active theme has no suitable token, first read `references/no-suitable-token.md` in this skill's folder.
 
 When you rely on a token for something essential (a link's affordance, a status
 color), add a theme-independent fallback too, e.g. `text-decoration: underline`
 next to the accent color.
 
 If a component paints to a `<canvas>` or passes color options directly to a
-JavaScript drawing API (some charts and diagrams), read **When a component
-passes colors to a drawing API** below.
+JavaScript drawing API (some charts and diagrams), first read `references/drawing-api-colors.md` in this skill's folder.
 
 ## Why a wrong token is invisible to every gate
 
@@ -190,8 +188,7 @@ A resolved token gives a real color (`rgb(...)`); an undefined one gives the
 inherited value — that difference is the check. Do the same for
 `borderRadius`/`borderColor` when you set them. If no browser tool is available,
 say `styling not browser-verified` rather than calling it done. For a value
-passed to a drawing API, read **When a component passes colors to a drawing
-API** below.
+passed to a drawing API, first read `references/drawing-api-colors.md` in this skill's folder.
 
 The same check catches a dead theme variant, because a variant the theme does not
 style computes exactly like the component with no variant at all:
@@ -232,83 +229,3 @@ same type — if the two match, the variant did nothing.
 - Treating a reading of the Java or the CSS as proof of the look — only the
   computed style in a browser shows it.
 - Editing generated frontend files — they are regenerated on every build.
-
-## Special cases
-
-### When you add a theme variant
-
-Grep every stylesheet the app declares, not just the Vaadin one. A Jmix app
-loads `Aura.STYLESHEET` and `JmixAura.STYLESHEET`, each with its own
-`[theme~=...]` rules, so a name missing from one may be styled by the other:
-`badge` and `pill` come from the Jmix layer, and a grep of the Vaadin jar alone
-reports them as unstyled.
-
-```bash
-# the cache usually holds several versions — list them and set the two variables
-# to the ones matching the project's Vaadin and Jmix versions
-find ~/.gradle/caches \( -name 'vaadin-aura-theme-*.jar' \
-  -o -name 'jmix-flowui-themes-*.jar' \) ! -name '*-sources.jar'
-JAR=...     # vaadin-aura-theme-<vaadin version>.jar
-JMIX=...    # jmix-flowui-themes-<jmix version>.jar
-
-# 1. the Vaadin layer (Aura.STYLESHEET) — one file, values unquoted
-unzip -p "$JAR" 'META-INF/resources/aura/aura.css' \
-  | grep -ohE "theme~=['\"]?[a-z0-9-]+" | sed -E "s/theme~=['\"]?//" | sort -u
-
-# 2. the Jmix layer (JmixAura.STYLESHEET) — ~120 files, values quoted.
-# Extract, then grep: a member glob is not portable, because on Windows unzip a
-# '*' does not cross '/', so 'META-INF/resources/themes/jmix-aura/*.css' matches
-# only the top-level file and prints nothing. Same reason the whole jar comes
-# out, not just the theme folder — it is under 1 MB.
-DIR=$(mktemp -d)
-unzip -oq "$JMIX" -d "$DIR"
-grep -rhoE "theme~=['\"]?[a-z0-9-]+" "$DIR/META-INF/resources/themes/jmix-aura" \
-  | sed -E "s/theme~=['\"]?//" | sort -u
-```
-
-Under Lumo the same two commands read `META-INF/resources/lumo/lumo.css` in
-`vaadin-lumo-theme-*.jar` and the extracted `themes/jmix-lumo` folder from the
-same Jmix jar. If grep reports that the folder does not exist, check the version
-you picked — Jmix 2.x ships `jmix-lumo` only. A name can also be styled in the
-project's own theme CSS — grep that folder too.
-
-Across both layers (Aura 25.1/25.2 with Jmix 3.0/3.1) `primary` and `tertiary`
-are styled, but `tertiary-inline` appears in neither — a name a Lumo-era call
-site is likely to carry.
-
-Read the selector, not just the name: a hit does not mean the variant works on
-your component. In the Jmix layer `contrast` exists only as
-`[theme~='badge'][theme~='contrast']` and `icon` only on one specific menu bar,
-so on a plain button both still do nothing. (`icon-button` is a different name,
-not a match for `icon`.)
-
-### When the active theme has no suitable token
-
-Three acceptable options, in this order:
-
-1. **A `--vaadin-*` token from the base-styles layer** — it usually has what
-   the theme's own family lacks; enumerate and verify it the same way.
-2. **Define your own custom property or class in the project theme stylesheet**
-   and use it — the value lives in one place and survives a theme change.
-3. **Use a literal, theme-neutral value** for a neutral decoration:
-
-```java
-card.getStyle()
-        .set("border", "1px solid rgba(128, 128, 128, 0.3)")
-        .set("border-radius", "6px");
-```
-
-Borrowing a token from the other theme is never an option: no gate can catch it.
-
-### When a component passes colors to a drawing API
-
-A JavaScript drawing API does not interpret `var(...)` as CSS. Before passing
-a theme token to a component option, check whether the component resolves CSS
-custom properties itself. If it does not, use the component's palette/theme
-API, a literal color, or resolve the property first (for example with
-`getComputedStyle(...).getPropertyValue(...)`) and pass the resulting color.
-
-Such a value may have no computed style to inspect, so the check in **Verify**
-does not apply: verify the rendered result and, when necessary, read the
-component's frontend implementation to confirm whether it resolves CSS custom
-properties.

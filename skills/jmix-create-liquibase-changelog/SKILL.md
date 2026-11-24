@@ -14,17 +14,14 @@ Jmix add-on that owns database tables.
 2. Follow the existing naming style: sequential files or date/time folders.
 3. Create a new changelog file for the schema change. To add columns to an
    existing table, see "Changing an existing table" below. If the change also
-   needs a data fix (a backfill, a reset of a column), read **When the change
-   needs a one-time data fix** below.
+   needs a data fix (a backfill, a reset of a column), first read `references/data-fix.md` in this skill's folder.
 4. Make sure the file is reachable from the root `changelog.xml` (see "Root
    changelog reachability").
 5. Read the root `changelog.xml` for other included changelogs. A baseline
    changelog creates the whole schema for a fresh database; two signs of one are
    tables older than the current release and changesets with
-   `<validCheckSum>ANY</validCheckSum>`. If the project keeps one, read **When
-   the project keeps a baseline changelog** below.
-6. If you add a Jmix add-on that owns persistent entities, read **When you add
-   a Jmix add-on that owns persistent entities** below.
+   `<validCheckSum>ANY</validCheckSum>`. If the project keeps one, first read `references/baseline.md` in this skill's folder.
+6. If you add a Jmix add-on that owns persistent entities, first read `references/add-on-changelogs.md` in this skill's folder.
 7. Use a changeset id and author that match project style; do not reuse an id
    within the same changelog file.
 8. Add `ID` and `VERSION` columns for standard Jmix entities, with the id type
@@ -108,8 +105,7 @@ existing changelogs handle the id.
 
 ## Changing an existing table — `addColumn`, never a second `createTable`
 
-Adding fields to an existing entity (see `jmix-create-entity`, **When widening
-an existing entity**) needs a new changelog file with `addColumn`. Do not edit
+Adding fields to an existing entity (see `jmix-create-entity/references/widening.md`, next to this skill's folder) needs a new changelog file with `addColumn`. Do not edit
 the original `createTable` changeset: it is already applied, and changing it
 breaks the checksum and fails startup.
 
@@ -137,8 +133,8 @@ breaks the checksum and fails startup.
 - The column type comes from the Java field (see "Standard types").
 - A column added to a table that already has rows cannot be `nullable="false"`
   without a default or a data fix: existing rows have no value. Add it nullable,
-  add it with a `defaultValue`, or backfill with `<update>` and then tighten (read
-  **When the change needs a one-time data fix** below).
+  add it with a `defaultValue`, or backfill with `<update>` and then tighten (first read
+  `references/data-fix.md` in this skill's folder).
 
 ## Audit and soft-delete columns
 
@@ -249,90 +245,6 @@ Add an explicit `<include>` only when the project uses explicit includes:
 - A dated migration with no matching entry in the project's baseline changelogs, when the project keeps one.
 
 ## Special cases
-
-### When the change needs a one-time data fix
-
-A data fix for a schema change (backfilling a new column, clearing a timestamp
-so a job processes every row again) is an ordinary `<update>` changeset.
-
-```xml
-<!-- literal value -->
-<changeSet id="3" author="app">
-    <update tableName="CUSTOMER">
-        <column name="STATUS" value="PENDING"/>
-    </update>
-</changeSet>
-
-<!-- set to NULL: a <column> with NO value attribute at all -->
-<changeSet id="4" author="app">
-    <update tableName="CUSTOMER">
-        <column name="LAST_CONTACTED_AT"/>
-        <column name="LAST_INVOICED_AT"/>
-    </update>
-</changeSet>
-```
-
-- `value=""` is not NULL: on most databases it writes an empty string, and on a
-  non-text column it fails. To write NULL, omit every `value` / `valueXxx`
-  attribute.
-- Add a `<where>` clause when the fix targets a subset of rows. Without one it
-  updates every row, which is usually what a one-time reset wants.
-
-### When the project keeps a baseline changelog
-
-Some projects keep a baseline next to the dated migrations: one changelog that
-creates every table for a fresh database, and usually a second one that adds
-every FK and index. A fresh database builds the schema from the baseline and
-marks the dated migrations as `MARK_RAN` through their own preconditions.
-
-Two signs of a baseline in the root `changelog.xml` includes: it creates tables
-older than the current release, and its changesets have
-`<validCheckSum>ANY</validCheckSum>`. That marker allows the baseline to be
-appended to in place; it is the one exception to "never edit an applied
-changeset".
-
-Put the schema change in both places, in the same commit:
-
-- the dated migration, for databases that already exist;
-- the baseline: put the `createTable` (or a new `<column>` on the table's
-  existing `createTable`) inside the existing changeset, next to related tables;
-  add the FK and each index as a new changeset in the constraints changelog,
-  following that file's own pattern.
-
-Keep every name identical across the dated file, the baseline and the entity's
-`@Table(indexes = ...)`.
-
-### When you add a Jmix add-on that owns persistent entities
-
-Adding the add-on dependency does not make its module changelog reachable from a
-root changelog that lists module changelogs explicitly. Find the add-on's
-changelog resource and add an explicit `<include>` to the root `changelog.xml`.
-For example, the Audit add-on requires:
-
-```xml
-<include file="/io/jmix/audit/liquibase/changelog.xml"/>
-```
-
-Jmix module changelogs commonly use this path pattern:
-
-```xml
-<include file="/io/jmix/<addon>/liquibase/changelog.xml"/>
-```
-
-Confirm the actual resource path in the add-on before adding it. Do not assume
-that the application's `<includeAll>` covers changelogs packaged in add-on JARs.
-
-After startup, verify that the add-on tables exist and use a feature that needs
-them. Also search the complete startup log for missing-schema errors:
-
-```bash
-rg -n 'does not exist|relation .* does not exist' /path/to/startup.log
-```
-
-Treat every match as a failure until it is explained. A green `clean test`
-proves that the context loads, not that the add-on schema was created, when no
-test accesses its tables. Some add-ons log the missing-table error and let the
-application keep running with the feature unavailable.
 
 ### When two referential actions can act on one row
 

@@ -18,17 +18,14 @@ interfaces of the same kind to combine their policies; one role cannot mix
 2. For each entity, re-read the requirement and choose the `@EntityPolicy`
    actions from its exact wording (**Requirement wording → policy actions**).
    - If the wording forbids updating or deleting the entity ("immutable",
-     "cannot be updated", "cannot be deleted", "create only"), read **When the
-     requirement forbids updating or deleting an entity** below.
+     "cannot be updated", "cannot be deleted", "create only"), first read `references/no-update-delete.md` in this skill's folder.
    - If the requirement limits which rows a user sees or edits ("own records",
-     "only in status X", "own department"), read **When the requirement limits
-     which rows a user can see or change** below.
+     "only in status X", "own department"), first read `references/row-level.md` in this skill's folder.
 3. Add `@EntityAttributePolicy` for the fields the role must view or edit. Apply
    **CREATE implies MODIFY**.
 4. List in `@ViewPolicy` every view the role can open: list views, detail views,
    and detail views opened only as dialogs. If an entity is a `composition`
-   property of another entity, read **When an entity is a `composition` child
-   of another entity** below.
+   property of another entity, first read `references/composition-child.md` in this skill's folder.
 5. Add `@MenuPolicy` for the views opened from the menu, using real item ids
    from `menu.xml`, not group ids (**Menu policies**).
 6. Give every UI user `ui.loginToUi` (**Every UI user needs `ui.loginToUi`**).
@@ -184,85 +181,6 @@ To assert a permission in Java at runtime, inject `AccessManager`, call
   joined with AND.
 
 ## Special cases
-
-### When the requirement forbids updating or deleting an entity
-
-- "Immutable" or "cannot be updated": leave out `UPDATE`.
-- "Cannot be deleted": leave out `DELETE`.
-- "Cannot be updated or deleted" or "create only": `READ`, `CREATE` only, not even
-  `UPDATE` or `DELETE` for the manager role.
-- `EntityPolicyAction.ALL` includes `UPDATE` and `DELETE` and contradicts all of
-  these.
-- The attribute policy is still `MODIFY` (**CREATE implies MODIFY**): create forms
-  need it even when update/delete are forbidden.
-
-### When an entity is a `composition` child of another entity
-
-The child's detail view opens as a dialog from the parent's detail view. That
-dialog is a real Jmix view subject to `@ViewPolicy`, though no menu leads to it.
-Include the child detail view id in `@ViewPolicy` of every role that can edit the
-parent, and keep it out of `@MenuPolicy`.
-
-```java
-@ViewPolicy(viewIds = {
-    "<Parent>.list",
-    "<Parent>.detail",
-    "<Child>.detail",          // composition child, opened from <Parent>.detail
-})
-@MenuPolicy(menuIds = {"<Parent>.list"})   // child detail is NOT in menu
-void parentScreens();
-```
-
-Without the child detail id the role compiles and fails at runtime when the user
-clicks "+" in the parent's composition table.
-
-### When the requirement limits which rows a user can see or change
-
-Wording such as "own records", "only in status X", "own department". A resource
-role grants what the user can do; a row-level role restricts which rows. Put row
-rules in a separate interface annotated with `@RowLevelRole`.
-
-- `@JpqlRowLevelPolicy(entityClass = ..., where = "...")` filters in the database.
-  Use `{E}` as the entity alias and `:current_user_*` parameters (for example
-  `:current_user_username`).
-- `@PredicateRowLevelPolicy(entityClass = ..., actions = {...})` filters in
-  memory; the method returns a `RowLevelPredicate` / `RowLevelBiPredicate`. Use it
-  for logic JPQL cannot express and for non-read operations.
-
-```java
-@RowLevelRole(name = "Own Orders Only", code = "app_OwnOrdersOnly")
-public interface OwnOrdersOnlyRole {
-    @JpqlRowLevelPolicy(entityClass = Order.class,
-            where = "{E}.createdBy = :current_user_username")
-    void orderPolicy();
-}
-```
-
-**Row-level policies are joined with AND** — JPQL conditions and predicates alike,
-across all the user's row-level roles. A user with both "own orders" and
-"department orders" sees only their own. Assign only the wider role, or write one
-role whose condition contains the `or`; check seed role assignments too.
-
-A JPQL policy affects only the root entity of a loaded graph. If the entity is
-also loaded as a collection inside another entity's graph, define both a
-`@JpqlRowLevelPolicy` and a `@PredicateRowLevelPolicy` for it.
-
-An UPDATE predicate is checked against two states of the entity.
-`StandardDetailView` and the list `EditAction` check the entity as loaded, to
-decide whether the view (or the child dialog) opens read-only. The data store
-checks the entity as it is being saved, with the user's changes applied. So a
-predicate on a field the same user changes in that save judges the new value: an
-`Order` predicate `status == DRAFT` lets the owner edit a draft, then denies, with
-`AccessDeniedException`, the owner's own save that moves the order to SUBMITTED.
-
-- Put ownership in the predicate (the requester is the current user); it does not
-  change during the save.
-- Keep status rules for the entity itself in the service or the view.
-- A status rule fits child entities that the transition does not touch, for
-  example `OrderLine` changes allowed only while the parent `Order` is a draft.
-  Then save the user's pending line edits before the status change, in a separate
-  save: in one save the changed lines are checked against the parent's new status
-  and denied.
 
 ### When code outside the UI saves entities for the role's users
 

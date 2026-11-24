@@ -14,9 +14,9 @@ Use this skill when creating a top-level list/search view for an entity.
 3. Add `@ViewController(id = "Entity.list")` and `@ViewDescriptor(path = "entity-list-view.xml")`.
 4. Add `@LookupComponent("<entities>DataGrid")` when the view can be opened as a lookup: an entity-picker dialog via `@PrimaryLookupView` or an explicit lookup builder call. A management/browse screen that is never used as a picker can omit it; the annotation only backs `getLookupComponent()`/`findLookupComponent()` in the lookup flow.
 5. Create the XML descriptor with collection container, loader, `dataLoadCoordinator`, grid actions, toolbar buttons, and columns.
-   - If the entity has a reference to its own class, read **When the entity has a reference to its own class** below.
-   - If the view has a filter, pagination, or other component whose state should survive a page reload, read **When the view has a filter, pagination, or other state that should survive a page reload** below.
-   - If the view has a `<settings>` facet, or the user's grid layout should persist between visits, read **When the view has or gets a `<settings>` facet** below.
+   - If the entity has a reference to its own class, first read `references/hierarchy.md` in this skill's folder.
+   - If the view has a filter, pagination, or other component whose state should survive a page reload, first read `references/url-query-parameters.md` in this skill's folder.
+   - If the view has a `<settings>` facet, or the user's grid layout should persist between visits, first read `references/settings-facet.md` in this skill's folder.
 6. Check that every JPQL query uses the JPA/Jmix entity name, not the database table name.
 7. Render a visible button for every grid action that users must trigger.
 8. Add a `menu.xml` item for list views that should appear in navigation.
@@ -164,7 +164,7 @@ The same holds for every overridden view lifecycle method (`beforeEnter`, `after
 
 `em` resolves against the font size of the element it is set on, and grid header and body cells are separate elements. Under the Lumo (compatibility) theme the header font is 14px (`--lumo-font-size-s`) and the body font 16px (`--lumo-font-size-m`): `9em` is 126px in the header and 144px in the body, and the difference adds up column by column to the right. Under the default Aura theme the two sizes are currently equal, but any theme or project CSS that sets the public `--vaadin-grid-header-font-size` brings the drift back. Vaadin's Grid documentation also says to use `rem`, not `em`. On a narrow table the first columns still line up, so a small grid does not show the defect.
 
-If the view has a `<settings>` facet and you change column width, order or visibility, read **When the view has or gets a `<settings>` facet** below.
+If the view has a `<settings>` facet and you change column width, order or visibility, first read `references/settings-facet.md` in this skill's folder.
 
 ## Forbidden
 
@@ -187,61 +187,3 @@ If the view has a `<settings>` facet and you change column width, order or visib
 - `<column width="…em">`: header and body resolve `em` against different font sizes and drift apart.
 - `urlQueryParameters` references to component ids that are not declared in the XML (`Component with id '<x>' not found` at view init).
 - On a view with a `<settings>` facet: verifying a change to column width, order or visibility in the browser without clearing saved user settings first (the check returns a false negative).
-
-## Special cases
-
-### When the entity has a reference to its own class
-
-Show the list as a tree (here for `Department.parent`):
-
-```xml
-<treeDataGrid id="departmentsDataGrid" dataContainer="departmentsDc"
-              hierarchyProperty="parent" width="100%">
-    <!-- actions and columns as in dataGrid -->
-</treeDataGrid>
-```
-
-- Actions and buttons are the same as for `dataGrid`.
-- `showOrphans="true"` shows as a root a record whose parent is not in the container. With the default `false`, such records disappear when a filter is applied.
-- The application must forbid cycles (`A` is its own parent, `A → B → A`): records in a cycle are never shown, together with their subtrees.
-- Enforce the ban at the data level (see `jmix-create-entity` / `jmix-add-entity-event-listener`), not in the view: a direct `DataManager.save` bypasses the view. Removing the edited record from its own parent picker is a convenience, not the ban.
-
-### When the view has a filter, pagination, or other state that should survive a page reload
-
-Add `<urlQueryParameters>` bindings so that the state of the filter, pagination, or other stateful components survives a page reload and can be shared by URL. This is the recommended pattern for any non-trivial list view; the seed-scaffolded `user-list-view.xml` has it by default.
-
-```xml
-<facets>
-    <urlQueryParameters>
-        <genericFilter component="genericFilter"/>
-        <pagination component="pagination"/>
-    </urlQueryParameters>
-</facets>
-...
-<genericFilter id="genericFilter" dataLoader="customersDl">...</genericFilter>
-<simplePagination id="pagination" dataLoader="customersDl"/>
-```
-
-- Both halves are mandatory. Each `<urlQueryParameters>` child binds to a layout component by id; if that component is missing, the view crashes at init with `Component with id '<x>' not found`, and every test that opens the view fails.
-- When copying from another view (for example `user-list-view.xml`), copy both the binding and the component, or neither.
-- Leave out `<urlQueryParameters>` when the view has no filter, pagination, or other such component (for example a small static reference table).
-- Self-check: for every `<urlQueryParameters>` child, grep the same file for a component whose `id` equals the `component="..."` value. If it is absent, add the matching component to the layout (`<simplePagination id="pagination" dataLoader="...Dl"/>` or `<genericFilter id="genericFilter" dataLoader="...Dl">`) or delete that entry.
-
-### When the view has or gets a `<settings>` facet
-
-Add a settings facet when the user's grid layout should persist between visits. Existing views often have one, even though this skill's skeleton does not add it. Place it in `<facets>`:
-
-```xml
-<facets>
-    <dataLoadCoordinator auto="true"/>
-    <settings auto="true"/>
-</facets>
-```
-
-- With `auto="true"` the facet manages only components that have an `id`: `dataGrid` / `treeDataGrid` (column order, width, visibility, sorting), `genericFilter` and `details` (opened state), `simplePagination` (page size, when `itemsPerPageVisible="true"`).
-- Storage is the `FLOWUI_USER_SETTINGS` table, provided by `jmix-flowui-data-starter`. Check that the module is a dependency.
-- Do not add a resource-role policy for `flowui_UserSettingsItem`: the framework reads and writes settings through `UnconstrainedDataManager`.
-- Saved user settings of these components override later descriptor changes. On open, saved values are applied over the descriptor. They have no version marker, and editing the descriptor does not invalidate them.
-- Opening the view once is enough: a full snapshot of all columns is saved on leave. So after a descriptor change, only users who never opened the view see the change.
-- The symptom looks like "the deployment did not arrive": new value in the source, old value on screen. Until the saved settings are cleared, a browser check proves nothing, and a correct change looks broken; do not "fix" working code a second time.
-- After changing column width, order or visibility, clear the stored settings for that view (`FLOWUI_USER_SETTINGS`) before verifying.

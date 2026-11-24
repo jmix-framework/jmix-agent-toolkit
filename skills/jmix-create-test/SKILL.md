@@ -10,10 +10,10 @@ description: Create or update Jmix unit, integration, UI integration, or end-to-
 1. Choose the smallest test type that proves the behavior.
 2. Use a plain JUnit test for pure Java logic without Spring/Jmix services.
 3. Use `@SpringBootTest` for services, DataManager persistence, entity listeners, security, and transactions.
-4. Use `@UiTest` with `FlowuiTestAssistConfiguration` for Flow UI controller/component behavior without a browser. This includes the minimal test that opens a view for Gate 3 of `jmix-verify-bootrun`. Read **When you write a UI integration test (`@UiTest`)** below. If the test checks grid columns or form fields hidden by security, also read **When a UI test checks columns or fields hidden by security** below.
+4. Use `@UiTest` with `FlowuiTestAssistConfiguration` for Flow UI controller/component behavior without a browser. This includes the minimal test that opens a view for Gate 3 of `jmix-verify-bootrun`. First read `references/ui-test.md` in this skill's folder. If the test checks grid columns or form fields hidden by security, also read `references/ui-test-hidden-by-security.md` in this skill's folder.
 5. Use end-to-end browser tests only for real browser behavior, routing, login, theme, or Vaadin client-side interactions. Read **When the behavior needs a real browser** below.
 6. Create test data through `DataManager.create()` and `DataManager.save()`.
-7. Set authentication with the project's `AuthenticatedAsAdmin` extension or `SystemAuthenticator`. If the code under test runs on a scheduler, `@Async`, or application event listener path, read **When the code under test runs outside a user session** below.
+7. Set authentication with the project's `AuthenticatedAsAdmin` extension or `SystemAuthenticator`. If the code under test runs on a scheduler, `@Async`, or application event listener path, first read `references/outside-user-session.md` in this skill's folder.
 8. Clean up created persistent data in `@AfterEach`. If an entity has `@DeletedDate`/`@DeletedBy`, read **When the test removes a soft-deletable entity** below.
 9. Mock external systems at the boundary with `@MockitoBean`. Jmix 3 runs on Spring Boot 4, which removed `@MockBean`.
 10. Run the smallest relevant Gradle test command.
@@ -84,7 +84,7 @@ Use this when the expected result depends on Jmix security policies.
 
 Test row-level rules by loading data as the user and asserting which rows come back. A permission API such as `SecureOperations` proves only that a policy exists.
 
-If the test checks grid columns or form fields hidden by attribute permissions, read **When a UI test checks columns or fields hidden by security** below.
+If the test checks grid columns or form fields hidden by attribute permissions, first read `references/ui-test-hidden-by-security.md` in this skill's folder.
 
 ## Final review
 
@@ -103,7 +103,7 @@ Before finishing, check:
 - A test that compares a stored date-time with its in-memory original (equality, "same event", `isEqual`) creates the value at the column precision, for example `OffsetDateTime.now().truncatedTo(ChronoUnit.MICROS)` for a PostgreSQL `timestamp`. `now()` has nanoseconds on Linux JDKs and microseconds on macOS, and the driver rounds the value to the column on write, so the reloaded value differs about half the time: green on a developer Mac, red on Linux CI.
 - The test command can run one class or method without running the full suite.
 - Run the single class twice back-to-back. A second green run shows there are no leftover rows and no dependence on data from other tests.
-- For a UI test: it runs as a real database user when the behavior depends on the current user, and it selects the `tabSheet` tab before `click()` on a component in that tab (see **When you write a UI integration test (`@UiTest`)** below).
+- For a UI test: it runs as a real database user when the behavior depends on the current user, and it selects the `tabSheet` tab before `click()` on a component in that tab (see `references/ui-test.md` in this skill's folder).
 
 ## Forbidden
 
@@ -136,161 +136,6 @@ Before finishing, check:
 - Hardcoded sleeps when framework waits or component assertions are available.
 
 ## Special cases
-
-### When you write a UI integration test (`@UiTest`)
-
-```java
-@UiTest
-@SpringBootTest(classes = {AppApplication.class, FlowuiTestAssistConfiguration.class})
-class CustomerUiTest {
-    @Autowired
-    private ViewNavigators viewNavigators;
-
-    @Test
-    void opensCustomerList() {
-        viewNavigators.view(UiTestUtils.getCurrentView(), CustomerListView.class).navigate();
-        CustomerListView view = UiTestUtils.getCurrentView();
-        DataGrid<Customer> grid = UiTestUtils.getComponent(view, "customersDataGrid");
-        assertThat(grid).isNotNull();
-    }
-}
-```
-
-- Use the project's helper for component lookup if it exists. Otherwise keep a local typed helper small and explicit.
-- A wrong view id or component id is caught by the test that navigates to the view, not by `compileJava`.
-- `UiTestUtils.getCurrentView()` works as the navigation origin before the test navigates anywhere: `@UiTest` opens the initial view before each test.
-
-**Find components by id, not by localized text.** In a `@UiTest` the UI and session locale is the JVM default (`Locale.getDefault()`). `Messages` takes the locale from `CurrentAuthentication`, which has no client locale there and falls back to the first entry of `jmix.core.available-locales`. Comparing a caption with `messages.getMessage(key)` passes only where the two agree: on a developer machine, not on an `en_US` CI runner. When the test must assert localized text, resolve it with the locale the component used, or set the UI locale in the test setup.
-
-**Authenticate as a database user when behavior depends on the current user.** By default `@UiTest` runs as the system user, which is created at startup and has no row in the application's user table. Code that resolves the current user through `DataManager` or the user repository finds no entity and can silently take a "not the current user" branch. Wrap navigation, interaction, and assertions in `runWithUser`:
-
-```java
-systemAuthenticator.runWithUser("admin", () -> {
-    viewNavigators.detailView(UiTestUtils.getCurrentView(), Order.class)
-            .editEntity(order)
-            .navigate();
-    OrderDetailView view = UiTestUtils.getCurrentView();
-    JmixButton approveButton = UiTestUtils.getComponent(view, "approveButton");
-    assertThat(approveButton.isVisible()).isTrue();
-});
-```
-
-- Use `withUser` instead when the block returns a value.
-- This is separate from testing security policies: authenticate whenever the result depends on which application user looks at the data.
-- `runWithUser` in the test body does not cover code that runs before the test: `@UiTest` opens the initial/main view first, as the system user. When that view resolves the current user, or every test in the class needs the same real user, implement `UiTestAuthenticator` and pass it in `@UiTest(authenticator = ...)` so the whole class, including the initial view, runs as that user.
-
-**List a nested `@TestConfiguration` in `classes` explicitly.** Once `@SpringBootTest(classes = {...})` names an explicit set, as `@UiTest` requires, a static nested `@TestConfiguration` is in practice not picked up automatically:
-
-```java
-@UiTest
-@SpringBootTest(classes = {
-        AppApplication.class,
-        FlowuiTestAssistConfiguration.class,
-        CustomerUiTest.MockApiConfig.class})   // ← nested config, listed EXPLICITLY
-class CustomerUiTest {
-
-    @TestConfiguration
-    static class MockApiConfig { /* @Bean overrides */ }
-}
-```
-
-If you leave it out, nothing fails at once: the beans are never defined, and the test runs against the real collaborator (a live HTTP call, or a `NoSuchBeanDefinition` far from the cause).
-
-**Dialogs and notifications.** `UiTestUtils.getComponent(...)` finds only components in the view. Dialogs and notifications are not children of the `UI`: walking `UI.getCurrent().getChildren()` compiles, runs, and finds nothing (the UI's only child is the main view), and the failure looks like "the dialog never opened", which blames correct view code.
-
-```java
-DialogInfo dialog = UiTestUtils.getLastOpenedDialog();
-assertThat(dialog.getText()).contains("...");
-dialog.getButtons().stream()
-        .filter(b -> "YES".equals(b.getText()))
-        .findFirst().orElseThrow()
-        .click();
-```
-
-`UiTestUtils` also has `getOpenedDialogs()`, `getLastOpenedNotification()`, `getOpenedNotifications()` and `validateView(detailView)`. Assert dialogs, notifications and validation errors through these, never by walking the tree.
-
-These helpers read static registries (`OpenedDialogs`, `OpenedNotifications`). `JmixUiTestExtension` empties them after each test, but during a test they still hold what was opened before the action under test, by the initial view or by setup steps. Before asserting "no dialog opened" or on the last notification, clear them right before the action:
-
-```java
-openedDialogs.closeOpenedDialogs();             // @Autowired OpenedDialogs
-openedNotifications.closeOpenedNotifications(); // @Autowired OpenedNotifications
-approveAction.actionPerform(ordersDataGrid);
-assertThat(UiTestUtils.getOpenedDialogs()).isEmpty();
-```
-
-**Data containers.** Get them through `ViewControllerUtils`, because `View.getViewData()` is protected and the compiler error does not point to the cause:
-
-```java
-CollectionContainer<Category> dc =
-        ViewControllerUtils.getViewData(view).getContainer("categoriesDc");
-assertThat(dc.getItems()).allMatch(Category::isApplicable);
-```
-
-**Inactive `tabSheet` tabs.** Lookup and `@ViewComponent` injection can find a component on a non-selected tab, but `JmixTabSheet` disables the content of every non-selected tab (and attaches it to the component tree only when the tab is first selected). `Button.click()` checks `isEnabled()` first, so on that content it does nothing and does not call the handler. This applies only to inactive tab content; a component that is only detached (for example built in a controller and not yet added) clicks normally. Select the tab first:
-
-```java
-JmixTabSheet tabSheet = UiTestUtils.getComponent(view, "orderTabSheet");
-JmixButton approveButton = UiTestUtils.getComponent(view, "approveButton");
-
-tabSheet.setSelectedIndex(1); // enable the tab content that contains approveButton
-approveButton.click();
-```
-
-If the test targets only the server-side handler, fire the event directly and state why you bypass the disabled component:
-
-```java
-// The button is on an inactive tab; invoke the server-side handler directly.
-ComponentUtil.fireEvent(approveButton, new ClickEvent<>(approveButton));
-```
-
-Firing the event directly does not prove that tab selection and the browser click work. A `click()` that does nothing on disabled content does not prove that the button is broken in a browser either. Use a browser test when that client-side path is the behavior under test.
-
-**Components inside a fragment.** They are not found by id from the view. The fragment loader keeps a component's XML id as fragment-scoped data, not as the element id, so `UiTestUtils.getComponent(view, "ordersGrid")` and any walk comparing `Component.getId()` report "no component" for a correct descriptor. The fragment itself is a view component: get it from the view, then ask the fragment for its content:
-
-```java
-OrderListFragment fragment = UiTestUtils.getComponent(view, "orderListFragment");
-DataGrid<Order> grid = (DataGrid<Order>) FragmentUtils.getComponent(fragment, "ordersGrid");
-```
-
-`FragmentUtils.findComponent(fragment, id)` is the `Optional` form; both are in `io.jmix.flowui.fragment`.
-
-**`dropdownButton` items.** They are not view components, so `UiTestUtils.getComponent(view, itemId)` does not find them. Get the button by its component id and ask it for the item:
-
-```java
-DropdownButton createButton = UiTestUtils.getComponent(view, "createButton");
-assertThat(createButton.getItem("createFromTemplate")).isNull(); // null, not an exception
-
-ActionItem blankItem = (ActionItem) createButton.getItem("createBlank");
-blankItem.getAction().actionPerform(createButton);
-```
-
-`getItems()` lists the items and skips separators.
-
-### When a UI test checks columns or fields hidden by security
-
-A grid column whose attribute the current role may not view is removed from the Vaadin grid, but `DataGrid` still keeps it by key: `getColumnByKey("discount")` returns the column and its `isVisible()` is `true`, so a visibility assertion reports a hidden column as shown. Assert the removal through the column's element:
-
-```java
-Grid.Column<Order> column = grid.getColumnByKey("discount");
-assertThat(column == null || column.getElement().getParent() == null).isTrue();
-```
-
-A form field bound to such an attribute is hidden with `setVisible(false)`, so `assertThat(field.isVisible()).isFalse()` is correct for fields.
-
-### When the code under test runs outside a user session
-
-A scheduler / `@Async` / application event listener path has no authenticated user, and a test that sets up authentication hides exactly the defect worth catching. Call the entry point without authentication, and authenticate only the data setup:
-
-```java
-@Test
-void generateDailyReportsRunsOnTheSchedulerThread() {
-    systemAuthenticator.runWithSystem(() -> givenOrder());   // setup only
-    // no authentication around the call — reproduces the scheduler thread
-    reportService.generateDailyReports();
-}
-```
-
-See `jmix-run-background-code` for the `@Authenticated` / `SystemAuthenticator` rules on the production side.
 
 ### When the test removes a soft-deletable entity
 

@@ -17,8 +17,8 @@ Use this skill when business logic must react to entity save, change, delete, or
    - `io.jmix.core.event.EntitySavingEvent`
 4. For created entities, load by `event.getEntityId()` when related data is needed.
 5. If you specify a custom fetch plan, include every scalar and reference property read later (see `jmix-configure-fetch-plan`).
-6. For deleted entities, do not load `event.getEntityId()`; use old values or old reference ids from `event.getChanges()`. If the listener reacts to deletes, read **When the listener handles `Type.DELETED`** below. If children removed by an `ON DELETE CASCADE` foreign key need per-row cleanup, read **When children are removed by a database cascade** below.
-7. Use `EntitySavingEvent` for defaults or transformations that must happen before data is saved; a required persistent default still belongs at the entity layer (see `jmix-create-entity`). If an `EntitySavingEvent` listener must read a reference of the entity, read **When an `EntitySavingEvent` listener needs a reference** below. If a stored value is computed from composition children (an order total from its lines), read **When a stored value is derived from composition children** below.
+6. For deleted entities, do not load `event.getEntityId()`; use old values or old reference ids from `event.getChanges()`. If the listener reacts to deletes, first read `references/deleted-events.md` in this skill's folder. If children removed by an `ON DELETE CASCADE` foreign key need per-row cleanup, first read `references/database-cascade.md` in this skill's folder.
+7. Use `EntitySavingEvent` for defaults or transformations that must happen before data is saved; a required persistent default still belongs at the entity layer (see `jmix-create-entity`). If an `EntitySavingEvent` listener must read a reference of the entity, first read `references/saving-event-reference.md` in this skill's folder. If a stored value is computed from composition children (an order total from its lines), first read `references/derived-from-children.md` in this skill's folder.
 8. Use `EntityLoadingEvent` for initializing non-persistent attributes from already loaded local persistent state.
 9. Use a before-commit `@EventListener` path for validation that must reject the current save/remove operation. If the write being validated can also violate a database constraint, read **When the validated write can violate a database constraint** below.
 10. Put multi-entity changes in a transactional service method when atomicity matters.
@@ -131,91 +131,6 @@ In both events, read and write only local attributes of the event entity. Do not
 - Side effects without an explicit service method when several entities must stay consistent.
 
 ## Special cases
-
-### When the listener handles `Type.DELETED`
-
-For `Type.DELETED`, `event.getChanges()` holds every non-read-only property of the entity with its last value before the delete — unlike `Type.UPDATED`, where only changed attributes appear. So `getOldValue(name)` works for scalar (non-reference) attributes too, and references come back as ids:
-
-```java
-@EventListener
-public void onOrderLineChanged(EntityChangedEvent<OrderLine> event) {
-    if (event.getType() == EntityChangedEvent.Type.DELETED) {
-        LocalDate postingDate = event.getChanges().getOldValue("postingDate"); // scalar pre-delete value
-        Id<Order> orderId = event.getChanges().getOldReferenceId("order");     // reference as id
-        // validate against the pre-delete state, e.g. reject the delete
-    }
-}
-```
-
-The change set covers only the deleted entity's own attributes. A reference is stored as `Id.of(value)` only, so the referenced entity's columns cannot be read through it.
-
-### When children are removed by a database cascade
-
-When a parent is hard-deleted and its children are removed through an `ON DELETE CASCADE` foreign key, no event is published for those children: there is nothing to subscribe to and no state left to read.
-
-So any per-row cleanup a cascaded child owns (file storage, external APIs) must run before the parent delete is requested — load the children, clean up, then remove the parent, in a service method — or be accepted and recorded as a gap. Do not plan it as delete-side listener work.
-
-### When an `EntitySavingEvent` listener needs a reference
-
-Inside `EntitySavingEvent` an unloaded reference does not lazy-load: the getter throws. This differs from the ordinary rule (outside the save path a reference missing from the fetch plan is lazy-loaded and only local attributes throw), so code written from the general rule fails here.
-
-This also rules out `dataManager.load(Category.class).id(order.getCategory().getId())`: `order.getCategory()` throws first. `entity.getRef().getId()` is not a safe way to learn a reference's id; it needs the reference loaded.
-
-```java
-@EventListener
-public void onOrderSaving(EntitySavingEvent<Order> event) {
-    Order order = event.getEntity();
-    Category category = entityStates.isLoaded(order, "category")
-            ? order.getCategory()
-            : dataManager.load(Order.class).id(order.getId())
-                    .fetchPlan(fp -> fp.addFetchPlan(FetchPlan.BASE)
-                            .add("category", FetchPlan.BASE))
-                    .optional().map(Order::getCategory).orElse(null);
-    // ... use category, keep working with `order`
-}
-```
-
-Read the reference out of the separately loaded instance and keep using the event's entity. Do not continue with the reloaded copy and do not merge it back: it carries what is in the database and overwrites values set in memory but not yet saved.
-
-### When a stored value is derived from composition children
-
-A save writes only its save set: `DataContext` includes only changed instances, and `DataManager.save(x)` only what you pass. Changing the parent from a line's `EntitySavingEvent`, or changing lines and saving only the parent, writes nothing. So compute each stored value when its own entity is saved, and when a line is saved without its parent, reload the parent and save it.
-
-Put the calculation in a Spring bean, not in the entity: it often needs other beans (prices, rates, settings), and the listeners, the view's live total (`jmix-create-composition-detail-view`) and tests then share one implementation.
-
-```java
-@EventListener
-public void onOrderLineSaving(EntitySavingEvent<OrderLine> event) {
-    event.getEntity().setAmount(orderTotals.lineAmount(event.getEntity()));
-}
-
-@EventListener
-public void onOrderSaving(EntitySavingEvent<Order> event) {
-    Order order = event.getEntity();
-    if (entityStates.isLoaded(order, "lines")) {
-        order.setTotal(orderTotals.total(order));   // sums lineAmount(line), not stored amounts
-    }
-}
-
-@EventListener   // a line saved or removed without its order
-public void onOrderLineChanged(EntityChangedEvent<OrderLine> event) {
-    Id<Order> orderId = event.getType() == EntityChangedEvent.Type.DELETED
-            ? event.getChanges().getOldReferenceId("order")
-            : Id.of(dataManager.load(event.getEntityId()).fetchPlan(fp -> fp.add("order")).one().getOrder());
-    dataManager.load(orderId)
-            .fetchPlan(fp -> fp.addFetchPlan(FetchPlan.BASE).add("lines", FetchPlan.BASE))
-            .optional()
-            .ifPresent(order -> {
-                BigDecimal total = orderTotals.total(order);
-                if (order.getTotal() == null || order.getTotal().compareTo(total) != 0) {
-                    order.setTotal(total);
-                    dataManager.saveWithoutReload(order);
-                }
-            });
-}
-```
-
-Saving the order changes no line, so no further line event follows.
 
 ### When the validated write can violate a database constraint
 

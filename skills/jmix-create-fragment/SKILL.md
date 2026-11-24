@@ -12,8 +12,8 @@ Use this skill when UI code should be reusable inside one or more views or fragm
 1. Confirm the UI is reusable enough to justify a fragment; keep one-off layout inside the view.
 2. Create a fragment controller in the relevant `view/...` package. It extends `Fragment<RootComponentType>` and has `@FragmentDescriptor("fragment-file.xml")`.
 3. Create the XML descriptor with the fragment namespace and a required `<content>` root. The root component inside `<content>` must match the controller generic type.
-4. Add `<data>` only for data the fragment owns. If the fragment shows or edits the host view's entity or container, read **When the fragment shows or edits the host's data** below.
-5. Load the fragment's own loaders with `getFragmentData().loadAll()` in a `ReadyEvent` handler. If the fragment needs automatic loading, saved settings, URL query parameters, or a timer, read **When the fragment needs facets** below.
+4. Add `<data>` only for data the fragment owns. If the fragment shows or edits the host view's entity or container, first read `references/host-data.md` in this skill's folder.
+5. Load the fragment's own loaders with `getFragmentData().loadAll()` in a `ReadyEvent` handler. If the fragment needs automatic loading, saved settings, URL query parameters, or a timer, first read `references/facets.md` in this skill's folder.
 6. Pass parameters through public setters; set them in XML `<properties>`, or call the setters before adding the fragment.
 7. Add message keys for user-visible labels, captions, and action text.
 8. If a grid or list cell needs the fragment, read **When a grid or list cell renders a fragment** below.
@@ -103,40 +103,6 @@ Fragment wiring errors compile and then throw `GuiDevelopmentException` (or a lo
 - Using `UiComponentUtils` to find inner fragment components by Vaadin ids.
 
 ## Special cases
-
-### When the fragment shows or edits the host's data
-
-Mark host-owned containers and loaders with `provided="true"`:
-
-```xml
-<data>
-    <instance id="customerDc"
-              class="com.company.app.entity.Customer"
-              provided="true"/>
-</data>
-<content>
-    <formLayout id="form" dataContainer="customerDc">
-        <textField id="nameField" property="name"/>
-    </formLayout>
-</content>
-```
-
-- The host view or enclosing fragment must declare a data component with the same id.
-- Let the host view load `provided="true"` containers.
-
-### When the fragment needs facets
-
-Since Jmix 2.8, a fragment descriptor supports a `<facets>` element with fragment-specific facet names, not the view ones: `fragmentDataLoadCoordinator`, `fragmentSettings`, `urlQueryParameters`, and `timer`.
-
-```xml
-<facets>
-    <fragmentDataLoadCoordinator auto="true"/>
-</facets>
-```
-
-- `fragmentDataLoadCoordinator auto="true"` loads the fragment's own `<data>` loaders; do not also call `getFragmentData().loadAll()` for the same loaders.
-- A facet that persists state (`fragmentSettings`) needs a stable `id` on the embedded fragment instance; prefer declarative embedding with an `id`.
-- `urlQueryParameters` entries must reference components declared in the fragment.
 
 ### When a grid or list cell renders a fragment
 

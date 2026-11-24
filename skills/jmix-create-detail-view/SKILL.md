@@ -13,10 +13,10 @@ description: Create a Jmix Flow UI detail view with XML descriptor, save-close a
 4. Add `@ViewController(id = "Entity.detail")`.
 5. Add `@ViewDescriptor(path = "entity-detail-view.xml")`.
 6. Add `@EditedEntityContainer("<entity>Dc")`.
-7. Create the XML descriptor with instance container, loader, `dataLoadCoordinator`, typed form fields, `detail_saveClose`, and `detail_close`. If the view shows a to-many attribute, read **When the view shows a to-many attribute** below. If the form has a `tabSheet`, read **When the form has a `tabSheet`** below.
-8. Configure reference fields with a verified data source: lookup action, `itemsContainer`, or `itemsQuery`; read **When the entity has a reference attribute** below.
+7. Create the XML descriptor with instance container, loader, `dataLoadCoordinator`, typed form fields, `detail_saveClose`, and `detail_close`. If the view shows a to-many attribute, first read `references/to-many-attribute.md` in this skill's folder. If the form has a `tabSheet`, read **When the form has a `tabSheet`** below.
+8. Configure reference fields with a verified data source: lookup action, `itemsContainer`, or `itemsQuery`; first read `references/reference-fields.md` in this skill's folder.
 9. Use `InitEntityEvent` for UI-only defaults only. A required persistent default belongs at the entity layer — see **Required-field defaults** in `jmix-create-entity`.
-10. If the save needs cross-field or manual validation, read **When the save needs cross-field or manual validation** below. If the save must ask the user for confirmation, read **When the save must ask the user for confirmation** below.
+10. If the save needs cross-field or manual validation, read **When the save needs cross-field or manual validation** below. If the save must ask the user for confirmation, first read `references/save-confirmation.md` in this skill's folder.
 11. Add message keys for the title and field labels.
 12. Grant access for roles that can open the detail view with `@ViewPolicy(viewIds = "Entity.detail")` — declared on a **method of a `@ResourceRole` interface** (the annotation is `@Target(METHOD)`), not on the view controller. The annotation has no `value()` member: `@ViewPolicy("...")` does not compile; use `viewIds = "..."` (or `viewClasses = ...`). See `jmix-create-resource-role`.
 13. Before finishing, compare every form field component against the Java property type (**Final XML Type Audit**).
@@ -32,7 +32,7 @@ description: Create a Jmix Flow UI detail view with XML descriptor, save-close a
    <comboBox id="categoryField" property="category"/>   <!-- enum: just bind the property -->
    ```
 
-2. **`itemsQuery` must wrap its JPQL in a nested `<query>` element**, and that query must reference `:searchString` (the combo passes it for type-ahead). Raw CDATA directly under `<itemsQuery>` throws `GuiDevelopmentException: Nested 'query' element is missing`; a query that ignores `:searchString` throws `DevelopmentException: Parameter 'searchString' is not used in the query` at dropdown fetch. The correct shape is in **When the entity has a reference attribute** below.
+2. **`itemsQuery` must wrap its JPQL in a nested `<query>` element**, and that query must reference `:searchString` (the combo passes it for type-ahead). Raw CDATA directly under `<itemsQuery>` throws `GuiDevelopmentException: Nested 'query' element is missing`; a query that ignores `:searchString` throws `DevelopmentException: Parameter 'searchString' is not used in the query` at dropdown fetch. The correct shape is in `references/reference-fields.md` in this skill's folder.
 
 ## Controller Template
 
@@ -76,7 +76,7 @@ public class CustomerDetailView extends StandardDetailView<Customer> {
 </view>
 ```
 
-Always declare both `detail_saveClose` and `detail_close`: a detail view without a save action is broken for create flows. Use editable form components (`textField`, `comboBox`, `entityComboBox`, etc.) without hard-coded `readOnly="true"`, unless an attribute is permanently read-only in domain terms (for example audit timestamps). If the task says records open in read mode, read **When the task says records open in read mode** below.
+Always declare both `detail_saveClose` and `detail_close`: a detail view without a save action is broken for create flows. Use editable form components (`textField`, `comboBox`, `entityComboBox`, etc.) without hard-coded `readOnly="true"`, unless an attribute is permanently read-only in domain terms (for example audit timestamps). If the task says records open in read mode, first read `references/read-mode.md` in this skill's folder.
 
 Do not expose technical fields (`id`, `version`) in user-facing forms. Hide parent/default fields only when they are initialized elsewhere.
 
@@ -97,7 +97,7 @@ To style a field, a card, or a component you build in the controller (CSS classe
 | Jmix enum | `select` or `comboBox` |
 | Entity reference | `entityComboBox` or `entityPicker` |
 
-If a free-text field uses `valueChangeMode` `EAGER`, `LAZY`, or `TIMEOUT`, read **When a text field has a live `valueChangeMode`** below. If a `comboBox` gets its items in the controller, read **When a `comboBox` gets its items in the controller** below.
+If a free-text field uses `valueChangeMode` `EAGER`, `LAZY`, or `TIMEOUT`, first read `references/value-change-mode.md` in this skill's folder. If a `comboBox` gets its items in the controller, read **When a `comboBox` gets its items in the controller** below.
 
 A checkbox bound to a `@NotNull Boolean` takes the required state from the entity, but Vaadin treats an unchecked checkbox as empty: the form rejects `false` and save leaves the view open. When unchecked `false` is a valid value, declare `required="false"`; the entity constraint still rejects `null`:
 
@@ -146,108 +146,9 @@ If an existing project uses a different compiled pattern for a type, follow the 
 
 ## Special cases
 
-### When the entity has a reference attribute
-
-For `@ManyToOne` and other entity references, pick the pattern by the candidate set:
-
-- **`entityComboBox` with `itemsQuery` — preferred.** The JPQL runs against the database on every type-ahead and fetches only matching candidates. Use it for any non-trivial candidate set.
-- **`entityComboBox` with `itemsContainer`** — for small, fixed sets that fit in memory and rarely change. Loaded once at view open.
-- **`entityPicker`** with lookup and clear actions — when users need a full lookup screen. Use the standard action ids `entity_lookup` and `entity_clear` exactly; do not invent ids.
-
-**`itemsQuery` shape.** The JPQL must use `like :searchString`. The parameter is the bare combo input unless `searchStringFormat` wraps it: an empty string when the dropdown opens, so `like ''` returns no rows, and the exact, case-sensitive text afterwards. Set the format and the escaping on the `itemsQuery` element; without them every gate stays green and only the browser shows an empty dropdown. The JPQL must use the JPA/Jmix entity name, not the database table name.
-
-```xml
-<entityComboBox id="refField" property="ref">
-    <itemsQuery class="com.company.app.entity.Ref"
-                searchStringFormat="(?i)%${inputString}%"
-                escapeValueForLike="true">
-        <query>
-            <![CDATA[
-            select e from Ref e
-            where e.name like :searchString escape '\'
-            order by e.name
-            ]]>
-        </query>
-    </itemsQuery>
-</entityComboBox>
-```
-
-A UI test that fetches the picker's items only with a partial filter does not catch a missing `searchStringFormat`; fetch with the empty filter too.
-
-`itemsQuery` does not bind `:container_*` / `:component_*` parameters. When the reference list depends on another component or container, use `itemsContainer` with a regular loader.
-
-**`itemsContainer`.** Declare a `<collection>` for the candidate entities and point the combo at it; `<dataLoadCoordinator auto="true"/>` loads it at open:
-
-```xml
-<data>
-    <instance id="<entity>Dc" class="com.company.app.entity.<Entity>">
-        <fetchPlan extends="_base">
-            <property name="ref" fetchPlan="_instance_name"/>
-        </fetchPlan>
-        <loader id="<entity>Dl"/>
-    </instance>
-    <collection id="refsDc" class="com.company.app.entity.Ref">
-        <fetchPlan extends="_instance_name"/>
-        <loader id="refsDl">
-            <query><![CDATA[select e from Ref e order by e.name]]></query>
-        </loader>
-    </collection>
-</data>
-...
-<entityComboBox id="refField" property="ref" itemsContainer="refsDc"/>
-```
-
-Before finishing, verify that saved reference entities can appear in the component data provider. If a field is required, do not leave a reference component without a working item source or lookup action.
-
-### When a text field has a live `valueChangeMode`
-
-For free-text fields with `EAGER`, `LAZY`, or `TIMEOUT` value updates, set `trimEnabled="false"`. Otherwise a client-originated update can trim the trailing space or newline and rewrite the text before the user types the next word:
-
-```xml
-<textArea id="descriptionField" property="description"
-          valueChangeMode="TIMEOUT" trimEnabled="false"/>
-```
-
-If normalization is required, do it at an explicit commit or validation boundary. Test a client-originated value ending in a space and a newline (or real typing), not only server-side `setValue`, which bypasses this trimming.
-
 ### When a `comboBox` gets its items in the controller
 
 If the items are set in `BeforeShowEvent`, do not bind the `comboBox` in the descriptor: the binding sets the value when the entity arrives, before `setItems`, and opening a saved record fails. Either call `setItems(…)` in `InitEvent`, or bind with `setValueSource(new ContainerValueSource<>(container, "property"))`.
-
-### When the view shows a to-many attribute
-
-To show a to-many composition or association (`Order.products`, `Customer.tags`), nest a property-bound `<collection>` inside the `<instance>` container and bind a `dataGrid` to it:
-
-```xml
-<instance id="orderDc" class="com.company.app.entity.Order">
-    <fetchPlan extends="_base">
-        <property name="products" fetchPlan="_instance_name"/>
-    </fetchPlan>
-    <loader id="orderDl"/>
-    <!-- property-bound: NO class, NO loader, NO query -->
-    <collection id="productsDc" property="products"/>
-</instance>
-```
-
-```xml
-<dataGrid id="productsDataGrid" dataContainer="productsDc" width="100%">
-    <columns>
-        <column property="name"/>
-    </columns>
-</dataGrid>
-```
-
-A top-level `<collection>` (a list view's own loader) requires `class`. A nested property-bound collection takes `property` and nothing else — no `class`, no loader, no query; the container gets its metaclass from the property, so a `class` attribute is a descriptor defect. The parent's fetch plan must include the property, or the grid is empty (see `jmix-configure-fetch-plan`).
-
-For a read-only grid, declare no `list_create` / `list_edit` / `list_remove` actions on it.
-
-### When the task says records open in read mode
-
-"The list opens records in read mode" or "the detail view is opened with the `read` action" means read-only open mode, set on the list side. It is not a read-only descriptor.
-
-Set it in the list view: open action `list_read` instead of `list_edit`. Existing rows open as a non-editable form, new entities still open writable through `list_create`, and Jmix makes the fields read-only at runtime. The detail XML stays a normal writable descriptor with `detail_saveClose` and editable fields.
-
-Do not build a read-only descriptor (every field `readOnly="true"`, only `detail_close`): it is always read-only, even for new entities, and cannot create entities or save edits.
 
 ### When the save needs cross-field or manual validation
 
@@ -257,29 +158,3 @@ Add a `@Subscribe` handler on `ValidationEvent` and report failures with `event.
 
 Do not rely only on `required` or field validators for an invariant on a secondary tab. Inactive tab content is disabled, and field validation skips disabled components. Keep those checks as UI hints, but enforce the save invariant in a `ValidationEvent` handler that reads `getEditedEntity()`, not only the enabled fields. Test saving without visiting the secondary tab and after switching away from it; neither path may save invalid state.
 
-### When the save must ask the user for confirmation
-
-`ValidationEvent` can only reject a save; it cannot ask a question and continue. The only hook that suspends a save and resumes it afterwards is `StandardDetailView.BeforeSaveEvent` with `preventSave()` / `resume()`:
-
-```java
-@Autowired
-private Dialogs dialogs;
-
-@Subscribe
-public void onBeforeSave(final BeforeSaveEvent event) {
-    if (!reissuesRelatedCodes()) {
-        return;
-    }
-    event.preventSave();
-    dialogs.createOptionDialog()
-            .withHeader(messageBundle.getMessage("confirmDialog.header"))
-            .withText(messageBundle.getMessage("confirmDialog.text"))
-            .withActions(
-                    new DialogAction(DialogAction.Type.YES)
-                            .withHandler(e -> event.resume()),
-                    new DialogAction(DialogAction.Type.NO))
-            .open();
-}
-```
-
-`Dialogs.createOptionDialog()` takes no view argument, unlike `createInputDialog(View)`. Without `preventSave()` the save runs regardless of what a dialog shows, so a home-made confirmation dialog does not stop it.

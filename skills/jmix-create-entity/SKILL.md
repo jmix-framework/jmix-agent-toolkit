@@ -10,12 +10,12 @@ Use this skill when adding or changing a database-backed Jmix entity.
 ## Steps
 
 1. Create or update the Java entity in `src/main/java/<base-package>/entity`.
-   If you change an existing entity, read **When widening an existing entity** below first.
+   If you change an existing entity, first read `references/widening.md` in this skill's folder.
 2. Add Jmix and JPA metadata: `@JmixEntity`, `@Entity`, `@Table`.
-   - If the entity is `@Embeddable` or extends or is extended by another entity, read **When the entity is `@Embeddable` or uses JPA inheritance**.
+   - If the entity is `@Embeddable` or extends or is extended by another entity, first read `references/embeddable-inheritance.md` in this skill's folder.
    - If the entity belongs to a non-default data store or to an add-on, read **When the entity is in a non-default data store or in an add-on**.
 3. Choose the id strategy explicitly; see "Id strategy" below. If the entity extends a
-   framework base class, read **When the entity extends a framework `@MappedSuperclass`**.
+   framework base class, first read `references/framework-superclass.md` in this skill's folder.
 4. Add `@Version`.
 5. Add `@InstanceName` on a stable human-readable field or method.
 6. Define columns with exact `nullable`, `length`, `precision`, and `scale` constraints from
@@ -25,8 +25,8 @@ Use this skill when adding or changing a database-backed Jmix entity.
    If the entity stores an uploaded file, read **When the entity has a file attribute**.
 7. Use `FetchType.LAZY` for relationships. A required reference needs three annotations
    ("Required references" below).
-   - If the entity is a parent or child in an aggregate, read **When the entity is a parent or child in a `@Composition`**.
-   - If a reference carries `@OnDeleteInverse` and its target has no soft delete, read **When a reference has `@OnDeleteInverse` and its target has no soft delete**.
+   - If the entity is a parent or child in an aggregate, first read `references/composition.md` in this skill's folder.
+   - If a reference carries `@OnDeleteInverse` and its target has no soft delete, first read `references/on-delete-inverse.md` in this skill's folder.
 8. Create the Liquibase changelog using `jmix-create-liquibase-changelog`.
 9. Add entity and attribute message keys using `jmix-add-i18n-keys`.
 10. Add or update views and security roles if the entity is user-facing.
@@ -240,7 +240,7 @@ schema, so `compileJava`, the Jmix inspection, and a green `clean test` all pass
 index in the changelog only. It breaks Studio round-tripping and the rule that the code is
 the source of truth. Do it as you write the column, not later.
 
-If a column or a set of columns must be unique, read **When a column or a set of columns must be unique**.
+If a column or a set of columns must be unique, first read `references/unique-columns.md` in this skill's folder.
 
 ## Auditing and Soft Delete
 
@@ -320,136 +320,6 @@ If a field uses `@PropertyDatatype`, read **When a field uses `@PropertyDatatype
 
 ## Special cases
 
-### When widening an existing entity
-
-Adding fields to an entity that already exists is a different task from creating one.
-Change only what the requirement asks for:
-
-- Do not touch the `@Id` field or its strategy, `@Table(name = ...)`, `@Version`, or the
-  existing columns' types and constraints. An entity with an assigned `Long` id stays that
-  way — do not "normalize" it to a generated UUID.
-- Add the new fields with their exact constraints, plus new `@Index` entries in
-  `@Table(indexes = {...})` if the new columns need indexing ("Index parity").
-- Pair it with an `addColumn` changelog, never a second `createTable` — see
-  `jmix-create-liquibase-changelog` ("Changing an existing table").
-- Follow the project's precedent: read the entity's own changelog before writing the new
-  one, and match its naming and column-type style.
-
-### When the entity extends a framework `@MappedSuperclass`
-
-When the entity extends a base class the framework ships (the application-settings base,
-and other add-on base classes), the key is declared there already. Write no `@Id`, no
-`@JmixGeneratedValue` and no `@Version` on the subclass. Read that superclass before writing
-the changelog: it decides the id column's name and type (an `int` or `bigint` key is common
-there, so `${uuid.type}` is the wrong default), and it often adds further columns (a
-version, a tenant column) that the table must still create even though no field in the
-subclass mentions them.
-
-### When a column or a set of columns must be unique
-
-For a single-column natural key, add `unique = true` to the `@Index` and mirror it with
-`unique="true"` on the `<createIndex>`:
-
-```java
-@Table(name = "DEPARTMENT", indexes = @Index(
-        name = "IDX_DEPARTMENT_ON_NAME", columnList = "NAME", unique = true))
-```
-
-```xml
-<createIndex indexName="IDX_DEPARTMENT_ON_NAME" tableName="DEPARTMENT" unique="true">
-    <column name="NAME"/>
-</createIndex>
-```
-
-For a rule over several columns, use a unique constraint rather than a unique index —
-`@Table(uniqueConstraints = @UniqueConstraint(name = "UK_ORDER_LINE",
-columnNames = {"ORDER_ID", "PRODUCT_ID"}))` paired with `<addUniqueConstraint
-tableName="ORDER_LINE" columnNames="ORDER_ID, PRODUCT_ID"
-constraintName="UK_ORDER_LINE"/>`. Same name on both sides.
-
-Case-insensitive uniqueness cannot be declared with `@Index`/`@UniqueConstraint` at all: it
-needs a functional index on `lower(column)` and dialect-specific SQL, so decide it at design
-time, not when writing the changelog.
-
-### When the entity is a parent or child in a `@Composition`
-
-- Parent collection has `@Composition`.
-- Parent collection has `@OnDelete(DeletePolicy.CASCADE)` when the child lifecycle belongs
-  to the parent and the parent is soft-deleted (has `@DeletedDate`/`@DeletedBy`). For a
-  hard-deleted parent, see below.
-- Child has a non-null back reference to the parent: `@NotNull`, `@ManyToOne` with
-  `fetch = FetchType.LAZY` and `optional = false`, and a join column with `nullable = false`.
-- Parent detail view edits the child collection via a property-bound
-  `<collection property=...>` (no loader/query), and the parent fetchPlan includes the child
-  property.
-- The child's own detail view exists, plus its role policy, when the UI opens the child in a
-  dialog.
-
-```java
-import io.jmix.core.DeletePolicy;
-import io.jmix.core.entity.annotation.OnDelete;
-import io.jmix.core.metamodel.annotation.Composition;
-import jakarta.persistence.FetchType;
-import jakarta.persistence.JoinColumn;
-import jakarta.persistence.ManyToOne;
-import jakarta.persistence.OneToMany;
-import jakarta.validation.constraints.NotNull;
-
-@Composition
-@OnDelete(DeletePolicy.CASCADE)
-@OneToMany(mappedBy = "parent")
-private List<ChildLine> lines;  // leave uninitialized — Jmix returns a NotInstantiatedList
-
-@NotNull
-@JoinColumn(name = "PARENT_ID", nullable = false)
-@ManyToOne(fetch = FetchType.LAZY, optional = false)
-private Parent parent;
-```
-
-**Hard-deleted parent.** `@OnDelete(DeletePolicy.CASCADE)` is an application-layer policy,
-and Jmix applies it only to a parent that supports soft delete. On a parent with no
-`@DeletedDate`/`@DeletedBy` the annotation does nothing and the children are orphaned. Put
-the cascade on the child's foreign key in the changelog instead:
-
-```xml
-<addForeignKeyConstraint baseTableName="CHILD_LINE" baseColumnNames="PARENT_ID"
-                         constraintName="FK_CHILD_LINE_ON_PARENT"
-                         referencedTableName="PARENT" referencedColumnNames="ID"
-                         onDelete="CASCADE"/>
-```
-
-Also add `@OnDeleteInverse(DeletePolicy.CASCADE)` to the child's back reference. It does not
-change runtime behavior, but Studio reads it when it generates changelogs:
-
-```java
-@OnDeleteInverse(DeletePolicy.CASCADE)
-@NotNull
-@JoinColumn(name = "PARENT_ID", nullable = false)
-@ManyToOne(fetch = FetchType.LAZY, optional = false)
-private Parent parent;
-```
-
-`jmix-create-liquibase-changelog` presents a DB-level `onDelete="CASCADE"` as the option you
-almost never want, because it assumes the Jmix default of soft delete. A hard-deleted
-composition parent is the exception that wording allows for.
-
-### When a reference has `@OnDeleteInverse` and its target has no soft delete
-
-Jmix runs the delete-policy processor for `@OnDeleteInverse(DeletePolicy.DENY)` / `UNLINK` /
-`CASCADE` only when the entity being deleted supports soft delete. The trait that matters is
-on the reference's target (`Product` when the annotation sits on `OrderLine.product`), not on
-the entity that carries the annotation. On a hard-deleted target the annotation only tells
-Studio to generate an FK constraint with `ON DELETE`; DENY then appears as a foreign-key
-violation from the database — a persistence exception, never `DeletePolicyException`.
-
-Keep the annotation and put the policy on the foreign key in the changelog (see
-`jmix-create-liquibase-changelog`, **When two referential actions can act on one row**):
-
-- UNLINK → `onDelete="SET NULL"` on the FK; the column must be nullable.
-- DENY → a plain FK with no `onDelete`; the database rejects the delete. Tests and error
-  handling must expect the persistence exception, not `DeletePolicyException`.
-- CASCADE → `onDelete="CASCADE"` on the FK.
-
 ### When a saved reference may point to a soft-deleted row
 
 The soft-delete filter applies to writes as well as to the application's queries. Inserting
@@ -482,22 +352,6 @@ private FileRef scanFile;
 ```
 
 Map the matching Liquibase column as `varchar(1024)`.
-
-### When the entity is `@Embeddable` or uses JPA inheritance
-
-- `@Embeddable` value objects (still annotated `@JmixEntity`) are supported, as are JPA
-  inheritance strategies (`@Inheritance` with `JOINED`, `SINGLE_TABLE`, or
-  `TABLE_PER_CLASS`).
-- For `SINGLE_TABLE`, an abstract base class is normal and carries no `@DiscriminatorValue`
-  of its own: it is never instantiated, so there is no row to discriminate. Only the
-  concrete subclasses need one. (The published examples usually show a concrete base that
-  does have one; the difference is plain JPA, not a Jmix rule — see
-  `jmix-verify-api-symbol`.)
-- Loading through the base class does not fetch subclass attributes. A
-  `dataManager.load(BaseType.class)` builds its default fetch plan from the base metaclass's
-  own properties, so casting the result to a subclass and reading a subclass-declared
-  attribute throws `IllegalStateException: Cannot get unfetched attribute`. See
-  `jmix-configure-fetch-plan` for the fix.
 
 ### When the entity is in a non-default data store or in an add-on
 

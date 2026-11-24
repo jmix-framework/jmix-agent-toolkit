@@ -25,10 +25,10 @@ timer (metric) and a span (trace). Everything is off by default.
    `dataLoader`), and fragment and action metrics are not recorded. Set it to `false`
    unless an existing Jmix 2 dashboard must keep working.
 2. Add what the task asks for:
-   - Metrics for Prometheus or the Jmix Grafana dashboards: read **When the task asks for Prometheus metrics** below.
-   - Traces or OTLP export: read **When the task asks for traces or OTLP export** below.
-   - Metrics or a span for a business operation: read **When the task asks for a custom observation of a business operation** below.
-   - The user or custom keys in log lines: read **When the task asks for log context (MDC)** below.
+   - Metrics for Prometheus or the Jmix Grafana dashboards: first read `references/prometheus.md` in this skill's folder.
+   - Traces or OTLP export: first read `references/tracing.md` in this skill's folder.
+   - Metrics or a span for a business operation: first read `references/custom-observation.md` in this skill's folder.
+   - The user or custom keys in log lines: first read `references/mdc.md` in this skill's folder.
    - Settings for production: read **When the task asks for production settings** below.
    - If the project uses multitenancy and exports metrics, read **When the project uses multitenancy** below.
 3. Verify. Open a view or call the changed code in the running application first:
@@ -67,120 +67,6 @@ Reference: Jmix docs, Features → Observability (Metrics, Tracing, Logging page
 - `MDC.put` without removing the key: it leaks into the next request on the same thread.
 
 ## Special cases
-
-### When the task asks for Prometheus metrics
-
-```groovy
-// build.gradle
-implementation 'org.springframework.boot:spring-boot-starter-actuator'
-implementation 'io.micrometer:micrometer-registry-prometheus'
-```
-
-```properties
-management.endpoints.web.exposure.include=health,prometheus
-management.metrics.tags.application=${spring.application.name}
-```
-
-The Jmix Grafana dashboards filter by the `application` tag
-(https://github.com/jmix-framework/jmix-grafana-dashboards, "Jmix 3 Monitoring").
-
-The Flow UI security chain covers every URL, so an anonymous `/actuator/prometheus`
-request is redirected to the login page (Prometheus reports `unsupported Content-Type
-"text/html"`). A scraper without credentials needs its own filter chain:
-
-```java
-@Bean
-@Order(JmixSecurityFilterChainOrder.CUSTOM)   // io.jmix.core.JmixSecurityFilterChainOrder
-SecurityFilterChain actuatorFilterChain(HttpSecurity http) throws Exception {
-    http.securityMatcher("/actuator/health", "/actuator/prometheus")
-            .authorizeHttpRequests(authorize -> authorize.anyRequest().permitAll());
-    return http.build();
-}
-```
-
-Never permit `/actuator/**` as a whole: `loggers` changes log levels, `env` and `heapdump` expose secrets.
-
-Check:
-
-1. `curl -s localhost:8080/actuator/prometheus | grep -E 'jmix_ui_views_seconds_count|jmix_data_load'`
-   lists series with `view_id`, `lifecycle_name` and `application` labels.
-2. No `view=` / `lifeCycle=` labels: otherwise the legacy schema is still on.
-
-### When the task asks for traces or OTLP export
-
-Spring Boot 4:
-
-```groovy
-implementation 'org.springframework.boot:spring-boot-starter-opentelemetry'
-```
-
-```properties
-management.opentelemetry.tracing.export.otlp.endpoint=http://localhost:4318/v1/traces
-# share of kept traces: default 0.1; 1.0 for development, 0.01-0.1 in production
-management.tracing.sampling.probability=1.0
-```
-
-- The trace continues into another service only through a client built from the injected
-  `RestClient.Builder` / `RestTemplateBuilder`. `RestClient.create()` and
-  `new RestTemplate()` drop the `traceparent` header.
-- `jpql.parameters` and `jmix.user.username` are personal data in the trace store.
-
-Check (set `management.tracing.sampling.probability=1.0` for the check, or most requests
-leave no trace):
-
-1. Log lines of the request carry a 32-hex trace ID (`grep -E '[0-9a-f]{32}'` on the
-   application log): tracing puts `traceId` and `spanId` into MDC, and Spring Boot prints them
-   through `logging.pattern.correlation`. No ID means no tracing bridge on the classpath, or a
-   custom Logback pattern without `%X{traceId}`.
-2. The spans reached the backend. With the `grafana/otel-lgtm` image, query Tempo through
-   the Grafana proxy (data source uid `tempo`; Tempo itself listens on `:3200/api/search`).
-   Spans are exported in batches, so wait a few seconds. Pass a time window; the default one
-   is short:
-   ```bash
-   curl -s -u admin:admin -G localhost:3000/api/datasources/proxy/uid/tempo/api/search \
-     --data-urlencode 'q={ name = "view lifecycle" && span.view.id = "Order.list" }' \
-     --data-urlencode "start=$(( $(date +%s) - 900 ))" --data-urlencode "end=$(date +%s)"
-   ```
-   Empty `traces`: check the exporter errors in the application log and the OTLP endpoint.
-3. Propagation between services: the `serviceStats` of a trace in the same response lists
-   every service the request passed through. A missing service means its client was not
-   built from the injected `RestClient.Builder` / `RestTemplateBuilder`.
-
-### When the task asks for a custom observation of a business operation
-
-```java
-@Autowired
-private ObservationRegistry observationRegistry;
-
-public void confirmOrder(Order order) {
-    Observation.createNotStarted("sales.order.confirm", observationRegistry)
-            .contextualName("confirm order")                                    // span name
-            .lowCardinalityKeyValue("order.channel", order.getChannel().getId()) // metric + span
-            .highCardinalityKeyValue("order.number", order.getNumber())          // span only
-            .observe(() -> orderProcessor.process(order));
-}
-```
-
-- `DataManager` and HTTP spans inside `observe()` become child spans; an exception is
-  recorded in the span and in the `error` tag of the timer.
-- For a plain counter without a span, register it through `MeterRegistry`.
-
-Check: in the trace backend, the observation shows up under its `contextualName`:
-`{ name = "confirm order" }`.
-
-### When the task asks for log context (MDC)
-
-Jmix puts the username into MDC as `jmixUser` (REST requests, `SystemAuthenticator`,
-background tasks); tracing adds `traceId` and `spanId`. Spring Boot's default pattern
-prints neither the user nor custom keys:
-
-```properties
-logging.pattern.level=%5p [%X{jmixUser:-}]
-```
-
-- Custom keys: `try (MDC.MDCCloseable c = MDC.putCloseable("orderNumber", n)) { ... }`.
-- MDC is per thread: copy it explicitly into `@Async` / executor code
-  (`MDC.getCopyOfContextMap()` / `MDC.setContextMap()`).
 
 ### When the task asks for production settings
 

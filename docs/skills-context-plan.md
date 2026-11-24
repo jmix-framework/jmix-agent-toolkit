@@ -147,11 +147,43 @@ To repeat the trial setup later:
 3. Run `claude -p "<task>" --model haiku --setting-sources project,local --mcp-config .mcp.json --strict-mcp-config --output-format stream-json --verbose`. `--setting-sources project,local` keeps the user's plugins, hooks and skills out of the run.
 4. In the log, count the `Read` and `Bash` calls that name the reference file.
 
-### Remaining work
+### Remaining work — done
 
 Split all the other skills at once, by the rule above, without a separate trial per skill.
 
 Done when: every special case that meets the rule is in a reference file, each split skill's `SKILL.md` is at most 6 KB, and `python3 tests/check_skill_frontmatter.py` passes.
+
+Result: 49 special cases of 16 skills moved to reference files, verbatim. Each pointer now reads "first read `references/<topic>.md` in this skill's folder"; a pointer from another skill names the path `<skill>/references/<topic>.md`, next to the reader's skill folder. The total size of all `SKILL.md` files went from 270.7 KB to 200.2 KB. The frontmatter lint and the bash installer suite pass.
+
+These special cases stayed in `SKILL.md`:
+
+- Skills of 6 KB or less were not split: `jmix-create-service`, `jmix-create-enum`, `jmix-create-dto-entity`, `jmix-create-composition-detail-view`, `jmix-create-project`, and `jmix-verify-bootrun` after its trial (6.2 KB).
+- Subsections under about 500 bytes stay: a pointer and the reference's first lines would cost nearly as much as they save.
+- The condition is not visible and no mechanical check catches the failure:
+  - `jmix-create-entity`, **When a saved reference may point to a soft-deleted row**: the save fails later with a message that names the wrong cause.
+  - `jmix-create-liquibase-changelog`, **When two referential actions can act on one row**: the agent sees the condition only after it compares the foreign keys.
+  - `jmix-create-resource-role`, **When code outside the UI saves entities for the role's users**: such code saves a non-granted attribute with no error.
+  - `jmix-verify-api-symbol`, **When a docs example is close but not the same**: its Forbidden section does not cover the rule that a docs example does not confirm the annotations.
+
+The 6 KB limit is not met: 13 skills are still over it. In all of them except `jmix-verify-bootrun`, the part before `## Special cases` alone is over 6 KB, so no move that the rule allows gets them under it:
+
+| Skill | `SKILL.md` |
+|---|---|
+| `jmix-create-entity` | 17.0 KB |
+| `jmix-create-liquibase-changelog` | 12.6 KB |
+| `jmix-create-list-view` | 11.4 KB |
+| `jmix-style-ui` | 11.2 KB |
+| `jmix-create-detail-view` | 10.6 KB |
+| `jmix-verify-api-symbol` | 10.1 KB |
+| `jmix-create-test` | 10.0 KB |
+| `jmix-create-resource-role` | 9.3 KB |
+| `jmix-configure-fetch-plan` | 8.7 KB |
+| `jmix-add-entity-event-listener` | 8.3 KB |
+| `jmix-ide-static-analysis` | 7.4 KB |
+| `jmix-add-i18n-keys` | 6.5 KB |
+| `jmix-verify-bootrun` | 6.2 KB |
+
+To go further, the main part itself has to become shorter, or the rule has to allow moving common patterns and templates. Decide this before the size check of step 8 sets its limits.
 
 ## Step 6. Make Gate 3 use the browser when a browser tool is connected
 

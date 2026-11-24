@@ -83,7 +83,7 @@ The `<instance>`/`<collection>` containers go inside `<data>`; the `<hbox>` and 
 
 ### When the parent shows a value computed from the children
 
-To update a computed parent value (an order total) while lines are edited, recalculate it from the child container's events, using the same bean as the save listener (`jmix-add-entity-event-listener`, **When a stored value is derived from composition children**):
+To update a computed parent value (an order total) while lines are edited, recalculate it from the child container's events, using the same bean as the save listener (`jmix-add-entity-event-listener/references/derived-from-children.md`, next to this skill's folder):
 
 ```java
 @Subscribe(id = "linesDc", target = Target.DATA_CONTAINER)

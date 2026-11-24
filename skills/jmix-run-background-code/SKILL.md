@@ -105,9 +105,9 @@ proxied, and `@Authenticated` on `execute` takes effect.
 
 - If the method is called from the same instance (`this.method()`), or the
   object is created outside Spring (`new ReportJob()`, a custom Quartz
-  `JobFactory`), read **When the call does not go through a Spring proxy**.
+  `JobFactory`), first read `references/no-proxy.md` in this skill's folder.
 - If the work cannot have its own proxied method, or must run as a specific
-  user, read **When you need authentication for a block or for a named user**.
+  user, first read `references/block-or-named-user.md` in this skill's folder.
 
 ## Verify: a test that enters the path
 
@@ -152,43 +152,3 @@ See `jmix-create-test`.
 - A test that calls the entry method on an object it created with `new` instead
   of the Spring bean: it skips the proxy and proves nothing about
   `@Authenticated`.
-
-## Special cases
-
-### When the call does not go through a Spring proxy
-
-- A self-call inside one instance (`this.generateDailyReports()`) never passes
-  through the proxy, so the annotation is ignored. The call must come from
-  outside the instance.
-- A job (or any object) built by code Spring does not own, such as
-  `new ReportJob()` or a custom Quartz `JobFactory` that creates the class
-  directly instead of through the bean factory, gets neither injection nor
-  interception.
-
-If you are not sure, do not reason about it: run the path with no authentication set up and see whether it
-throws (see **Verify** above).
-
-### When you need authentication for a block or for a named user
-
-Use `io.jmix.core.security.SystemAuthenticator` when you cannot put the work in
-its own proxied method, or when you need a specific user instead of the system
-user. Prefer `@Authenticated` for a whole entry point; use
-`SystemAuthenticator` for a narrow block inside a larger method.
-
-```java
-import io.jmix.core.security.SystemAuthenticator;
-
-private final SystemAuthenticator authenticator;
-
-public void onMessage(String payload) {
-    authenticator.runWithSystem(() -> {
-        // DataManager calls are authenticated here
-    });
-}
-```
-
-- `runWithSystem(Runnable)` / `withSystem(AuthenticatedOperation<T>)`: the
-  system user, which bypasses security constraints. `withSystem` returns a
-  value; its argument is a lambda, like `Runnable`.
-- `runWithUser(String, Runnable)` / `withUser(String, AuthenticatedOperation<T>)`:
-  a named user, so role policies apply as they would for that person.

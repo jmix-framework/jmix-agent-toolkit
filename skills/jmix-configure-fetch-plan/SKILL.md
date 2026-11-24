@@ -9,13 +9,13 @@ Use this skill when a task changes what entity attributes or references are load
 
 ## Steps
 
-1. Identify every property read by the view, service, listener, renderer, mapper, or assertion. If code reads a subclass-only attribute of an entity loaded or referenced through its base class, read **When the entity uses single-table inheritance** below.
+1. Identify every property read by the view, service, listener, renderer, mapper, or assertion. If code reads a subclass-only attribute of an entity loaded or referenced through its base class, first read `references/single-table-inheritance.md` in this skill's folder.
 2. Start with `_base` unless there is a measured reason to load a partial entity (see **Partial Entity Audit**).
 3. Check the effective inherited plan before adding references for detached access or list/grid display. Add only missing properties or nested attributes.
 4. For list views, include only references and scalar columns that are displayed or used by renderers/actions.
 5. For detail views and compositions, include edited reference properties and child collections that the form or grid uses. If the loader of a list or detail view calls a `JmixDataRepository` method, read **When the load goes through a `JmixDataRepository`** below.
 6. For service/listener code, add a fluent `DataManager.fetchPlan(...)` or named plan before reading references after load. If the load goes through a `JmixDataRepository` method, read **When the load goes through a `JmixDataRepository`** below.
-7. Avoid deep nested collections; prefer a second focused load when a graph becomes wide or multi-collection. If you set a fetch mode (`fetch="JOIN"`, `fetch="BATCH"`) or the task is about N+1 queries, read **When you set a fetch mode or fix N+1 queries** below.
+7. Avoid deep nested collections; prefer a second focused load when a graph becomes wide or multi-collection. If you set a fetch mode (`fetch="JOIN"`, `fetch="BATCH"`) or the task is about N+1 queries, first read `references/fetch-modes.md` in this skill's folder.
 8. Check custom fetch plans against every `getX()` call after load.
 9. Verify property names and run the load path before trusting the plan (see **Verify** below).
 
@@ -128,73 +128,6 @@ Prefer inline XML or fluent `DataManager` fetch plans for feature-local needs. U
 - Unchecked property or plan names, or `compileJava` as proof that a fetch plan is complete.
 
 ## Special cases
-
-### When the entity uses single-table inheritance
-
-Given an abstract `Payment` with concrete subclasses `CardPayment` and `BankTransfer` in one table, `dataManager.load(Payment.class)` builds its default `_base` plan from the own properties of the requested metaclass only. Subclass attributes are never included, even though the returned row is the subclass; the SQL selects base columns. So this throws:
-
-```java
-Payment loaded = dataManager.load(Payment.class).id(id).one();
-String authCode = ((CardPayment) loaded).getAuthCode();
-// IllegalStateException: Cannot get unfetched attribute [authCode] ... [detached]
-```
-
-A plain cast-and-read is never enough. Two fixes:
-
-```java
-// (a) load through the CONCRETE subclass — its default plan has the subclass's
-//     own attributes, so getAuthCode() is fetched
-CardPayment payment = dataManager.load(CardPayment.class).id(id).one();
-String authCode = payment.getAuthCode();
-
-// (b) still polymorphic, but the follow-up read goes through a plan built
-//     against the CONCRETE class — name the subclass attributes explicitly
-CardPayment payment = dataManager.load(CardPayment.class)
-        .id(baseTyped.getId())
-        .fetchPlan(fp -> fp.addFetchPlan(FetchPlan.BASE).add("authCode"))
-        .one();
-```
-
-The same applies to a reference typed as the base class: reading a subclass-only attribute from it needs a re-load through the concrete subclass, as in (b). Nothing catches this before runtime; a test must run the line that reads the attribute.
-
-### When you set a fetch mode or fix N+1 queries
-
-Set the fetch mode per property to control how references are loaded:
-
-- `AUTO` — framework picks the optimal mode (default).
-- `JOIN` — loads the reference in the same SQL query; best for to-one references.
-- `BATCH` — loads references in a separate `IN`-clause query; meant for to-many collections (avoids N+1), but see below.
-- `UNDEFINED` — separate SELECT per reference attribute.
-
-The XML attribute on a fetch-plan property is `fetch`, not `fetchMode`:
-
-```xml
-<fetchPlan extends="_base">
-    <property name="customer" fetch="JOIN"/>  <!-- to-one -->
-    <property name="lines" fetch="BATCH"/>     <!-- to-many collection -->
-</fetchPlan>
-```
-
-**`BATCH` may do nothing for a nested collection — measure, do not assume.** A plan built with `FetchPlanBuilder` is installed as a `LOAD_GROUP`, not a `FETCH_GROUP`, because its `loadPartialEntities()` is false. The mode is still recorded (the DEBUG log of `io.jmix.eclipselink.impl.FetchGroupManager` prints `Fetch modes for ...: e.orderLines=BATCH`), but EclipseLink loads such a collection with one query per parent anyway:
-
-```
-... WHERE ORDER_ID = ?        -- repeated once for every row of the page
-```
-
-Calling `partial()` does not change it. When a measurement shows the per-parent queries, take the collection out of the fetch plan and load it for the whole page with one repository query:
-
-```java
-// one query for the page, not one per parent
-List<OrderLine> lines = orderLineRepository.findByOrderIdIn(orderIds);
-```
-
-Only a count of executed SQL shows which shape you got: `compileJava`, the IDE inspection, and a green `clean test` all pass either way. Guard it with a test that asserts the query count does not grow with page size.
-
-Never set `FetchMode.JOIN` on a to-one nested inside a `BATCH` collection. It looks like a way to add that reference to the collection query, but EclipseLink throws at query time:
-
-```
-NullPointerException: Cannot invoke "java.util.Collection.toArray()" because "c" is null
-```
 
 ### When the load goes through a `JmixDataRepository`
 
