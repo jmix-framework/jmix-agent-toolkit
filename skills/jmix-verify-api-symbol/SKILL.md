@@ -37,7 +37,8 @@ grep -rn "VaadinIcon\." src --include='*.xml' --include='*.java'
 
 For anything not already in the project, go down this list and stop at the
 first check that confirms the symbol. Use a later check only when the earlier
-ones are not available or do not confirm it.
+ones are not available or do not confirm it. A tool listed by name only is
+available: load it with your tool search.
 
 1. **Docs MCP, the first check when connected.** Query the official Jmix docs
    for the exact symbol (a class, a `StandardOutcome` constant, the
@@ -49,8 +50,7 @@ ones are not available or do not confirm it.
    - **Context7.** Query it with the Jmix library id
      `/jmix-framework/jmix-context7`.
    - **Jmix docs MCP.** Use it when no Context7 tool is available (their names
-     contain `context7`; if your tools are loaded on demand, search for them
-     before you decide), or when a Context7 call fails because the API key is
+     contain `context7`), or when a Context7 call fails because the API key is
      missing or rejected. It is usually registered as `jmix-docs`; find it by
      its tool `search-jmix-docs`. Pass the symbol or the call shape as
      `queryText`, `jmixVersion: "v3"`, and `maxResults: 5` (without a limit the
@@ -128,8 +128,8 @@ Never type these without verifying first:
 - Typing a symbol that no check confirmed.
 - Typing any symbol from the table above without verifying it.
 - Guessing a `VaadinIcon` constant instead of omitting the icon.
-- Deciding that Context7 is not available without first searching tools that
-  are loaded on demand.
+- Deciding that a docs or IDE tool is not available without first searching
+  tools that are loaded on demand.
 - Stopping at a failed Context7 call instead of switching to the Jmix docs MCP.
 - Calling `search-jmix-docs` without `maxResults: 5`.
 - Following the docs over the jars of the version the project resolves when

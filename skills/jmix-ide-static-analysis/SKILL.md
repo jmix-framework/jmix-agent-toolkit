@@ -9,12 +9,15 @@ Every file you created or edited passes a static check before you move on.
 
 ## Steps
 
-1. **Choose the path by the connected tools.** If a Jmix-aware IDE or semantic
-   inspection is connected (for example JetBrains `get_file_problems`), it is
-   your primary check: run it per file on every `.java` and especially every
-   `*-view.xml` you touched. First read `references/ide-inspection.md` in this skill's folder. If none is connected, or it turns out to be unavailable,
-   compile (step 2) is your check for `.java`. Run steps 2 and 3 in both
-   cases.
+1. **Choose the path by the connected tools.** Look for a Jmix-aware IDE or
+   semantic inspection tool (for example JetBrains `get_file_problems`). If it
+   is listed by name only, load it with your tool search, then call it once on
+   a changed file. It is not connected only if no such tool is listed or that
+   call fails or finds no open project. If it is connected, it is your primary
+   check: run it per file on every `.java` and especially every `*-view.xml`
+   you touched. First read `references/ide-inspection.md` in this skill's
+   folder. If not, or it turns out to be unavailable, compile (step 2) is your
+   check for `.java`. Run steps 2 and 3 in both cases.
 2. **Compile.** Run it in every case: it is cheap and is the precondition for
    Gate 2.
    ```bash
@@ -30,9 +33,10 @@ Every file you created or edited passes a static check before you move on.
    inspection that works can still miss unknown components and bad
    attributes.
 4. **Run the per-file loop** (below) on every file.
-5. **Record compile-only files.** When no inspection was available, list the
-   files that got only `compileJava` in your completion report, and re-inspect
-   them the next time a session has the inspection. A green compile misses
+5. **Report each file.** In your completion report, give each file you
+   created or changed its inspection result, or the reason the inspection could
+   not run (quote the error). List the compile-only files and re-inspect them
+   the next time a session has the inspection. A green compile misses
    every Jmix semantic finding (unresolved `msg://` keys, invalid property
    paths, missing data containers, unfetched attributes).
 
@@ -101,6 +105,7 @@ local variable", first read `references/unused-findings.md` in this skill's fold
 
 ## Forbidden
 
+- Reporting the inspection as not connected without the step 1 call.
 - Calling a file clean from an empty inspection result you did not confirm, or
   from a batch omission or timeout.
 - Reading only errors from the inspection: Jmix findings come as warnings.
@@ -114,8 +119,8 @@ local variable", first read `references/unused-findings.md` in this skill's fold
   copy behind.
 - Treating a clean `compileJava` as proof about any `.xml`.
 - Skipping the mechanical checks, even when an inspection is connected.
-- Checking a sample of files instead of every file, or leaving compile-only
-  files out of the completion report.
+- Checking a sample of files instead of every file, or a completion report
+  without a result per file.
 - Discarding the result of `DataManager.save()` — use `saveWithoutReload()`.
 - Setting the default of a required field whose default the requirements define
   in `InitEntityEvent` or only in a view, instead of at the entity layer.

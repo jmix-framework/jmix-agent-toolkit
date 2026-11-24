@@ -33,7 +33,8 @@ checks of `jmix-ide-static-analysis` first. Then:
 
 1. For each view, write a minimal `@UiTest` that opens the view
    (`jmix-create-test`) and run it.
-2. Check the connected tools for a browser tool. If there is one, also walk
+2. Check the connected tools for a browser tool; if one is listed by name
+   only, load it with your tool search. If there is one, also walk
    each view and role in the browser — first read `references/browser-walk.md`
    in this skill's folder. If an application from this checkout is already
    running, read **When an application from this checkout is already
@@ -41,10 +42,11 @@ checks of `jmix-ide-static-analysis` first. Then:
 
 If a view has no passing `@UiTest`, report `render NOT verified: <view>`. If no
 browser tool is connected or the walk could not run, report the browser walk
-as not done for each view and role.
+as not done for each view and role, and why.
 
 ## Forbidden
 
+- Reporting no browser tool without loading one that is listed by name only.
 - Counting `Tests run: 0` as a pass.
 - Calling a test that went red after your change "pre-existing", or reporting a
   red test you cannot explain as a footnote instead of a blocker.
