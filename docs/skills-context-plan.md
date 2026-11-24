@@ -48,7 +48,10 @@ Keep the full rule in its owner skill and replace the copies with a one-line poi
 
 Done when: `grep` for each rule finds the full text in the owner only.
 
-## Step 3. Write rules more briefly and move special cases to the end
+## Step 3. Write rules more briefly and move special cases to the end — done
+
+Result: all 23 skills (except the router) have the layout below; `jmix-migrate-theme-to-aura` keeps its step order. Each rewrite was compared with the old text by a separate agent, and every lost or weakened rule it found was restored. The content problems listed below are fixed. Sizes: the total grew from 263.5 KB to 275.1 KB, because every failure of the main part now also has a one-line Forbidden bullet and every special case has a pointer. The part an agent reads when no special case applies (everything before `## Special cases`) is 187.5 KB, 29% less than the old total. Step 5 can move the special cases out of `SKILL.md`.
+
 
 Edit each skill once, doing all of the following in the same change.
 

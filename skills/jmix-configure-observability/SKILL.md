@@ -8,22 +8,33 @@ description: Enable and use Jmix 3 observability - metrics of views, data loader
 Jmix records its operations as Micrometer observations. One observation produces a
 timer (metric) and a span (trace). Everything is off by default.
 
-## Enable Jmix observations
+## Steps
 
-```properties
-# application.properties
-# DataManager load/save
-jmix.core.data-observation-enabled=true
-# views, fragments, data loaders, actions
-jmix.ui.ui-observation-enabled=true
-# Jmix 3 tag schema
-jmix.ui.legacy-monitoring-enabled=false
-```
-
-A project upgraded from Jmix 2 gets `jmix.ui.legacy-monitoring-enabled=true` from
-Studio. With it, view and loader metrics carry the old tags (`view`, `lifeCycle`,
-`dataLoader`) and fragment and action metrics are not recorded. Set it to `false`
-unless an existing Jmix 2 dashboard must keep working.
+1. Enable Jmix observations:
+   ```properties
+   # application.properties
+   # DataManager load/save
+   jmix.core.data-observation-enabled=true
+   # views, fragments, data loaders, actions
+   jmix.ui.ui-observation-enabled=true
+   # Jmix 3 tag schema
+   jmix.ui.legacy-monitoring-enabled=false
+   ```
+   A project upgraded from Jmix 2 gets `jmix.ui.legacy-monitoring-enabled=true` from
+   Studio. With it, view and loader metrics carry the old tags (`view`, `lifeCycle`,
+   `dataLoader`), and fragment and action metrics are not recorded. Set it to `false`
+   unless an existing Jmix 2 dashboard must keep working.
+2. Add what the task asks for:
+   - Metrics for Prometheus or the Jmix Grafana dashboards: read **When the task asks for Prometheus metrics** below.
+   - Traces or OTLP export: read **When the task asks for traces or OTLP export** below.
+   - Metrics or a span for a business operation: read **When the task asks for a custom observation of a business operation** below.
+   - The user or custom keys in log lines: read **When the task asks for log context (MDC)** below.
+   - Settings for production: read **When the task asks for production settings** below.
+   - If the project uses multitenancy and exports metrics, read **When the project uses multitenancy** below.
+3. Verify. Open a view or call the changed code in the running application first:
+   series and spans appear only after the operation runs. Then run the check of each
+   special case you used, and the usual gates (`jmix-ide-static-analysis`,
+   `jmix-verify-bootrun`).
 
 ## Observations
 
@@ -36,13 +47,28 @@ unless an existing Jmix 2 dashboard must keep working.
 | `jmix.data.load`     | `load entity`, `load list of entities`, ...  | `entity.name`, `method`                 |
 | `jmix.data.save`     | `save entities`                              | `dataStore`                             |
 
-In Prometheus, dots become underscores and the unit is appended:
-`jmix.ui.views` → `jmix_ui_views_seconds_count|sum|max`, tag `view.id` → label `view_id`.
-Over OTLP the unit is `milliseconds`. Data loading spans also carry `jpql.query` and
-`jpql.parameters`; all spans carry `jmix.user.username`
-(`jmix.core.use-user-info-for-observation=false` removes it).
+- In Prometheus, dots become underscores and the unit is appended:
+  `jmix.ui.views` → `jmix_ui_views_seconds_count|sum|max`, tag `view.id` → label `view_id`.
+- Over OTLP the unit is `milliseconds`.
+- Data loading spans also carry `jpql.query` and `jpql.parameters`; all spans carry
+  `jmix.user.username` (`jmix.core.use-user-info-for-observation=false` removes it).
 
-## Metrics through Prometheus
+Reference: Jmix docs, Features → Observability (Metrics, Tracing, Logging pages).
+
+## Forbidden
+
+- `jmix.ui.legacy-monitoring-enabled=true` in a new Jmix 3 project.
+- Unique values (ids, usernames, order numbers) in `lowCardinalityKeyValue` or common
+  tags: every value becomes a separate time series.
+- Percentile histograms for every meter: enable them per meter only where a percentile is
+  queried (`management.metrics.distribution.percentiles-histogram.jmix.ui.data=true`).
+- Permanent `debug` for `eclipselink.logging.sql` or `io.jmix`: switch it on for an
+  investigation through the Actuator `loggers` endpoint.
+- `MDC.put` without removing the key: it leaks into the next request on the same thread.
+
+## Special cases
+
+### When the task asks for Prometheus metrics
 
 ```groovy
 // build.gradle
@@ -55,7 +81,7 @@ management.endpoints.web.exposure.include=health,prometheus
 management.metrics.tags.application=${spring.application.name}
 ```
 
-The `application` tag is what the Jmix Grafana dashboards filter by
+The Jmix Grafana dashboards filter by the `application` tag
 (https://github.com/jmix-framework/jmix-grafana-dashboards, "Jmix 3 Monitoring").
 
 The Flow UI security chain covers every URL, so an anonymous `/actuator/prometheus`
@@ -74,7 +100,15 @@ SecurityFilterChain actuatorFilterChain(HttpSecurity http) throws Exception {
 
 Never permit `/actuator/**` as a whole: `loggers` changes log levels, `env` and `heapdump` expose secrets.
 
-## Traces and OTLP (Spring Boot 4)
+Check:
+
+1. `curl -s localhost:8080/actuator/prometheus | grep -E 'jmix_ui_views_seconds_count|jmix_data_load'`
+   lists series with `view_id`, `lifecycle_name` and `application` labels.
+2. No `view=` / `lifeCycle=` labels: otherwise the legacy schema is still on.
+
+### When the task asks for traces or OTLP export
+
+Spring Boot 4:
 
 ```groovy
 implementation 'org.springframework.boot:spring-boot-starter-opentelemetry'
@@ -91,7 +125,28 @@ management.tracing.sampling.probability=1.0
   `new RestTemplate()` drop the `traceparent` header.
 - `jpql.parameters` and `jmix.user.username` are personal data in the trace store.
 
-## Custom observation for a business operation
+Check (set `management.tracing.sampling.probability=1.0` for the check, or most requests
+leave no trace):
+
+1. Log lines of the request carry a 32-hex trace ID (`grep -E '[0-9a-f]{32}'` on the
+   application log): tracing puts `traceId` and `spanId` into MDC, and Spring Boot prints them
+   through `logging.pattern.correlation`. No ID means no tracing bridge on the classpath, or a
+   custom Logback pattern without `%X{traceId}`.
+2. The spans reached the backend. With the `grafana/otel-lgtm` image, query Tempo through
+   the Grafana proxy (data source uid `tempo`; Tempo itself listens on `:3200/api/search`).
+   Spans are exported in batches, so wait a few seconds. Pass a time window; the default one
+   is short:
+   ```bash
+   curl -s -u admin:admin -G localhost:3000/api/datasources/proxy/uid/tempo/api/search \
+     --data-urlencode 'q={ name = "view lifecycle" && span.view.id = "Order.list" }' \
+     --data-urlencode "start=$(( $(date +%s) - 900 ))" --data-urlencode "end=$(date +%s)"
+   ```
+   Empty `traces`: check the exporter errors in the application log and the OTLP endpoint.
+3. Propagation between services: the `serviceStats` of a trace in the same response lists
+   every service the request passed through. A missing service means its client was not
+   built from the injected `RestClient.Builder` / `RestTemplateBuilder`.
+
+### When the task asks for a custom observation of a business operation
 
 ```java
 @Autowired
@@ -106,84 +161,43 @@ public void confirmOrder(Order order) {
 }
 ```
 
-`DataManager` and HTTP spans inside `observe()` become child spans; an exception is
-recorded in the span and in the `error` tag of the timer. For a plain counter without a
-span, register it through `MeterRegistry`.
+- `DataManager` and HTTP spans inside `observe()` become child spans; an exception is
+  recorded in the span and in the `error` tag of the timer.
+- For a plain counter without a span, register it through `MeterRegistry`.
 
-## Log context (MDC)
+Check: in the trace backend, the observation shows up under its `contextualName`:
+`{ name = "confirm order" }`.
+
+### When the task asks for log context (MDC)
 
 Jmix puts the username into MDC as `jmixUser` (REST requests, `SystemAuthenticator`,
 background tasks); tracing adds `traceId` and `spanId`. Spring Boot's default pattern
-prints neither user nor custom keys:
+prints neither the user nor custom keys:
 
 ```properties
 logging.pattern.level=%5p [%X{jmixUser:-}]
 ```
 
-Custom keys: `try (MDC.MDCCloseable c = MDC.putCloseable("orderNumber", n)) { ... }`.
-MDC is per thread: copy it explicitly into `@Async` / executor code
-(`MDC.getCopyOfContextMap()` / `MDC.setContextMap()`).
+- Custom keys: `try (MDC.MDCCloseable c = MDC.putCloseable("orderNumber", n)) { ... }`.
+- MDC is per thread: copy it explicitly into `@Async` / executor code
+  (`MDC.getCopyOfContextMap()` / `MDC.setContextMap()`).
 
-## Forbidden
-
-- Unique values (ids, usernames, order numbers) in `lowCardinalityKeyValue` or common
-  tags: every value becomes a separate time series.
-- `jmix.ui.legacy-monitoring-enabled=true` in a new Jmix 3 project.
-- Percentile histograms for every meter: enable them per meter only where a percentile is
-  queried (`management.metrics.distribution.percentiles-histogram.jmix.ui.data=true`).
-- Permanent `debug` for `eclipselink.logging.sql` or `io.jmix`: switch it on for an
-  investigation through the Actuator `loggers` endpoint.
-- `MDC.put` without removing the key: it leaks into the next request on the same thread.
-
-## Production knobs
+### When the task asks for production settings
 
 - Drop unused observations by prefix: `management.observations.enable.spring.security=false`.
 - Drop long task timers (`*_active_*` series) if unused:
   `management.metrics.observations.ignored-meters=long-task-timer`.
-- With multitenancy, `jmix.user.tenantId` is a tag of every `jmix.*` metric
-  (jmix-framework/jmix#5795) and multiplies the series by the number of tenants.
-  Unless a per-tenant breakdown is needed, drop it; Spring Boot applies `MeterFilter`
-  beans to its registries, and the filter takes the dotted Micrometer key:
-  ```java
-  @Bean
-  MeterFilter ignoreTenantTag() {   // io.micrometer.core.instrument.config.MeterFilter
-      return MeterFilter.ignoreTags("jmix.user.tenantId");
-  }
-  ```
 
-## Verify
+### When the project uses multitenancy
 
-Open a view or call the changed code in the running application first: series and spans
-appear only after the operation runs.
+`jmix.user.tenantId` is a tag of every `jmix.*` metric (jmix-framework/jmix#5795) and
+multiplies the series by the number of tenants. Unless a per-tenant breakdown is needed,
+drop it. Spring Boot applies `MeterFilter` beans to its registries, and the filter takes
+the dotted Micrometer key:
 
-Metrics:
-
-1. `curl -s localhost:8080/actuator/prometheus | grep -E 'jmix_ui_views_seconds_count|jmix_data_load'`
-   lists series with `view_id`, `lifecycle_name` and `application` labels.
-2. No `view=` / `lifeCycle=` labels: otherwise the legacy schema is still on.
-
-Traces (set `management.tracing.sampling.probability=1.0` for the check, or most requests
-leave no trace):
-
-1. Log lines of the request carry a 32-hex trace ID (`grep -E '[0-9a-f]{32}'` on the
-   application log): tracing puts `traceId` and `spanId` into MDC, and Spring Boot prints them
-   through `logging.pattern.correlation`. No ID means no tracing bridge on the classpath, or a
-   custom Logback pattern without `%X{traceId}`.
-2. The spans reached the backend. With the `grafana/otel-lgtm` image, query Tempo through
-   the Grafana proxy (data source uid `tempo`; Tempo itself listens on `:3200/api/search`).
-   Spans are exported in batches, so wait a few seconds; pass a time window, the default one
-   is short:
-   ```bash
-   curl -s -u admin:admin -G localhost:3000/api/datasources/proxy/uid/tempo/api/search \
-     --data-urlencode 'q={ name = "view lifecycle" && span.view.id = "Order.list" }' \
-     --data-urlencode "start=$(( $(date +%s) - 900 ))" --data-urlencode "end=$(date +%s)"
-   ```
-   Empty `traces`: check the exporter errors in the application log and the OTLP endpoint.
-3. Propagation between services: the `serviceStats` of a trace in the same response lists
-   every service the request passed through. A missing service means its client was not
-   built from the injected `RestClient.Builder` / `RestTemplateBuilder`.
-4. A custom observation shows up under its `contextualName`: `{ name = "confirm order" }`.
-
-Then run the usual gates (`jmix-ide-static-analysis`, `jmix-verify-bootrun`).
-
-Reference: Jmix docs, Features → Observability (Metrics, Tracing, Logging pages).
+```java
+@Bean
+MeterFilter ignoreTenantTag() {   // io.micrometer.core.instrument.config.MeterFilter
+    return MeterFilter.ignoreTags("jmix.user.tenantId");
+}
+```
