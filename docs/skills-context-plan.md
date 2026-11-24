@@ -120,25 +120,55 @@ Move `### When ...` subsections from `## Special cases` into `skills/<skill>/ref
 
 What may move to a reference: a special case only, and only if its condition is visible in the task or the code, or a mechanical check in `jmix-ide-static-analysis` or Gate 2 catches the failure even when the reference was not read. Everything else stays in `SKILL.md`, including the whole `## Forbidden` section.
 
-Before the first split:
+### Trial on `jmix-verify-bootrun` — done
 
-- Check that every supported agent (Claude Code, Codex, OpenCode, Junie) can open a file next to `SKILL.md` from a relative path. Put a test reference into one skill, install it into each agent, and ask the agent to read it. If an agent resolves the path against the project root, use paths from the skill folder that the installer knows, or keep that content in `SKILL.md`.
-- Confirm that Studio's `AiSkillsHasher` hashes files in subfolders the same way `gen_skills_manifest.py` does (it walks the whole skill folder). The installers already copy the whole folder (`cp -R`). Commit the regenerated `.studio/skills-manifest.json` (CI also regenerates it).
+The Gate 3 browser walk moved to `references/browser-walk.md` (3.1 KB); `SKILL.md` went from 9.1 KB to 6.2 KB. The trial ran in Claude Code 2.1.331 with Haiku, in a Jmix 3.1.1 project with Playwright MCP connected:
 
-Then try one skill first: `jmix-verify-bootrun`, moving the Gate 3 render walk out. Run scenarios where the condition holds (a view was created) and where it does not, with a small model (for example Haiku) and, if possible, a non-Claude model through Codex or OpenCode. Count how often the reference is opened in each case. Split the other skills only if the reference is opened reliably when the condition holds.
+| Scenario | Runs | Walked in a browser | Opened the reference |
+|---|---|---|---|
+| Entity with list and detail views, browser check asked in the prompt | 3 | 3 | 3 (before the walk; the throwaway datasource and the final stop were followed) |
+| Entity with list and detail views, no mention of a browser | 3 | 0 (all wrote a `@UiTest`) | 0 |
+| `clean test` fails (missing HSQLDB driver) | 2 | 0 | 0 |
+| Entity without UI | 2 | 0 | 0 |
 
-If the trial fails, keep the skills as single files with the step 3 layout.
+The reference was opened in every run that walked views in a browser, and in no run that did not need it. The trial was not repeated with a non-Claude model. Without a browser in the prompt, Haiku skipped the browser walk; step 6 covers that.
 
-Done when: the trial result is recorded here, and each split skill's `SKILL.md` is at most 6 KB.
+### What the trial showed for the other skills
 
-## Step 6 (optional). Merge small skills that overlap
+- This pointer worked: "first read `references/<topic>.md` in this skill's folder", placed in the step where the condition arises. Claude Code shows the skill's folder when it loads a skill, and Haiku opened the file by its full path.
+- Start each reference with a heading and one line that names the skill it belongs to and when to read it.
+- A reference is read only when the agent reaches its pointer. Two of the three view runs never read `jmix-verify-bootrun`, so a pointer in a skill the agent does not read does not help. This is why the rule above on what may move still holds.
+- The installers copy the `references/` folder with the skill, and `gen_skills_manifest.py` includes it in the hash.
+
+To repeat the trial setup later:
+
+1. Create a project with the `jmix-create-project` skill and `--no-agents-toolkit`. Then install the toolkit from the checkout: `install.sh skills --scope local --source <checkout>`, `install.sh agents-md --source <checkout>`, and `install.sh playwright --agents claude --scope local`.
+2. Keep the project outside Claude Code's session temp folder: Claude Code does not load a project's `CLAUDE.md` from there.
+3. Run `claude -p "<task>" --model haiku --setting-sources project,local --mcp-config .mcp.json --strict-mcp-config --output-format stream-json --verbose`. `--setting-sources project,local` keeps the user's plugins, hooks and skills out of the run.
+4. In the log, count the `Read` and `Bash` calls that name the reference file.
+
+### Remaining work
+
+Split all the other skills at once, by the rule above, without a separate trial per skill.
+
+Done when: every special case that meets the rule is in a reference file, each split skill's `SKILL.md` is at most 6 KB, and `python3 tests/check_skill_frontmatter.py` passes.
+
+## Step 6. Make Gate 3 use the browser when a browser tool is connected
+
+In the trial, all three Haiku runs that created views wrote a `@UiTest` for Gate 3 instead of walking the views, although Playwright MCP was connected and `jmix-verify-bootrun` allows the `@UiTest` only when no browser tool is connected. Two of the three runs did not read `jmix-verify-bootrun` at all: the router's Gate 3 line ("walk it as `jmix-verify-bootrun` describes") did not make them read it.
+
+Change the Gate 3 line in `skills/jmix/SKILL.md`: check the connected tools for a browser tool; if there is one, read `jmix-verify-bootrun` and walk each created or changed view in the browser; write a `@UiTest` only when no browser tool is connected.
+
+Done when: in the trial scenario "entity with list and detail views, no mention of a browser", Haiku walks the views in a browser in each of three runs.
+
+## Step 7 (optional). Merge small skills that overlap
 
 - `jmix-create-enum` into `jmix-create-entity`, as a special case (or a reference file after step 5).
 - `jmix-create-composition-detail-view` into `jmix-create-detail-view`, the same way.
 
 This shortens the routing list and the descriptions. Projects that installed an earlier version keep the removed skill folders unless the installers learn to delete them, so decide this together with the installer behavior.
 
-## Step 7. Measure and enforce
+## Step 8. Measure and enforce
 
 - Add a size check to `tests/check_skill_frontmatter.py`: warn when a `SKILL.md` is over 8 KB, or fail over a higher limit.
 - Add a script that prints the size of the skills a typical task reads (new entity, new view, new service) so a change can show its effect.
@@ -146,4 +176,4 @@ This shortens the routing list and the descriptions. Projects that installed an 
 
 ## Other version branches
 
-`skills/` and `content/` differ per branch and are not synced. Steps 1 to 6 apply to v3 here (step 1 is done on `v3_refactor`); decide separately whether to repeat them on v2. A size check from step 7 is a test change, so it goes to every maintained branch in a sync commit.
+`skills/` and `content/` differ per branch and are not synced. Steps 1 to 7 apply to v3 here (step 1 is done on `v3_refactor`); decide separately whether to repeat them on v2. A size check from step 8 is a test change, so it goes to every maintained branch in a sync commit.
