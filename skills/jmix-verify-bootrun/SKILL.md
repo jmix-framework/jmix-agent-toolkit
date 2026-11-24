@@ -1,6 +1,6 @@
 ---
 name: jmix-verify-bootrun
-description: Use when Gate 2 (gradle clean test) fails, and for Gate 3, which opens every view or role you created or changed in a browser or with a @UiTest to catch render-time defects.
+description: Use when Gate 2 (gradle clean test) fails, and for Gate 3, which opens every view you created or changed with a @UiTest and, when a browser tool is connected, walks views and roles in a browser.
 ---
 
 # Gate 2 (context load) and Gate 3 (render)
@@ -29,26 +29,22 @@ unverified.
 ## Gate 3 — render
 
 Required for every view or role you created or changed. Run the mechanical
-checks of `jmix-ide-static-analysis` first. If an application from this
-checkout is already running, read **When an application from this checkout is
-already running** before the walk. Then, for each view, either:
+checks of `jmix-ide-static-analysis` first. Then:
 
-- walk it with a browser tool — first read `references/browser-walk.md` in
-  this skill's folder; or
-- when no browser tool is connected, write a minimal `@UiTest` that opens the
-  view (`jmix-create-test`).
+1. For each view, write a minimal `@UiTest` that opens the view
+   (`jmix-create-test`) and run it.
+2. Check the connected tools for a browser tool. If there is one, also walk
+   each view and role in the browser — first read `references/browser-walk.md`
+   in this skill's folder. If an application from this checkout is already
+   running, read **When an application from this checkout is already
+   running** before the walk.
 
-Check the connected tools before deciding there is no browser tool. If a view
-can be reached by neither, report `render NOT verified: <view>`.
-
-A green walk does not replace the mechanical checks: a `@UiTest` runs a
-different, headless code path, so a defect can pass in the browser and still
-fail a test (for example a required default set only in the view).
+If a view has no passing `@UiTest`, report `render NOT verified: <view>`. If no
+browser tool is connected or the walk could not run, report the browser walk
+as not done for each view and role.
 
 ## Forbidden
 
-- `bootRun` or any other server start that does not exit as the Gate 2 check —
-  it hangs your turn and leaves the port held.
 - Counting `Tests run: 0` as a pass.
 - Calling a test that went red after your change "pre-existing", or reporting a
   red test you cannot explain as a footnote instead of a blocker.

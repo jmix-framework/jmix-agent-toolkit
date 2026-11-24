@@ -10,7 +10,7 @@ description: Create or update Jmix unit, integration, UI integration, or end-to-
 1. Choose the smallest test type that proves the behavior.
 2. Use a plain JUnit test for pure Java logic without Spring/Jmix services.
 3. Use `@SpringBootTest` for services, DataManager persistence, entity listeners, security, and transactions.
-4. Use `@UiTest` with `FlowuiTestAssistConfiguration` for Flow UI controller/component behavior without a browser. This includes the minimal test that opens a view for Gate 3 of `jmix-verify-bootrun`. First read `references/ui-test.md` in this skill's folder. If the test checks grid columns or form fields hidden by security, also read `references/ui-test-hidden-by-security.md` in this skill's folder.
+4. Use `@UiTest` with `FlowuiTestAssistConfiguration` for Flow UI controller/component behavior without a browser. This includes the minimal test that opens each created or changed view for Gate 3 of `jmix-verify-bootrun`; write it even when the view is also walked in a browser. First read `references/ui-test.md` in this skill's folder. If the test checks grid columns or form fields hidden by security, also read `references/ui-test-hidden-by-security.md` in this skill's folder.
 5. Use end-to-end browser tests only for real browser behavior, routing, login, theme, or Vaadin client-side interactions. Read **When the behavior needs a real browser** below.
 6. Create test data through `DataManager.create()` and `DataManager.save()`.
 7. Set authentication with the project's `AuthenticatedAsAdmin` extension or `SystemAuthenticator`. If the code under test runs on a scheduler, `@Async`, or application event listener path, first read `references/outside-user-session.md` in this skill's folder.

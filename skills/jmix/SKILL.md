@@ -89,10 +89,14 @@ evidence for each.
    session, then check every file you created or changed.
 2. **Gate 2 — context loads.** Run `./gradlew --no-daemon clean test`. It passes
    only with `BUILD SUCCESSFUL`, no failed tests, and at least one test run.
-   Never use `bootRun` or any server start that does not exit — it hangs your
-   turn. Read `jmix-verify-bootrun` when it fails.
-3. **Gate 3 — render.** For each view or role you created or changed, walk it
-   as `jmix-verify-bootrun` describes.
+   If it fails, read **When Gate 2 fails** in `jmix-verify-bootrun`.
+3. **Gate 3 — render.** For each view or role you created or changed, write
+   and run a `@UiTest` that opens the view, or the role's views as a user of
+   that role (`jmix-create-test`). If a browser tool is connected (for example
+   Playwright MCP), also read `jmix-verify-bootrun` and walk them in the
+   browser as it describes. Then Gate 3 passes only after the walk. Report the
+   walk as not done only when something blocked it, such as the application
+   not starting, and name what.
 
 Report per changed file its static-check verdict, and per created view, button,
 or field how you verified it. "BUILD SUCCESSFUL, all done" is not a report.

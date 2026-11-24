@@ -185,13 +185,57 @@ The 6 KB limit is not met: 13 skills are still over it. In all of them except `j
 
 To go further, the main part itself has to become shorter, or the rule has to allow moving common patterns and templates. Decide this before the size check of step 8 sets its limits.
 
-## Step 6. Make Gate 3 use the browser when a browser tool is connected
+## Step 6. Make Gate 3 use the browser when a browser tool is connected — done
 
 In the trial, all three Haiku runs that created views wrote a `@UiTest` for Gate 3 instead of walking the views, although Playwright MCP was connected and `jmix-verify-bootrun` allows the `@UiTest` only when no browser tool is connected. Two of the three runs did not read `jmix-verify-bootrun` at all: the router's Gate 3 line ("walk it as `jmix-verify-bootrun` describes") did not make them read it.
 
-Change the Gate 3 line in `skills/jmix/SKILL.md`: check the connected tools for a browser tool; if there is one, read `jmix-verify-bootrun` and walk each created or changed view in the browser; write a `@UiTest` only when no browser tool is connected.
+A browser walk does not replace a test: the `@UiTest` stays in the project and runs a headless code path that a walk does not. So Gate 3 always writes and runs a `@UiTest` that opens each created or changed view, and, when a browser tool is connected, also walks each view and role in the browser.
 
-Done when: in the trial scenario "entity with list and detail views, no mention of a browser", Haiku walks the views in a browser in each of three runs.
+Change the Gate 3 line in `skills/jmix/SKILL.md` to say this, with "read `jmix-verify-bootrun`" in the browser part. Change Gate 3 of `jmix-verify-bootrun`, its description and `references/browser-walk.md` the same way (the test is no longer an alternative to the walk), and step 4 of `jmix-create-test`.
+
+Done when: in the trial scenario "entity with list and detail views, no mention of a browser", Haiku writes and runs a `@UiTest` for each view in each of three runs, and either walks the views in a browser or reports the walk as not done. A walk in every run is not required: making the walk required would need a stricter rule than we want.
+
+Result: the done-when check is met in both trials below. Trial (Claude Code 2.1.331, Haiku, same project and prompt as the first trial):
+
+| Run | `@UiTest` written and run | Read `jmix-verify-bootrun` | Walked in a browser |
+|---|---|---|---|
+| 1 | yes | no | no ("I did not walk the views in a browser") |
+| 2 | yes | no | no: it saw the Playwright tools but did not start the application, and offered to do it |
+| 3 | yes | yes, and the reference | yes: throwaway datasource, menu, create flow, application stopped |
+
+The `@UiTest` part works in every run. The browser walk is still skipped in two of three runs, and neither of them read `jmix-verify-bootrun`. A possible cause is the Gate 2 line of the router, "Never use `bootRun` or any server start that does not exit", which the walk has to start.
+
+Run 3 also found a problem in `references/browser-walk.md`: the fixed path `/tmp/renderwalk` keeps data from earlier walks, so the grid showed a row that the run did not create.
+
+Changes after this trial: the router's Gate 2 line banned `bootRun` as the Gate 2 check only, and its Gate 3 line said that the walk starts the application in the background with `bootRun`. `references/browser-walk.md` no longer gives shell commands for the walk database: it tells the agent to create a new temporary database of the project's type for each walk and pass it to `bootRun` as application arguments.
+
+Second trial with these changes, same setup:
+
+| Run | `@UiTest` written and run | Read `jmix-verify-bootrun` | Walked in a browser |
+|---|---|---|---|
+| 1 | yes | no | no: it saw the Playwright tools and reported the walk as "still open" |
+| 2 | yes | yes | no: it saw the Playwright tools and reported the walk as not done |
+| 3 | yes | yes, and the reference | yes: new HSQLDB file per walk, create, validation, remove; application stopped |
+
+The result did not change: one walk in three runs. The runs that skip the walk now see the browser tool and report the walk as not done, so the skip is a choice, not a missed instruction. The Gate 2 `bootRun` line was not the cause, so that change was reverted. In run 3, the first background `bootRun` looked to the agent as if it had exited, and a second start failed on the lock of the same database file; the walk still used the first application.
+
+Changes after the second trial, not tested yet: `references/browser-walk.md` now prefers an in-memory HSQLDB (`jdbc:hsqldb:mem:walk`) when HSQLDB is on the runtime classpath and the changelogs have no `dbms`-specific changesets, and otherwise a new database on the project's server. It also says that a background start returns at once, so the agent checks the log and the port before starting the application again.
+
+Third trial, same setup: all three runs wrote and ran the `@UiTest` and reported the browser walk as not done. None read `jmix-verify-bootrun`, so the new database text was not reached. One run gave its reason: "I did not start the app, because a server start would hang the turn", which is the Gate 2 `bootRun` line of the router.
+
+Fourth trial, after the `bootRun` bullet was removed from the Forbidden section of `jmix-verify-bootrun` (the router's Gate 2 line still bans `bootRun`): the same result. All three runs wrote and ran the `@UiTest` (tests pass), none read `jmix-verify-bootrun`, and all three reported the browser walk as not done. The new database text was again not reached. After this trial, the `bootRun` sentence was also removed from the router's Gate 2 line.
+
+Fifth trial, with no `bootRun` ban left in the router or in `jmix-verify-bootrun`: the same result. All three runs wrote and ran the `@UiTest` (tests pass), none read `jmix-verify-bootrun`, and all three reported the browser walk as not done; two of them said that a Playwright tool is connected. So the `bootRun` ban was not what stopped the walk in the earlier trials. Across the five trials with this prompt, two of fifteen runs walked the views.
+
+Sixth trial, after the router's Gate 3 line got: "Then Gate 3 passes only after the walk. Report the walk as not done only when something blocked it, such as the application not starting, and name what."
+
+| Run | `@UiTest` written and run | Read the reference | Walked in a browser | Walk database |
+|---|---|---|---|---|
+| 1 | yes | yes | yes: menu, create, invalid email, edit | `jdbc:hsqldb:mem:walk` |
+| 2 | yes | yes | yes: menu, create, empty name, saves with and without email | `jdbc:hsqldb:mem:walk` |
+| 3 | yes | yes | yes: menu, empty name, save without email | `jdbc:hsqldb:mem:walk` |
+
+All three runs walked the views, used the in-memory database, started the application once, stopped it and removed `.playwright-mcp/`. None added Actuator; all waited for the `Started` line. The walk raises the cost of a run from about $0.03 to $0.11–0.18. All three runs, and run 3 of the first trial, saw a `*` on the optional Email field in the detail view; this is not checked yet.
 
 ## Step 7 (optional). Merge small skills that overlap
 
