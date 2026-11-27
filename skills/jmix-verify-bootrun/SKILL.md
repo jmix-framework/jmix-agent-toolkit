@@ -14,7 +14,8 @@ findings first; an empty inspection result you did not confirm is not a pass.
    `java` process from this directory, or the application port held). If one
    is, read **When an application from this checkout is already running**
    first.
-2. Run `./gradlew --no-daemon test`.
+2. Run `./gradlew --no-daemon test`. In a composite project, use the task
+   paths from **Gradle tasks in a composite project** in the `jmix` skill.
 3. It passes only with `BUILD SUCCESSFUL` and no failed tests.
 4. If it fails, read **When Gate 2 fails**.
 

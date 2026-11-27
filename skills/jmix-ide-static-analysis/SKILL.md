@@ -23,6 +23,8 @@ Every file you created or edited passes a static check before you move on.
    ```bash
    ./gradlew --no-daemon compileJava
    ```
+   In a composite project, use the task paths from **Gradle tasks in a
+   composite project** in the `jmix` skill.
    It is authoritative for `.java`: unresolved symbols, wrong imports or
    packages, type mismatches, bad handler signatures. It does not read XML
    descriptors: an enum bound to `entityComboBox` instead of `comboBox`, an

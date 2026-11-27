@@ -87,7 +87,8 @@ evidence for each.
 
 1. **Gate 1 — API and static checks.** Read `jmix-ide-static-analysis` once per
    session, then check every file you created or changed.
-2. **Gate 2 — tests pass.** Run `./gradlew --no-daemon test`. It passes
+2. **Gate 2 — tests pass.** Run `./gradlew --no-daemon test` (in a composite
+   project, see **Gradle tasks in a composite project** below). It passes
    only with `BUILD SUCCESSFUL` and no failed tests. If it fails, read
    **When Gate 2 fails** in `jmix-verify-bootrun`.
 3. **Gate 3 — render.** For each view or role you created or changed, write
@@ -100,6 +101,15 @@ evidence for each.
 
 Report per changed file its static-check verdict, and per created view, button,
 or field how you verified it. "BUILD SUCCESSFUL, all done" is not a report.
+
+### Gradle tasks in a composite project
+
+If the root `settings.gradle` has `includeBuild` lines, the root project has no
+`compileJava` or `test` task. Run them from the root directory with the path of
+each module that has `src/main/java` (for `compileJava`) or `src/test/java` (for
+`test`): the module directory with `/` replaced by `:`. For example, for
+`products/products` and `sales`, run
+`./gradlew --no-daemon :products:products:test :sales:test`.
 
 ## Writing files
 
