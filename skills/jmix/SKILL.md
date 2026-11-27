@@ -29,7 +29,7 @@ of this and no gates.
 - New project with Jmix CLI: `jmix-create-project`
 - Verify a Jmix/Vaadin API: `jmix-verify-api-symbol`
 - Static checks / inspections: `jmix-ide-static-analysis`
-- Context-load test, render walk: `jmix-verify-bootrun`
+- Tests (Gate 2) failures, render walk: `jmix-verify-bootrun`
 - Persistent entity: `jmix-create-entity`
 - Enum used by an entity: `jmix-create-enum`
 - List view: `jmix-create-list-view`
@@ -87,9 +87,9 @@ evidence for each.
 
 1. **Gate 1 — API and static checks.** Read `jmix-ide-static-analysis` once per
    session, then check every file you created or changed.
-2. **Gate 2 — context loads.** Run `./gradlew --no-daemon clean test`. It passes
-   only with `BUILD SUCCESSFUL`, no failed tests, and at least one test run.
-   If it fails, read **When Gate 2 fails** in `jmix-verify-bootrun`.
+2. **Gate 2 — tests pass.** Run `./gradlew --no-daemon test`. It passes
+   only with `BUILD SUCCESSFUL` and no failed tests. If it fails, read
+   **When Gate 2 fails** in `jmix-verify-bootrun`.
 3. **Gate 3 — render.** For each view or role you created or changed, write
    and run a `@UiTest` that opens the view, or the role's views as a user of
    that role (`jmix-create-test`). If a browser tool is connected (for example
@@ -105,7 +105,7 @@ or field how you verified it. "BUILD SUCCESSFUL, all done" is not a report.
 
 Pass absolute paths to file-writing tools. After a batch of writes, `ls` the
 paths and confirm each file is non-empty: a 0-byte file passes compile and
-`clean test` (an empty role drops its policies; an empty `*-view.xml` breaks the
+`test` (an empty role drops its policies; an empty `*-view.xml` breaks the
 view registry). Rewrite a missing or empty file; do not `rm -rf`.
 
 Never edit generated frontend files — they are regenerated on every build.

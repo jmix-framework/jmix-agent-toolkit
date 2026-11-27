@@ -236,7 +236,7 @@ annotation and in the changelog, with the same name on both sides:
 ```
 
 No check catches the difference: a missing `@Index` changes neither the metamodel nor the
-schema, so `compileJava`, the Jmix inspection, and a green `clean test` all pass with the
+schema, so `compileJava`, the Jmix inspection, and a green `test` all pass with the
 index in the changelog only. It breaks Studio round-tripping and the rule that the code is
 the source of truth. Do it as you write the column, not later.
 

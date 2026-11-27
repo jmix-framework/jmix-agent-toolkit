@@ -47,7 +47,7 @@ invented names.
 ## Mechanical descriptor checks
 
 Run them from the project directory. Each one maps to a defect that passes a
-clean compile and even a green `clean test`. Run them in every case. When you
+clean compile and even a green `test`. Run them in every case. When you
 have neither an inspection nor a Gate 3 render walk, they are the only check for
 these defects.
 
@@ -91,7 +91,7 @@ repeat until clean. Run it on every file, not a sample: the defects that
 survive are the ones you were sure about and never checked. If the inspection
 reports "is never used", "unused", "is not used", or "can be converted to a
 local variable", first read `references/unused-findings.md` in this skill's folder before you change code. After the last edit, a full `compileJava` is the precondition for Gate 2
-(`clean test`).
+(`test`).
 
 ## What no static check covers
 

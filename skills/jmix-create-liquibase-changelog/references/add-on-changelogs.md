@@ -27,7 +27,7 @@ them. Also search the complete startup log for missing-schema errors:
 rg -n 'does not exist|relation .* does not exist' /path/to/startup.log
 ```
 
-Treat every match as a failure until it is explained. A green `clean test`
-proves that the context loads, not that the add-on schema was created, when no
-test accesses its tables. Some add-ons log the missing-table error and let the
+Treat every match as a failure until it is explained. A green `test`
+does not prove that the add-on schema was created when no test accesses its
+tables. Some add-ons log the missing-table error and let the
 application keep running with the feature unavailable.

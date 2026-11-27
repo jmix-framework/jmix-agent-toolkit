@@ -25,7 +25,7 @@ non-user requests like schedulers or asynchronous calls.
 ```
 
 No check catches this. The code compiles, passes the Jmix inspection, and
-passes a green `./gradlew clean test`, because the context-load tests never
+passes a green `./gradlew test`, because the tests never
 fire your scheduler. It fails the first time the job really runs, which in
 production may be minutes after you report the task done.
 
@@ -111,7 +111,7 @@ proxied, and `@Authenticated` on `execute` takes effect.
 
 ## Verify: a test that enters the path
 
-A green `clean test` proves nothing here unless a test calls the background
+A green `test` proves nothing here unless a test calls the background
 entry point. Write one that calls the method the way the scheduler does,
 through the bean:
 
@@ -145,7 +145,7 @@ See `jmix-create-test`.
 - `@Authenticated` on a method reached by a self-call, or on a class
   instantiated outside the Spring bean factory: the proxy is not involved, so
   the annotation does nothing.
-- Reporting the task done on a green `clean test` when no test enters the
+- Reporting the task done on a green `test` when no test enters the
   background path.
 - A test that authenticates before calling the background entry point and then
   claims that path is covered.

@@ -31,7 +31,7 @@ Calling `partial()` does not change it. When a measurement shows the per-parent 
 List<OrderLine> lines = orderLineRepository.findByOrderIdIn(orderIds);
 ```
 
-Only a count of executed SQL shows which shape you got: `compileJava`, the IDE inspection, and a green `clean test` all pass either way. Guard it with a test that asserts the query count does not grow with page size.
+Only a count of executed SQL shows which shape you got: `compileJava`, the IDE inspection, and a green `test` all pass either way. Guard it with a test that asserts the query count does not grow with page size.
 
 Never set `FetchMode.JOIN` on a to-one nested inside a `BATCH` collection. It looks like a way to add that reference to the collection query, but EclipseLink throws at query time:
 

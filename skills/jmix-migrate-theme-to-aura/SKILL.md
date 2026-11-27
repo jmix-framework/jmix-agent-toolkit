@@ -294,7 +294,7 @@ only cosmetic; use it only if you want that look.
 
 ## Verify — in a browser, on computed values
 
-Compile, static analysis and `clean test` all pass while the app still renders Lumo, so they
+Compile, static analysis and `test` all pass while the app still renders Lumo, so they
 prove nothing here. Start the app and check:
 
 ```js
@@ -379,7 +379,7 @@ clean server log; re-run check 3 there, since its token list differs per page.
   `outlined` variants.
 - Leaving `LUMO_` constants in Java.
 - Leaving a bare `<appLayout>` without `classNames="jmix-main-view-app-layout"`.
-- Calling the migration done on a green compile or `clean test`; neither renders a page.
+- Calling the migration done on a green compile or `test`; neither renders a page.
 - Hard-coding border and radius numbers in the component test instead of reading them from the
   reference project.
 - Treating `_lumo-vaadin` in `adoptedStyleSheets` as proof the migration failed, or trying to

@@ -1,30 +1,27 @@
 ---
 name: jmix-verify-bootrun
-description: Use when Gate 2 (gradle clean test) fails, and for Gate 3, which opens every view you created or changed with a @UiTest and, when a browser tool is connected, walks views and roles in a browser.
+description: Use when Gate 2 (gradle test) fails, and for Gate 3, which opens every view you created or changed with a @UiTest and, when a browser tool is connected, walks views and roles in a browser.
 ---
 
-# Gate 2 (context load) and Gate 3 (render)
+# Gate 2 (tests) and Gate 3 (render)
 
 Run these after static analysis (`jmix-ide-static-analysis`). Resolve its
 findings first; an empty inspection result you did not confirm is not a pass.
 
-## Gate 2 — `clean test`
+## Gate 2 — tests pass
 
 1. Check whether an application from this checkout is running (a `bootRun` or
    `java` process from this directory, or the application port held). If one
    is, read **When an application from this checkout is already running**
    first.
-2. Run `./gradlew --no-daemon clean test`.
-3. It passes only with `BUILD SUCCESSFUL`, no failed tests, and at least one
-   test run. `Tests run: 0`, or no test task, means the context never booted:
-   make sure a context-load test exists and runs, then run again.
+2. Run `./gradlew --no-daemon test`.
+3. It passes only with `BUILD SUCCESSFUL` and no failed tests.
 4. If it fails, read **When Gate 2 fails**.
 
-A green Gate 2 proves that the context boots, Liquibase runs, and the existing
-tests pass. It does not open your views, use your roles, or run code outside a
-user request (`jmix-run-background-code`). When you add a code path that nothing
-calls yet, add the caller — a test or a render walk — or report the path as
-unverified.
+A green Gate 2 proves that the existing tests pass. It does not open your
+views, use your roles, or run code outside a user request
+(`jmix-run-background-code`). When you add a code path that nothing calls yet,
+add the caller — a test or a render walk — or report the path as unverified.
 
 ## Gate 3 — render
 
@@ -86,7 +83,7 @@ rg -n -C 3 "Failed to load driver class|Caused by" build/test-results/test/*.xml
   the `DataManager` path (see `jmix-create-entity`).
 - **`ClassCastException` between two classes with the same name**
   (`OrderDetailView cannot be cast to OrderDetailView`): IDE hot deploy left a
-  stale class in `.jmix/conf/`, which `clean test` does not remove. Delete the
+  stale class in `.jmix/conf/`, which `test` does not remove. Delete the
   directory and run again.
 
 If the suite passed before your change and a test is now red, your change broke

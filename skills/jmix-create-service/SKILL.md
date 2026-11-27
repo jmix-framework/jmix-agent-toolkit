@@ -16,7 +16,7 @@ description: Create Jmix service-layer business logic with DataManager, transact
 7. Keep view controllers thin: they should call services, not implement business rules.
 8. If a scheduler, `@Async`, or a listener calls the method, read **When a scheduler, `@Async`, or a listener calls the service** below.
 9. If you need aggregates, a lock, or a hard delete, read **When you need aggregates, a lock, or a hard delete** below.
-10. Verify any unfamiliar Jmix/Vaadin symbol before typing it (`jmix-verify-api-symbol`). After writing the service, run static checks (`jmix-ide-static-analysis`) and the context-load test (`jmix-verify-bootrun`).
+10. Verify any unfamiliar Jmix/Vaadin symbol before typing it (`jmix-verify-api-symbol`). After writing the service, run static checks (`jmix-ide-static-analysis`) and the tests (Gate 2, `jmix-verify-bootrun`).
 
 ## Service Template
 

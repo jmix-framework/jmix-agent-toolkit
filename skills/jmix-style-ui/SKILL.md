@@ -172,7 +172,7 @@ declaration parses, the build succeeds, and the browser applies the fallback:
 | any length | the property's initial value |
 
 So the defect survives `compileJava`, the Jmix inspection, and a green
-`clean test`, with no exception, no warning, and nothing in the log.
+`test`, with no exception, no warning, and nothing in the log.
 
 ## Verify — the computed style, in a browser
 
@@ -224,7 +224,7 @@ same type — if the two match, the variant did nothing.
   reusable CSS class already provides.
 - A repeated inline style across several components instead of one CSS class in
   the project theme.
-- Claiming styling works from a green compile / `clean test` — neither renders
+- Claiming styling works from a green compile / `test` — neither renders
   anything. Without a browser check, report `styling not browser-verified`.
 - Treating a reading of the Java or the CSS as proof of the look — only the
   computed style in a browser shows it.

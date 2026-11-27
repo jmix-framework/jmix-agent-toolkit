@@ -62,7 +62,7 @@ source root, a Gradle project that was never imported, or indexing lag right
 after files were written from outside the IDE.
 
 **Findings to fix.** These are true positives. `compileJava`, the mechanical
-checks, and a green `clean test` do not catch them:
+checks, and a green `test` do not catch them:
 
 - **Unresolved `msg://` key** — renders as the literal key at runtime.
 - **Invalid property path or missing data container** in a `*-view.xml`.
