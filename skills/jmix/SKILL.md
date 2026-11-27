@@ -12,12 +12,13 @@ with Liquibase migrations.
 
 Wrong API names and broken descriptors usually come from writing from memory.
 
-1. List the artifacts the task creates or changes.
-2. For each, look for a working example in the same module that covers the
-   case you write. An entity without references is not an example for a new
-   required reference.
-3. No example → read the matching skill in full. Example → follow it and check
-   your change against the skill's **Forbidden** section.
+1. List the artifacts the task creates or changes, in the order you will
+   write them.
+2. Take them one at a time. Just before you write an artifact, look for a
+   working example in the same module that covers the case you write.
+3. No example → read the matching skill in full at this point. Example →
+   follow it and check your change against the skill's **Forbidden** section.
+   Do not read the skills for later artifacts before you reach them.
 4. Verify every Jmix/Vaadin class, method, constant, or icon not already used in
    `src/` with `jmix-verify-api-symbol`.
 
